@@ -6,6 +6,21 @@ The **FRET** tab enables Förster Resonance Energy Transfer analysis using the p
 
 FRET analysis in phasor space uses the donor fluorophore's position on the phasor plot and the trajectory it follows as energy transfer efficiency increases. By measuring where a sample falls along this trajectory, the FRET efficiency can be determined.
 
+```{note}
+A FLIM-FRET training dataset is available for practicing this workflow. Load it
+from File → Open Sample → napari-phasors → FLIM-FRET Training Dataset. It
+adds four calibrated layers of live HeLa cells — `Donor_Only` (unquenched
+donor, τ ≈ 4.0 ns, ~0 % FRET), `Background_Autofluorescence` (non-transfected
+cells for background correction) and the FRET constructs `FRET_Construct_1`
+(~60 % expected efficiency) and `FRET_Construct_2` (~30 %). Use `Donor_Only`
+as the Donor Source, `Background_Autofluorescence` as the Background
+Source, and then read the efficiency off either FRET construct. The layers
+carry their 50 MHz laser frequency in the metadata, so the Frequency field is
+filled in for you. See
+{doc}`../sample_data` for details; the dataset is archived on Zenodo at
+[10.5281/zenodo.22261325](https://doi.org/10.5281/zenodo.22261325).
+```
+
 ## Workflow
 
 1. **Set the donor lifetime**: Enter it manually, or select one or more donor
@@ -14,6 +29,15 @@ FRET analysis in phasor space uses the donor fluorophore's position on the phaso
 3. **Configure the frequency**: The laser frequency used in the experiment.
 4. **Visualize the trajectory**: The donor trajectory is drawn on the phasor
    plot showing the path from 0 % to 100 % FRET efficiency.
+5. **Calculate**: Click **Calculate FRET efficiency** to produce the
+   efficiency image for the selected layer(s).
+
+> [!TIP]
+> Enable the **Autoupdate** toggle below the button to recompute the FRET efficiency
+> automatically. While it is on, the button is disabled and the analysis is
+> re-run whenever the tab's own inputs change, the harmonic or the layer
+> selection changes, or the **Filter** or **Calibration** tab rewrites the
+> phasor data.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/fret.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/fret.mp4" type="video/mp4">
@@ -40,6 +64,32 @@ frequency described above:
 | Apparent Modulation Lifetime | Lifetime derived from the modulation of the phasor |
 | Normal Lifetime | Standard lifetime calculation |
 
+## Filtering by FRET efficiency
+
+The **Filter** section discards pixels whose FRET efficiency falls outside a
+range you choose: their phasor coordinates are set to NaN, so they vanish from
+the phasor plot, the efficiency map, the histogram and the statistics table at
+once. There is a single efficiency filter, always shown as one card: switch it
+on with its check box, set the range (or choose **Exclude** to remove the range
+instead), and the card reports how much of the image it keeps. It can be
+switched on once a donor lifetime and a frequency are entered.
+
+The efficiency a criterion tests is recomputed from the donor trajectory rather
+than read off the displayed map, and the trajectory parameters are re-captured
+every time you recalculate — so the range on the card always means the same
+thing as the efficiencies beside it.
+
+The filter combines with the lifetime, phase and modulation filters of the
+**Phasor Mapping** tab: a pixel is kept only if it passes all of them. Those
+filters are not listed here — they are edited, and shown, in that tab; see
+{doc}`phasor_mapping` for how the criteria combine.
+
 ## Results
 
 FRET efficiency values are computed per-pixel and can be visualized as a colormapped image layer. The results can also be explored quantitatively in the **Histogram and Statistics Table** widget, allowing you to analyze the distribution and summary statistics of FRET efficiency across your data. Results can be exported to CSV.
+
+The histogram and statistics table include only FRET outputs whose source
+layers are checked in **Phasor Layers**. Unchecking a source hides its FRET
+efficiency layer and removes it from the histogram without deleting the
+result. Rechecking the source restores the existing output. The FRET range
+control clips only outputs belonging to currently checked sources.

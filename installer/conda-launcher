@@ -1,0 +1,14 @@
+#!/bin/bash
+# Relocatable entry point for the conda bundled in the base environment.
+#
+# `bin/conda` is a python script whose shebang holds the absolute install-time
+# prefix. The macOS .app moves the whole tree after installation, which leaves
+# that shebang dangling. `python -m conda` resolves the interpreter from this
+# script's own location instead, so it keeps working wherever the bundle ends
+# up. napari-plugin-manager only ever calls `<exe> --version` and
+# `<exe> install|update|remove ...`, both of which `python -m conda` supports.
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+unset PYTHONPATH PYTHONHOME
+export PYTHONNOUSERSITE=1
+exec "${DIR}/bin/python" -m conda "$@"

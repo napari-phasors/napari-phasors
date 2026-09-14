@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image, Labels
-from napari.utils.notifications import show_error, show_info
+from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.cluster import phasor_cluster_gmm
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
 from phasorpy.cursor import (
@@ -71,6 +71,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._parallel import default_workers, items_for_memory, parallel_stream
 from ._reader import extension_mapping, napari_get_reader
 from ._utils import (
     LIFETIME_OUTPUT_TYPES,
@@ -84,6 +85,7 @@ from ._utils import (
     make_solid_contour_cmap,
     normalize_rgb,
     populate_colormap_combobox,
+    rank_mask_candidates,
     read_ome_tiff_settings,
     required_component_harmonics,
     resolve_colormap_by_name,
@@ -1050,10 +1052,13 @@ def default_group_config():
         "group_colors": {},
         "layer_colors": {},
         "show_sd": True,
+        "normalize": False,
         "central_tendency": "None",
         "show_legend": True,
         "white_background": False,
         "smooth_curves": True,
+        "log_scale": False,
+        "bins": 150,
         # Per-key contour styling (filled by the Contour Layer Settings dialog).
         "contour_layer_styles": {},  # filename -> {mode, colormap, color}
         "contour_group_styles": {},  # gid -> {mode, colormap, color}
@@ -1713,7 +1718,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.threads_spin.setValue(1)
         self.threads_spin.setToolTip(
             "Read and compute files concurrently (1 = single-threaded). "
-            "File writing and plot rendering stay on the main thread."
+            "File writing and plot rendering stay on the main thread. "
+            "Ignored while 'Parallel images' is off in Plot Settings."
         )
         workers_row.addWidget(self.threads_spin)
         workers_row.addStretch()
@@ -1891,15 +1897,19 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 return True, ""
             return (
                 False,
-                "These OME-TIFF files do not contain a stored signal (they "
-                "were not written by napari-phasors), so the signal cannot be "
-                "reconstructed. Signal export is unavailable for this format.",
+                (
+                    "These OME-TIFF files do not contain a stored signal (they "
+                    "were not written by napari-phasors), so the signal cannot be "
+                    "reconstructed. Signal export is unavailable for this format."
+                ),
             )
         return (
             False,
-            "This processed format stores only phasor coordinates, not the "
-            "original signal, so signal export is unavailable. Use the raw "
-            "files or napari-phasors OME-TIFFs instead.",
+            (
+                "This processed format stores only phasor coordinates, not the "
+                "original signal, so signal export is unavailable. Use the raw "
+                "files or napari-phasors OME-TIFFs instead."
+            ),
         )
 
     def _refresh_signal_availability(self):
@@ -2310,27 +2320,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.mask_folders_label.setText("<i>No mask folder selected</i>")
         self._rebuild_mask_rows()
 
-    @staticmethod
-    def _rank_mask_candidates(image_path, mask_files):
-        """Return mask files ranked by name similarity to ``image_path``."""
-        image_stem = os.path.splitext(os.path.basename(image_path))[0]
-        # Strip a trailing supported extension chunk like ``.ome``.
-        image_stem = image_stem.split(".")[0].lower()
-        scored = []
-        for mask in mask_files:
-            mask_stem = os.path.splitext(os.path.basename(mask))[0].lower()
-            if image_stem == mask_stem:
-                score = 0
-            elif image_stem and (
-                image_stem in mask_stem or mask_stem in image_stem
-            ):
-                score = 1 + abs(len(mask_stem) - len(image_stem))
-            else:
-                continue
-            scored.append((score, mask))
-        scored.sort(key=lambda item: (item[0], item[1]))
-        return [mask for _score, mask in scored]
-
     def _rebuild_mask_rows(self):
         """Rebuild one mask-pairing row per input file, best match preselected."""
         layout = self._mask_rows_layout
@@ -2359,7 +2348,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             label.setMinimumWidth(140)
             combo = QComboBox()
             combo.addItem("None", None)
-            candidates = self._rank_mask_candidates(path, self._mask_files)
+            candidates = rank_mask_candidates(path, self._mask_files)
             remaining = [m for m in self._mask_files if m not in candidates]
             for mask in candidates + remaining:
                 combo.addItem(os.path.basename(mask), mask)
@@ -2618,15 +2607,38 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         mesh_container.setLayout(mesh_row)
         top_form.addRow("Mesh overlay:", mesh_container)
 
+        # One PNG per checked lifetime. Lines of constant lifetime are rays
+        # from the origin (apparent phase), circles around it (apparent
+        # modulation) and rays from (0.5, 0) (normal).
+        self.mapping_mesh_lifetime_checkboxes = {}
+        lifetime_mesh_row = QHBoxLayout()
+        for kind, label in (
+            ("Apparent Phase Lifetime", "Apparent phase"),
+            ("Apparent Modulation Lifetime", "Apparent modulation"),
+            ("Normal Lifetime", "Normal"),
+        ):
+            checkbox = QCheckBox(label)
+            checkbox.setToolTip(
+                f"Draw a {kind} mesh, in ns (needs the frequency)."
+            )
+            self.mapping_mesh_lifetime_checkboxes[kind] = checkbox
+            lifetime_mesh_row.addWidget(checkbox)
+        lifetime_mesh_row.addStretch()
+        lifetime_mesh_container = QWidget()
+        lifetime_mesh_container.setLayout(lifetime_mesh_row)
+        top_form.addRow("Lifetime mesh:", lifetime_mesh_container)
+
         self.mapping_mesh_colormap_combo = self._make_colormap_combo("jet")
         top_form.addRow(
             "Mesh/color colormap:", self.mapping_mesh_colormap_combo
         )
-        self.mapping_mesh_alpha_spin = QDoubleSpinBox()
-        self.mapping_mesh_alpha_spin.setRange(0.05, 1.0)
-        self.mapping_mesh_alpha_spin.setSingleStep(0.05)
-        self.mapping_mesh_alpha_spin.setValue(0.45)
-        top_form.addRow("Mesh alpha:", self.mapping_mesh_alpha_spin)
+        self.mapping_mesh_transparency_spin = QDoubleSpinBox()
+        self.mapping_mesh_transparency_spin.setRange(0.0, 0.95)
+        self.mapping_mesh_transparency_spin.setSingleStep(0.05)
+        self.mapping_mesh_transparency_spin.setValue(0.55)
+        top_form.addRow(
+            "Mesh transparency:", self.mapping_mesh_transparency_spin
+        )
 
         self.mapping_mesh_clip_checkbox = QCheckBox("Clip mesh to semicircle")
         self.mapping_mesh_clip_checkbox.setChecked(False)
@@ -2686,13 +2698,32 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         mod_row.addStretch()
         layout.addLayout(mod_row)
 
+        self.mapping_lifetime_min_spin = QDoubleSpinBox()
+        self.mapping_lifetime_min_spin.setRange(0.0, 1000.0)
+        self.mapping_lifetime_min_spin.setDecimals(2)
+        self.mapping_lifetime_min_spin.setSingleStep(0.1)
+        self.mapping_lifetime_min_spin.setValue(0.0)
+        self.mapping_lifetime_max_spin = QDoubleSpinBox()
+        self.mapping_lifetime_max_spin.setRange(0.0, 1000.0)
+        self.mapping_lifetime_max_spin.setDecimals(2)
+        self.mapping_lifetime_max_spin.setSingleStep(0.1)
+        self.mapping_lifetime_max_spin.setValue(10.0)
+        lifetime_row = QHBoxLayout()
+        lifetime_row.addWidget(QLabel("Lifetime range (ns):"))
+        lifetime_row.addWidget(self.mapping_lifetime_min_spin)
+        lifetime_row.addWidget(QLabel("to"))
+        lifetime_row.addWidget(self.mapping_lifetime_max_spin)
+        lifetime_row.addStretch()
+        layout.addLayout(lifetime_row)
+
         self._on_mapping_range_auto_toggled(True)
 
         note = QLabel(
             "When 'Export phasor plot' is on, one PNG is exported per "
             "selected mesh (and a base plot), coloring points by phase or "
-            "modulation. The phase/modulation ranges restrict which mesh "
-            "cells are shown."
+            "modulation. The phase/modulation/lifetime ranges restrict which "
+            "mesh cells are shown. Lifetime meshes use the frequency above "
+            "times each plot's harmonic."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: gray; font-size: 11px;")
@@ -2706,11 +2737,38 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.mapping_phase_max_spin,
             self.mapping_mod_min_spin,
             self.mapping_mod_max_spin,
+            self.mapping_lifetime_min_spin,
+            self.mapping_lifetime_max_spin,
         ):
             spin.setEnabled(not checked)
 
-    def _resolve_mesh_ranges(self):
-        """Return ``(phase_range, modulation_range)`` for the mapping mesh."""
+    def _checked_lifetime_meshes(self):
+        """Return the lifetime types whose mesh is checked."""
+        return [
+            kind
+            for kind, checkbox in self.mapping_mesh_lifetime_checkboxes.items()
+            if checkbox.isChecked()
+        ]
+
+    def _mapping_mesh_frequency(self):
+        """Return the mapping frequency times its harmonic (MHz), or None."""
+        try:
+            frequency = float(self.mapping_frequency_spin.text())
+        except ValueError:
+            return None
+        if not np.isfinite(frequency) or frequency <= 0:
+            return None
+        return frequency * self.mapping_harmonic_spin.value()
+
+    def _resolve_mesh_ranges(self, lifetime_kinds=()):
+        """Return ``(phase_range, modulation_range, lifetime_ranges)``.
+
+        ``lifetime_ranges`` maps each of *lifetime_kinds* to its ``(min,
+        max)`` range in ns. With Auto on, every range is pooled across all
+        files; a quantity the data gives no range for keeps the manual one.
+        """
+        from .phasor_mapping_tab import lifetime_mesh_range_from_phasors
+
         manual_phase = (
             self.mapping_phase_min_spin.value(),
             self.mapping_phase_max_spin.value(),
@@ -2719,13 +2777,25 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.mapping_mod_min_spin.value(),
             self.mapping_mod_max_spin.value(),
         )
+        manual_lifetime = (
+            self.mapping_lifetime_min_spin.value(),
+            self.mapping_lifetime_max_spin.value(),
+        )
+        lifetime_ranges = dict.fromkeys(lifetime_kinds, manual_lifetime)
         if not self.mapping_range_auto_checkbox.isChecked():
-            return manual_phase, manual_mod
+            return manual_phase, manual_mod, lifetime_ranges
         coords = self._gather_all_phasor_coords(
             self.mapping_harmonic_spin.value()
         )
         if coords is None:
-            return manual_phase, manual_mod
+            return manual_phase, manual_mod, lifetime_ranges
+        frequency = self._mapping_mesh_frequency()
+        if frequency is not None:
+            for kind in lifetime_kinds:
+                lifetime_ranges[kind] = (
+                    lifetime_mesh_range_from_phasors(kind, *coords, frequency)
+                    or manual_lifetime
+                )
         g_flat, s_flat = coords
         with np.errstate(invalid="ignore"):
             phase, modulation = phasor_to_polar(g_flat, s_flat)
@@ -2741,12 +2811,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if modulation.size
             else manual_mod
         )
-        return phase_range, mod_range
+        return phase_range, mod_range, lifetime_ranges
 
     def _auto_mapping_ranges(self):
         """Set the mesh phase/modulation ranges from *all* scanned files."""
-        from napari.utils.notifications import show_warning
-
         harmonic = self.mapping_harmonic_spin.value()
         coords = self._gather_all_phasor_coords(harmonic)
         if coords is None:
@@ -2767,6 +2835,22 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if modulation.size:
             self.mapping_mod_min_spin.setValue(float(np.nanmin(modulation)))
             self.mapping_mod_max_spin.setValue(float(np.nanmax(modulation)))
+
+        # One manual lifetime range serves every checked lifetime mesh, so it
+        # spans all of them.
+        from .phasor_mapping_tab import lifetime_mesh_range_from_phasors
+
+        frequency = self._mapping_mesh_frequency()
+        if frequency is None:
+            return
+        ranges = [
+            lifetime_mesh_range_from_phasors(kind, g_flat, s_flat, frequency)
+            for kind in self._checked_lifetime_meshes()
+        ]
+        ranges = [r for r in ranges if r is not None]
+        if ranges:
+            self.mapping_lifetime_min_spin.setValue(min(r[0] for r in ranges))
+            self.mapping_lifetime_max_spin.setValue(max(r[1] for r in ranges))
 
     def _gather_all_phasor_coords(self, harmonic):
         """Return pooled ``(G, S)`` for ``harmonic`` across every scanned file."""
@@ -3509,12 +3593,14 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         marker_color_button = ColorButton(QColor("#1f77b4"))
         marker_color_button.setToolTip("Color of the scatter markers.")
         scatter_form.addRow("Marker color:", marker_color_button)
-        marker_alpha_spin = QDoubleSpinBox()
-        marker_alpha_spin.setRange(0.01, 1.0)
-        marker_alpha_spin.setSingleStep(0.05)
-        marker_alpha_spin.setValue(0.3)
-        marker_alpha_spin.setToolTip("Opacity of the scatter markers.")
-        scatter_form.addRow("Marker alpha:", marker_alpha_spin)
+        marker_transparency_spin = QDoubleSpinBox()
+        marker_transparency_spin.setRange(0.0, 0.99)
+        marker_transparency_spin.setSingleStep(0.05)
+        marker_transparency_spin.setValue(0.7)
+        marker_transparency_spin.setToolTip(
+            "Transparency of the scatter markers."
+        )
+        scatter_form.addRow("Marker transparency:", marker_transparency_spin)
         form.addRow(scatter_widget)
 
         contour_widget = QWidget()
@@ -3562,7 +3648,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "log": log_checkbox,
             "marker_size": marker_size_spin,
             "marker_color": marker_color_button,
-            "marker_alpha": marker_alpha_spin,
+            "marker_transparency": marker_transparency_spin,
             "scatter_widget": scatter_widget,
             "contour_widget": contour_widget,
             "levels": levels_spin,
@@ -3661,10 +3747,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         dialog = HistogramSettingsDialog(
             display_mode=self._group_config.get("mode", "Merged"),
             show_sd=self._group_config.get("show_sd", True),
+            normalize=self._group_config.get("normalize", False),
             central_tendency=self._group_config.get(
                 "central_tendency", "None"
             ),
             show_legend=self._group_config.get("show_legend", True),
+            log_scale=self._group_config.get("log_scale", False),
+            bins=self._group_config.get("bins", 150),
             layer_labels=names,
             group_assignments=self._group_config.get("assignments", {}),
             layer_colors=self._group_config.get("layer_colors", {}),
@@ -3688,12 +3777,15 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     "group_colors": dialog.get_group_colors(),
                     "layer_colors": dialog.get_layer_colors(),
                     "show_sd": dialog.sd_checkbox.isChecked(),
+                    "normalize": dialog.normalize_checkbox.isChecked(),
                     "central_tendency": (
                         dialog.central_tendency_combo.currentText()
                     ),
                     "show_legend": dialog.legend_checkbox.isChecked(),
                     "white_background": dialog.white_bg_checkbox.isChecked(),
                     "smooth_curves": dialog.smooth_checkbox.isChecked(),
+                    "log_scale": dialog.log_scale_checkbox.isChecked(),
+                    "bins": dialog.bins_spinbox.value(),
                 }
             )
 
@@ -3730,8 +3822,36 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 }
             )
 
+    def _warn_unassigned_files(self, files):
+        """Warn about files left out of every group before a grouped run.
+
+        In *Grouped* mode a file with no assignment (typically one added to
+        the folder after the groups were configured) takes part in no
+        combined output, so name it instead of dropping it quietly.
+        """
+        if self._group_config.get("mode") != "Grouped":
+            return
+        # An empty ``assignments`` in Grouped mode means nothing is grouped
+        # at all, which is exactly the case worth warning about.
+        assignments = self._group_config.get("assignments", {})
+        missing = [
+            os.path.basename(f)
+            for f in files
+            if os.path.basename(f) not in assignments
+        ]
+        if missing:
+            show_warning(
+                "Not assigned to any group, excluded from the combined "
+                "outputs: " + ", ".join(missing)
+            )
+
     def _group_for(self, filename):
-        """Return ``(group_id, group_name, color)`` for ``filename``."""
+        """Return ``(group_id, group_name, color)`` for ``filename``.
+
+        In *Grouped* mode a file the user did not assign to any group has no
+        group at all: ``(None, None, None)`` is returned so callers leave it
+        out of the combined outputs instead of folding it into group 1.
+        """
         config = self._group_config
         mode = config.get("mode", "Merged")
         if mode == "Merged":
@@ -3739,7 +3859,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if mode == "Individual layers":
             color = config.get("layer_colors", {}).get(filename, None)
             return (filename, filename, color)
-        gid = config.get("assignments", {}).get(filename, 1)
+        gid = config.get("assignments", {}).get(filename)
+        if gid is None:
+            return (None, None, None)
         name = config.get("group_names", {}).get(gid, f"Group {gid}")
         color = config.get("group_colors", {}).get(
             gid, DEFAULT_CURSOR_COLORS[(gid - 1) % len(DEFAULT_CURSOR_COLORS)]
@@ -4031,12 +4153,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         width_spin.setValue(style["line_width"])
         form.addRow("Line width:", width_spin)
 
-        alpha_spin = QDoubleSpinBox()
-        alpha_spin.setRange(0.0, 1.0)
-        alpha_spin.setSingleStep(0.05)
-        alpha_spin.setDecimals(2)
-        alpha_spin.setValue(style["line_alpha"])
-        form.addRow("Line alpha:", alpha_spin)
+        line_transp_spin = QDoubleSpinBox()
+        line_transp_spin.setRange(0.0, 1.0)
+        line_transp_spin.setSingleStep(0.05)
+        line_transp_spin.setDecimals(2)
+        line_transp_spin.setValue(1.0 - style["line_alpha"])
+        form.addRow("Line transparency:", line_transp_spin)
 
         gamma_spin = QDoubleSpinBox()
         gamma_spin.setRange(0.01, 10.0)
@@ -4108,7 +4230,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "show_component_dots": dots_cb.isChecked(),
                 "line_offset": offset_spin.value(),
                 "line_width": width_spin.value(),
-                "line_alpha": alpha_spin.value(),
+                "line_alpha": 1.0 - line_transp_spin.value(),
                 "colormap_gamma": gamma_spin.value(),
                 "default_component_color": color_button.color().name(),
                 "show_fraction_histogram": hist_cb.isChecked(),
@@ -4624,8 +4746,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 int(k): v for k, v in stored.get("group_colors", {}).items()
             },
             "show_sd": stored.get("show_sd", True),
+            "normalize": stored.get("normalize", False),
             "central_tendency": stored.get("central_tendency", "None"),
             "show_legend": stored.get("show_legend", True),
+            "log_scale": stored.get("log_scale", False),
+            "bins": int(stored.get("bins") or 150),
         }
 
     def _apply_filter_settings_to_ui(self, settings):
@@ -4790,7 +4915,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             meshes.append("Phase")
         if self.mapping_mesh_mod_checkbox.isChecked():
             meshes.append("Modulation")
-        phase_range, mod_range = self._resolve_mesh_ranges()
+        lifetime_meshes = self._checked_lifetime_meshes()
+        meshes.extend(lifetime_meshes)
+        phase_range, mod_range, lifetime_ranges = self._resolve_mesh_ranges(
+            lifetime_meshes
+        )
         return {
             "output_types": output_types,
             "frequency": float(self.mapping_frequency_spin.text() or 0.0),
@@ -4800,9 +4929,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "color_by": self.mapping_color_by_combo.currentText(),
             "meshes": meshes,
             "mesh_colormap": self.mapping_mesh_colormap_combo.currentText(),
-            "mesh_alpha": self.mapping_mesh_alpha_spin.value(),
+            "mesh_alpha": 1.0 - self.mapping_mesh_transparency_spin.value(),
             "mesh_phase_range": phase_range,
             "mesh_modulation_range": mod_range,
+            "mesh_lifetime_ranges": lifetime_ranges,
             "mesh_clip_semicircle": (
                 self.mapping_mesh_clip_checkbox.isChecked()
             ),
@@ -5058,6 +5188,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if not self._export_folder:
             show_error("Select an export folder.")
             return
+        self._warn_unassigned_files(files)
 
         output_types = []
         if self.export_ometiff_checkbox.isChecked():
@@ -5192,7 +5323,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         suffix = self.suffix_edit.text()
         preserve = self.preserve_paths_checkbox.isChecked()
         load_into_viewer = self.load_into_viewer_checkbox.isChecked()
-        workers = self.threads_spin.value()
+        # The batch tab has its own worker spinbox, but the plugin-wide
+        # "Parallel images" switch outranks it: a batch fans out over whole
+        # files, so turning that scope off has to mean off everywhere, not
+        # everywhere except here.
+        workers = default_workers(len(files), self.threads_spin.value())
         masks_enabled = self.masks_group.isChecked()
         self._auto_tabs = self._auto_contrast_tabs()
         self._global_contrast = {}
@@ -5262,29 +5397,31 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             QApplication.processEvents()
 
-        if workers > 1 and len(files) > 1:
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = [
-                    (path, executor.submit(read_compute, path))
-                    for path in files
-                ]
-                for index, (path, future) in enumerate(futures):
-                    try:
-                        emit(path, future.result())
-                        processed += 1
-                    except Exception as exc:  # noqa: BLE001
-                        failed.append((os.path.basename(path), str(exc)))
-                    update_progress(index)
-        else:
-            for index, path in enumerate(files):
+        # Files are read and computed in a pool while ``emit`` runs here, in
+        # file order, as each result arrives. ``parallel_stream`` -- rather
+        # than ``parallel_map`` -- because a batch is exactly the case where
+        # holding every result is fatal: submitting all of a 500-file run at
+        # once lets every decoded file pile up whenever the workers outrun
+        # ``emit``, which they do as soon as anything is written to disk.
+        for index, path, result in parallel_stream(
+            read_compute,
+            files,
+            workers=workers,
+            max_in_flight=_batch_files_in_flight(files, workers),
+            on_error="collect",
+        ):
+            if isinstance(result, BaseException):
+                failed.append((os.path.basename(path), str(result)))
+            else:
                 try:
-                    emit(path, read_compute(path))
+                    emit(path, result)
                     processed += 1
                 except Exception as exc:  # noqa: BLE001
                     failed.append((os.path.basename(path), str(exc)))
-                update_progress(index)
+                # Release the arrays before waiting on the next file, so the
+                # in-flight bound above actually bounds resident memory.
+                del result
+            update_progress(index)
 
         try:
             self._flush_deferred_exports()
@@ -5786,6 +5923,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             and (job["stats"] or job["histogram"])
             and aggregate is not None
             and group is not None
+            # A file assigned to no group joins no combined output.
+            and group[0] is not None
         ):
             key, gname, gcolor = group
             aggregate["group_meta"][key] = (gname, gcolor)
@@ -5834,13 +5973,14 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             _save_histogram_png(
                 valid,
-                100,
+                self._group_config.get("bins", 150),
                 f"{png_base}_{safe_label}_histogram.png",
                 label,
                 colormap_colors=cmap_colors,
                 contrast_limits=value_range,
                 value_range=value_range,
                 dpi=self._export_dpi(),
+                log_scale=self._group_config.get("log_scale", False),
             )
         if "csv" in hist_formats:
             csv_base = self._derive_output_path(
@@ -5857,7 +5997,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             _save_histogram_csv(
                 valid,
-                100,
+                self._group_config.get("bins", 150),
                 f"{csv_base}_{safe_label}_histogram.csv",
                 value_range=value_range,
             )
@@ -6099,10 +6239,16 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 )
 
     def _accumulate_phasor_aggregate(self, layer, aggregate, group):
-        """Accumulate per-group phasor data for combined plots."""
+        """Accumulate per-group phasor data for combined plots.
+
+        A file assigned to no group is skipped rather than pooled into the
+        first group.
+        """
         if not (aggregate["contour"] or aggregate["centers"]):
             return
         key, group_name, group_color = group
+        if key is None:
+            return  # not assigned to any group
         aggregate["group_meta"][key] = (group_name, group_color)
         harmonics = np.atleast_1d(layer.metadata.get("harmonics"))
         mean = layer.metadata.get("original_mean")
@@ -6167,6 +6313,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         aggregate["tab_phasor_overlay"].setdefault(suffix, job["overlay"])
         aggregate["tab_phasor_subfolder"].setdefault(suffix, subfolder)
         key, group_name, group_color = group
+        if key is None:
+            return  # not assigned to any group
         aggregate["group_meta"][key] = (group_name, group_color)
         harmonics = np.atleast_1d(layer.metadata.get("harmonics"))
         for harmonic in harmonics:
@@ -6223,6 +6371,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             for harmonic, key, real, imag in self._tab_phasor_arrays(
                 aggregate, suffix, streaming
             ):
+                # Idempotent: only re-stamps the plotted harmonic.
+                overlay = _overlay_for_harmonic(overlay, harmonic)
                 multi = len(harmonic_keys.get(harmonic, [])) > 1
                 if multi:
                     name = group_meta.get(key, (str(key), None))[0]
@@ -6259,6 +6409,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                         dpi=self._export_dpi(),
                     )
             for harmonic, group_items in grouped_by_harmonic.items():
+                overlay = _overlay_for_harmonic(overlay, harmonic)
                 all_path = os.path.join(
                     target_dir, f"combined_{suffix}_all_groups_H{harmonic}.png"
                 )
@@ -6584,7 +6735,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "contour_linewidth": controls["linewidth"].value(),
             "marker_size": controls["marker_size"].value(),
             "marker_color": controls["marker_color"].color().name(),
-            "marker_alpha": controls["marker_alpha"].value(),
+            "marker_alpha": 1.0 - controls["marker_transparency"].value(),
             "show_center": self.plot_center_checkbox.isChecked(),
             "center_color": self.plot_center_color.color().name(),
             "frequency": float(self.plot_frequency_spin.text() or 0.0),
@@ -6673,7 +6824,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "mesh_alpha": mapping.get("mesh_alpha", 0.45),
             "mesh_phase_range": mapping.get("mesh_phase_range"),
             "mesh_modulation_range": mapping.get("mesh_modulation_range"),
+            "mesh_lifetime_ranges": mapping.get("mesh_lifetime_ranges") or {},
             "mesh_clip_semicircle": mapping.get("mesh_clip_semicircle"),
+            # Lifetime meshes: the plots rescale ``mesh_harmonic`` to their
+            # own harmonic (see ``_overlay_for_harmonic``).
+            "mesh_frequency": mapping.get("frequency"),
+            "mesh_harmonic": mapping.get("harmonic", 1),
         }
         jobs = [
             {
@@ -6682,12 +6838,16 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "overlay": base_overlay,
             }
         ]
+        has_frequency = (mapping.get("frequency") or 0) > 0
         for mesh in mapping.get("meshes", []):
+            if mesh in LIFETIME_OUTPUT_TYPES and not has_frequency:
+                continue
             overlay = dict(base_overlay)
             overlay["mesh"] = mesh
+            slug = mesh.lower().replace(" ", "_")
             jobs.append(
                 {
-                    "suffix": f"mapping_phasor_{mesh.lower()}_mesh",
+                    "suffix": f"mapping_phasor_{slug}_mesh",
                     "tab": "phasor_mapping",
                     "overlay": overlay,
                 }
@@ -6709,7 +6869,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 _, center_real, center_imag = phasor_center(mean, real, imag)
                 center = (float(center_real), float(center_imag))
             plot_overlay = self._components_overlay_with_fraction_data(
-                overlay, real, imag
+                _overlay_for_harmonic(overlay, harmonic), real, imag
             )
             _save_phasor_plot_png(
                 real,
@@ -6793,6 +6953,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             group_key, group_name, group_color = self._group_for(
                 os.path.basename(path)
             )
+            if group_key is None:
+                return  # not assigned to any group
             entry = self._signal_combined.setdefault(
                 group_key,
                 {"name": group_name, "color": group_color, "channels": {}},
@@ -7258,17 +7420,7 @@ def _save_phasor_plot_png(
 
     # Optional phase/modulation mesh field behind the data.
     if mapping_overlay and mapping_overlay.get("mesh"):
-        _draw_phase_modulation_mesh(
-            plot,
-            mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "jet",
-            mapping_overlay.get("mesh_alpha", 0.45),
-            display.get("semi_circle", True),
-            phase_range=mapping_overlay.get("mesh_phase_range"),
-            modulation_range=mapping_overlay.get("mesh_modulation_range"),
-            clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
-            dpi=dpi,
-        )
+        _draw_mapping_overlay_mesh(plot, mapping_overlay, display, dpi)
 
     plot_type = display.get("plot_type", "Histogram")
 
@@ -7316,6 +7468,7 @@ def _save_phasor_plot_png(
                 fmt="o",
                 markersize=display.get("marker_size", 5),
                 color=display.get("marker_color") or None,
+                markeredgewidth=0,
                 alpha=display.get("marker_alpha", 0.3),
                 zorder=5,
             )
@@ -7419,14 +7572,17 @@ def _draw_phase_modulation_mesh(
     modulation_range=None,
     clip_semicircle=None,
     dpi=300,
+    frequency=None,
+    lifetime_range=None,
 ):
-    """Draw a phase or modulation colored field behind the phasor data.
+    """Draw a phase, modulation or lifetime colored field behind the data.
 
     Delegates to :func:`napari_phasors.phasor_mapping_tab.draw_phasor_mesh` so
     the exported mesh matches the interactive Phasor Mapping tab exactly
     (smoothed alpha edges, correct color scaling and a 1:1 data aspect). The
-    optional phase/modulation ranges restrict which cells are shown, mirroring
-    the interactive range sliders. ``clip_semicircle`` defaults to the plot
+    optional phase/modulation/lifetime ranges restrict which cells are shown,
+    mirroring the interactive range sliders; a lifetime ``kind`` needs the
+    effective ``frequency`` (MHz). ``clip_semicircle`` defaults to the plot
     geometry (clip in semicircle mode).
     """
     from .phasor_mapping_tab import draw_phasor_mesh
@@ -7444,6 +7600,58 @@ def _draw_phase_modulation_mesh(
         modulation_range=modulation_range,
         clip_semicircle=clip_semicircle,
         resolution=1000,
+        frequency=frequency,
+        lifetime_range=lifetime_range,
+    )
+
+
+def _overlay_for_harmonic(overlay, harmonic):
+    """Return *overlay* set up for a phasor plot of *harmonic*.
+
+    A lifetime mesh depends on the frequency, and a plot of harmonic ``n``
+    shows lifetimes at ``n`` times the laser frequency.
+    """
+    if not overlay or overlay.get("kind") != "mapping":
+        return overlay
+    return {**overlay, "mesh_harmonic": int(harmonic)}
+
+
+def _draw_mapping_overlay_mesh(plot, mapping_overlay, display, dpi):
+    """Draw the mesh a mapping overlay asks for behind the phasor data.
+
+    A lifetime mesh is drawn at ``mesh_frequency`` times ``mesh_harmonic``
+    and restricted by its lifetime range alone; without a frequency it is
+    skipped.
+    """
+    from .phasor_mapping_tab import lifetime_mesh_upper_bound
+
+    kind = mapping_overlay["mesh"]
+    phase_range = mapping_overlay.get("mesh_phase_range")
+    modulation_range = mapping_overlay.get("mesh_modulation_range")
+    frequency = lifetime_range = None
+    if kind in LIFETIME_OUTPUT_TYPES:
+        base_frequency = mapping_overlay.get("mesh_frequency") or 0
+        if base_frequency <= 0:
+            return
+        frequency = base_frequency * (
+            mapping_overlay.get("mesh_harmonic") or 1
+        )
+        lifetime_range = (
+            mapping_overlay.get("mesh_lifetime_ranges") or {}
+        ).get(kind) or (0.0, lifetime_mesh_upper_bound(frequency))
+        phase_range = modulation_range = None
+    _draw_phase_modulation_mesh(
+        plot,
+        kind,
+        mapping_overlay.get("mesh_colormap") or "jet",
+        mapping_overlay.get("mesh_alpha", 0.45),
+        display.get("semi_circle", True),
+        phase_range=phase_range,
+        modulation_range=modulation_range,
+        clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
+        dpi=dpi,
+        frequency=frequency,
+        lifetime_range=lifetime_range,
     )
 
 
@@ -7604,6 +7812,8 @@ def _color_plot_by_metric(
             vmax=vmax,
             s=display.get("marker_size", 5),
             alpha=display.get("marker_alpha", 0.6),
+            edgecolors="none",
+            linewidths=0,
             zorder=5,
         )
         return
@@ -7732,17 +7942,7 @@ def _save_grouped_overlay_plot(
         overlay if overlay and overlay.get("kind") == "mapping" else None
     )
     if mapping_overlay and mapping_overlay.get("mesh"):
-        _draw_phase_modulation_mesh(
-            plot,
-            mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "jet",
-            mapping_overlay.get("mesh_alpha", 0.45),
-            display.get("semi_circle", True),
-            phase_range=mapping_overlay.get("mesh_phase_range"),
-            modulation_range=mapping_overlay.get("mesh_modulation_range"),
-            clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
-            dpi=dpi,
-        )
+        _draw_mapping_overlay_mesh(plot, mapping_overlay, display, dpi)
 
     marker_size = display.get("marker_size", 5)
     alpha = display.get("marker_alpha", 0.3)
@@ -7758,7 +7958,14 @@ def _save_grouped_overlay_plot(
         name = group_meta.get(key, (str(key), None))[0]
         color = colors.get(key)
         plot.ax.scatter(
-            real, imag, s=marker_size, color=color, alpha=alpha, zorder=5
+            real,
+            imag,
+            s=marker_size,
+            color=color,
+            alpha=alpha,
+            edgecolors="none",
+            linewidths=0,
+            zorder=5,
         )
         handles.append(
             Line2D([0], [0], marker="o", linestyle="", color=color, label=name)
@@ -7821,17 +8028,7 @@ def _save_combined_contour(
         overlay if overlay and overlay.get("kind") == "mapping" else None
     )
     if mapping_overlay and mapping_overlay.get("mesh"):
-        _draw_phase_modulation_mesh(
-            plot,
-            mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "jet",
-            mapping_overlay.get("mesh_alpha", 0.45),
-            display.get("semi_circle", True),
-            phase_range=mapping_overlay.get("mesh_phase_range"),
-            modulation_range=mapping_overlay.get("mesh_modulation_range"),
-            clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
-            dpi=dpi,
-        )
+        _draw_mapping_overlay_mesh(plot, mapping_overlay, display, dpi)
 
     handles = []
     centers = centers or {}
@@ -7975,8 +8172,11 @@ def _new_export_histogram(config, label):
     hw = HistogramWidget()
     hw.white_background = config.get("white_background", False)
     hw._smooth_curves = config.get("smooth_curves", True)
+    hw._normalize = config.get("normalize", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)
+    hw._log_scale = config.get("log_scale", False)
+    hw.bins = int(config.get("bins") or hw.bins)
     hw.xlabel = label
     return hw
 
@@ -7993,6 +8193,44 @@ def _save_export_histogram(hw, path, dpi=300):
         transparent=use_transparent,
         facecolor='white' if hw._white_background else 'none',
     )
+
+
+def _batch_files_in_flight(files, workers):
+    """Return how many batch files may be decoded but not yet written out.
+
+    Two bounds, whichever is tighter. The first is structural: twice the
+    worker count keeps every worker fed while ``emit`` writes the previous
+    file, and nothing is gained by queueing more. The second is the memory
+    budget -- on a machine whose free RAM cannot hold even that many decoded
+    files, in-flight work has to come down further.
+
+    The on-disk size of the largest input stands in for a decoded file. It
+    is a floor rather than an estimate: a compressed FLIM file expands
+    several-fold once it is a float phasor set. It is used only to notice
+    that free memory is small relative to the inputs, which is the case that
+    matters.
+
+    Parameters
+    ----------
+    files : sequence of str
+        The batch's input paths.
+    workers : int
+        Resolved worker count for this run.
+
+    Returns
+    -------
+    int
+        At least ``1``.
+    """
+    structural = max(1, 2 * int(workers))
+    largest = 0
+    for path in files:
+        with contextlib.suppress(OSError):
+            largest = max(largest, os.path.getsize(path))
+    affordable = items_for_memory(largest)
+    if affordable is None:
+        return structural
+    return max(1, min(structural, affordable))
 
 
 class _SpillStore:
@@ -8064,11 +8302,13 @@ def _save_histogram_png(
     contrast_limits=None,
     value_range=None,
     dpi=300,
+    log_scale=False,
 ):
     """Save a histogram of ``values`` to ``path`` (matplotlib, no GUI).
 
     ``value_range`` (``(min, max)``) bounds the histogram to the chosen range
-    limits so the image and histogram share the same range.
+    limits so the image and histogram share the same range. ``log_scale``
+    draws the y axis logarithmically, as the Histogram Settings option does.
     """
     valid = np.asarray(values)[np.isfinite(values)]
     if value_range is not None and valid.size:
@@ -8077,9 +8317,10 @@ def _save_histogram_png(
     if not valid.size:
         return
 
-    hw = HistogramWidget()
+    hw = HistogramWidget(bins=int(bins))
     hw.display_mode = "Merged"
     hw.white_background = False
+    hw._log_scale = bool(log_scale)
     hw.xlabel = metric
     if colormap_colors is not None or contrast_limits is not None:
         hw.update_colormap(colormap_colors, contrast_limits)
@@ -8146,8 +8387,11 @@ def _store_plot_settings(layer, plot_settings, group_config=None):
                 for k, v in group_config.get("group_colors", {}).items()
             },
             "show_sd": group_config.get("show_sd"),
+            "normalize": group_config.get("normalize"),
             "central_tendency": group_config.get("central_tendency"),
             "show_legend": group_config.get("show_legend"),
+            "log_scale": group_config.get("log_scale", False),
+            "bins": group_config.get("bins", 150),
         }
 
 

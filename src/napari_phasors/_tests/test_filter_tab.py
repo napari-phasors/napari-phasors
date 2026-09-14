@@ -22,6 +22,16 @@ from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
 
 
+def _applied_pairs(mock_apply):
+    """Return the ``(layer, params)`` pairs handed to the filtering helper.
+
+    ``apply_filter_and_threshold_to_layers`` takes one list of pairs rather
+    than being called once per layer, so tests unpack that list instead of
+    reading per-call keyword arguments.
+    """
+    return mock_apply.call_args[0][0]
+
+
 def test_filter_widget_initialization_values(make_viewer_model, qtbot):
     """Test the initialization of the Filter Widget."""
     viewer = make_viewer_model()
@@ -335,20 +345,21 @@ def test_apply_button_with_wavelet_filter(make_viewer_model, qtbot):
 
     with (
         patch(
-            'napari_phasors.filter_tab.apply_filter_and_threshold'
+            'napari_phasors.filter_tab.apply_filter_and_threshold_to_layers'
         ) as mock_apply,
         patch.object(parent, 'plot') as mock_plot,
     ):
+        mock_apply.side_effect = lambda pairs, **kwargs: [None] * len(pairs)
         filter_widget.apply_button_clicked()
 
         mock_apply.assert_called_once()
-        call_args = mock_apply.call_args
+        layer, params = _applied_pairs(mock_apply)[0]
 
-        assert call_args[0][0] == intensity_image_layer
-        assert call_args[1]['filter_method'] == 'wavelet'
-        assert call_args[1]['sigma'] == 1.5
-        assert call_args[1]['levels'] == 2
-        assert 'harmonics' in call_args[1]
+        assert layer == intensity_image_layer
+        assert params['filter_method'] == 'wavelet'
+        assert params['sigma'] == 1.5
+        assert params['levels'] == 2
+        assert 'harmonics' in params
 
         mock_plot.assert_called_once()
 
@@ -370,19 +381,20 @@ def test_apply_button_with_median_filter(make_viewer_model, qtbot):
 
     with (
         patch(
-            'napari_phasors.filter_tab.apply_filter_and_threshold'
+            'napari_phasors.filter_tab.apply_filter_and_threshold_to_layers'
         ) as mock_apply,
         patch.object(parent, 'plot'),
     ):
+        mock_apply.side_effect = lambda pairs, **kwargs: [None] * len(pairs)
         filter_widget.apply_button_clicked()
 
         mock_apply.assert_called_once()
-        call_args = mock_apply.call_args
+        layer, params = _applied_pairs(mock_apply)[0]
 
-        assert call_args[0][0] == intensity_image_layer
-        assert call_args[1]['filter_method'] == 'median'
-        assert call_args[1]['size'] == 5
-        assert call_args[1]['repeat'] == 2
+        assert layer == intensity_image_layer
+        assert params['filter_method'] == 'median'
+        assert params['size'] == 5
+        assert params['repeat'] == 2
 
 
 def test_threshold_method_storage_in_metadata(make_viewer_model, qtbot):
@@ -396,16 +408,17 @@ def test_threshold_method_storage_in_metadata(make_viewer_model, qtbot):
     filter_widget.threshold_method_combobox.setCurrentText("Li")
 
     with patch(
-        'napari_phasors.filter_tab.apply_filter_and_threshold'
+        'napari_phasors.filter_tab.apply_filter_and_threshold_to_layers'
     ) as mock_apply:
+        mock_apply.side_effect = lambda pairs, **kwargs: [None] * len(pairs)
         filter_widget.apply_button_clicked()
 
-        # Check that apply_filter_and_threshold was called with correct parameters
+        # Check that the filtering helper got the correct parameters
         mock_apply.assert_called_once()
-        call_args = mock_apply.call_args
+        _, params = _applied_pairs(mock_apply)[0]
 
-        # Verify threshold_method was passed to the function
-        assert call_args[1]['threshold_method'] == "Li"
+        # Verify threshold_method was passed through
+        assert params['threshold_method'] == "Li"
 
 
 def test_calculate_automatic_threshold(make_viewer_model, qtbot):
@@ -645,7 +658,9 @@ def test_no_plot_called_if_combobox_empty(make_viewer_model, qtbot):
     filter_widget = parent.filter_tab
 
     with patch.object(parent, 'plot') as mock_plot:
-        with patch('napari_phasors.filter_tab.apply_filter_and_threshold'):
+        with patch(
+            'napari_phasors.filter_tab.apply_filter_and_threshold_to_layers'
+        ):
             filter_widget.apply_button.click()
         mock_plot.assert_not_called()
 
@@ -1322,22 +1337,24 @@ def test_apply_stores_none_for_unconstrained_bounds(make_viewer_model, qtbot):
     fw.threshold_method_combobox.setCurrentText("Manual")
 
     with patch(
-        'napari_phasors.filter_tab.apply_filter_and_threshold'
+        'napari_phasors.filter_tab.apply_filter_and_threshold_to_layers'
     ) as mock_apply:
+        mock_apply.side_effect = lambda pairs, **kwargs: [None] * len(pairs)
         fw.apply_button_clicked()
-        call_kwargs = mock_apply.call_args[1]
-        assert call_kwargs['threshold'] is None
-        assert call_kwargs['threshold_upper'] is None
+        _, params = _applied_pairs(mock_apply)[0]
+        assert params['threshold'] is None
+        assert params['threshold_upper'] is None
 
     # A constrained max should still be persisted as a concrete value.
     upper = fw.threshold_slider.maximum() - 1
     fw.threshold_slider.setValue((fw.threshold_slider.minimum(), upper))
     with patch(
-        'napari_phasors.filter_tab.apply_filter_and_threshold'
+        'napari_phasors.filter_tab.apply_filter_and_threshold_to_layers'
     ) as mock_apply:
+        mock_apply.side_effect = lambda pairs, **kwargs: [None] * len(pairs)
         fw.apply_button_clicked()
-        call_kwargs = mock_apply.call_args[1]
-        assert call_kwargs['threshold_upper'] == upper / fw.threshold_factor
+        _, params = _applied_pairs(mock_apply)[0]
+        assert params['threshold_upper'] == upper / fw.threshold_factor
 
 
 def test_unconstrained_upper_sits_at_slider_maximum(make_viewer_model, qtbot):
@@ -1428,3 +1445,137 @@ def test_histogram_cleared_when_no_layer_selected(make_viewer_model, qtbot):
 
     assert fw._histogram_data is None
     assert len(fw.hist_ax.patches) == 0
+
+
+def test_apply_button_reports_layers_that_failed(make_viewer_model, qtbot):
+    """A layer whose filtering raised is named in a single grouped error."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.name = "bad_layer"
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    errors = []
+    with (
+        patch(
+            'napari_phasors.filter_tab.apply_filter_and_threshold_to_layers'
+        ) as mock_apply,
+        patch('napari_phasors.filter_tab.show_error', errors.append),
+        patch.object(parent, 'plot'),
+    ):
+        mock_apply.side_effect = lambda pairs, **kwargs: [
+            RuntimeError("kernel exploded") for _ in pairs
+        ]
+        filter_widget.apply_button_clicked()
+
+    assert len(errors) == 1
+    assert "Could not filter 1 layer(s)" in errors[0]
+    assert "bad_layer" in errors[0]
+    assert "kernel exploded" in errors[0]
+
+
+def test_apply_filter_to_no_layers_is_a_no_op():
+    """An empty batch returns an empty result rather than starting a pool."""
+    from napari_phasors._utils import apply_filter_and_threshold_to_layers
+
+    assert apply_filter_and_threshold_to_layers([]) == []
+
+
+def test_lower_threshold_below_masked_range_is_kept(make_viewer_model, qtbot):
+    """A lower threshold under the masked minimum survives re-applying.
+
+    Regression: masking raised the slider minimum, the restored handle was
+    clamped to it, and applying then stored ``None`` — silently discarding the
+    user's lower threshold once the mask was removed again.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+
+    om = layer.metadata["original_mean"]
+    # A threshold between the full-data minimum and the masked minimum.
+    bright = om >= np.nanpercentile(om, 70)
+    lower = float(np.nanpercentile(om, 40))
+    fw.threshold_method_combobox.setCurrentText("Manual")
+    fw.min_threshold_edit.setText(f"{lower:.2f}")
+    fw.on_min_threshold_edit_changed()
+    fw.apply_button_clicked()
+    stored = layer.metadata["settings"]["threshold"]
+    assert stored is not None
+    assert stored < om[bright].min()
+
+    # Mask in only the bright pixels, then re-apply as the mask handlers do.
+    layer.metadata["mask"] = bright.astype(int)
+    fw._on_image_layer_changed()
+    assert fw._offscreen_threshold_lower == stored
+    fw.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold"] == stored
+
+    # Moving the handle yourself supersedes the remembered value.
+    fw.threshold_slider.setValue(
+        (fw.threshold_slider.minimum(), fw.threshold_slider.maximum())
+    )
+    assert fw._offscreen_threshold_lower is None
+    fw.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold"] is None
+
+
+def test_upper_threshold_above_masked_range_is_kept(make_viewer_model, qtbot):
+    """The upper bound gets the same treatment as the lower one.
+
+    A mask that removes the brightest pixels lowers the slider maximum; the
+    restored upper handle then sits at the extreme, which otherwise reads as
+    "no limit" and would drop the user's upper threshold on the next apply.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+
+    om = layer.metadata["original_mean"]
+    # Keep only the dimmest pixels, so the slider maximum drops well below
+    # the upper threshold the user set on the full image.
+    dim = om <= np.nanpercentile(om, 30)
+    upper = float(np.nanpercentile(om, 85))
+    fw.threshold_method_combobox.setCurrentText("Manual")
+    # A lower bound too, since the two are restored together.
+    fw.min_threshold_edit.setText("0.01")
+    fw.on_min_threshold_edit_changed()
+    fw.max_threshold_edit.setText(f"{upper:.2f}")
+    fw.on_max_threshold_edit_changed()
+    fw.apply_button_clicked()
+    stored = layer.metadata["settings"]["threshold_upper"]
+    assert stored is not None
+    assert stored > om[dim].max()
+
+    layer.metadata["mask"] = dim.astype(int)
+    fw._on_image_layer_changed()
+    assert fw._offscreen_threshold_upper == stored
+    fw.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold_upper"] == stored
+
+
+def test_layer_without_settings_clears_the_remembered_thresholds(
+    make_viewer_model, qtbot
+):
+    """A layer that carries no settings starts from an unconstrained slider."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._offscreen_threshold_lower = 1.0
+    fw._offscreen_threshold_upper = 2.0
+
+    del layer.metadata["settings"]
+    fw._on_image_layer_changed()
+
+    assert fw._offscreen_threshold_lower is None
+    assert fw._offscreen_threshold_upper is None
+    assert fw.threshold_method_combobox.currentText() == "None"

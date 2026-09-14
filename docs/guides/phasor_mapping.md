@@ -40,8 +40,8 @@ from the calibration tab when calibration is applied).
 
 These modes derive the polar coordinates of the phasor directly with no
 frequency input required.  A **Colormap** drop-down lets you choose the
-colormap for the output layer; the default colormap for Phase is *jet* and
-for Modulation is *viridis*.
+colormap for the output layer; the default colormap for Phase is *cool* and
+for Modulation is *PiYG*.
 
 An optional **Apply colormap to 2D Histogram** checkbox, when enabled,
 colors the phasor 2D histogram according to the phase or modulation value of
@@ -51,6 +51,79 @@ phasor plot and the image.
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phase%20modulation.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phase%20modulation.mp4" type="video/mp4">
 </video>
+
+## Mesh overlay
+
+The **Mesh overlay** section draws a colored mesh of the selected quantity
+behind the phasor data. It works in every mode, so you can read off a value
+anywhere on the plot and compare it with the image colors. Turn it on with
+**Show mesh overlay**. The controls that follow are:
+
+| Control | Purpose |
+|---|---|
+| **Transparency** | Transparency of the mesh. |
+| **Clip mesh to semicircle** | Only shows the mesh inside the universal semicircle (semicircle plot geometry only). |
+| **Show colorbar** | Adds a colorbar for the mesh next to the phasor plot. |
+| **Phase range (rad)** / **Modulation range** | *Phase and Modulation modes.* Restrict the mesh to a band of phase angles and/or modulations. |
+| **Lifetime range (ns)** | *Lifetime mode.* Restricts the mesh to a band of lifetimes of the selected lifetime type. |
+
+**Auto** fits a range to the plotted data. Each range is stored with the
+layer. In Lifetime mode every lifetime type keeps its own range.
+
+In Lifetime mode the mesh follows the selected lifetime type and needs the
+**Frequency (MHz)**. It uses the displayed harmonic, just like the output map.
+Lines of constant lifetime are:
+
+- **Apparent Phase Lifetime**: rays from the origin (0, 0). This is the phase
+  mesh in nanoseconds, so a lifetime range draws a wedge.
+- **Apparent Modulation Lifetime**: circles centered on the origin. This is
+  the modulation mesh in nanoseconds, so a lifetime range draws a ring.
+- **Normal Lifetime**: rays from the semicircle center (0.5, 0). Each ray
+  meets the universal semicircle at the single-exponential lifetime it stands
+  for, so a lifetime range draws a wedge centered at (0.5, 0).
+
+## Filtering by lifetime, phase or modulation
+
+The **Filter** section works the way the **Filter** tab's intensity threshold
+does, but on the quantities computed here: pixels whose value falls outside a
+range you choose lose their phasor coordinates (they are set to NaN) and
+disappear from the phasor plot, the output maps, the histogram and the
+statistics table at the same time.
+
+Each criterion is a **card**. Click **+ Add filter**, below the list, to create
+one on the quantity currently displayed. The quantity is chosen on the card
+itself and does not have to match the display, so you can filter by lifetime
+while looking at modulation. A card carries:
+
+| Control | Purpose |
+|---|---|
+| Check box | Switch the filter off without deleting it. The pixels it hid come straight back. |
+| Quantity drop-down | The lifetime, phase or modulation the filter tests. Changing it restarts the range at that quantity's full data span. |
+| **Keep** / **Exclude** | Keep only what is inside the range, or remove what is inside it. |
+| Range slider and min/max boxes | The range itself, in the metric's own units. |
+| **×** | Remove the filter for good. |
+
+Under each range, the card reports the share of measured pixels that criterion
+keeps on its own; the line under the list reports how many filters are active
+and how much of the layer survives all of them together.
+
+Filters **combine as conditions, not as steps**: a pixel is kept only when it
+satisfies every enabled criterion, and each criterion is always evaluated
+against the unfiltered data. Three consequences follow, and they are the point
+of the card list:
+
+- The order you add filters in does not change the result.
+- Removing or disabling one filter restores exactly the pixels it had hidden —
+  no earlier filter is silently lost.
+- The range offered for a new filter always spans the full data range, never
+  the range left over by the filters already applied.
+
+The stack is stored in the layer metadata, so it survives a layer switch, is
+reapplied automatically when a threshold, a mask or a calibration rewrites the
+phasor data, and is preserved when exporting to OME-TIF. It is shared with the
+**FRET** tab: a FRET-efficiency criterion is listed here too (greyed out, but
+still removable), so a pixel that disappeared is always accounted for by a
+visible card.
 
 ## Arc Overlay Tool
 
@@ -72,6 +145,24 @@ component or reflects mixed lifetimes.
 Click **Calculate Output** to compute the selected metric for all currently
 selected layers. A new napari image layer is created (or updated if it
 already exists) with the selected colormap applied.
+
+> [!TIP]
+> Enable the **Autoupdate** toggle below the button to recompute the output
+> automatically. While it is on, the button is disabled and the analysis is
+> re-run whenever the tab's own inputs change, the harmonic or the layer
+> selection changes, or the **Filter** or **Calibration** tab rewrites the
+> phasor data.
+
+After the first successful calculation, changing **Parameter to Analyze** or
+the lifetime type automatically recalculates the new output for the currently
+selected layers. Before the first calculation, these controls only configure
+the requested output and do not start processing.
+
+The histogram and statistics table follow the layers checked in **Phasor
+Layers**. Unchecking a source removes its output from the histogram and hides
+its derived image layer without deleting it. Rechecking the source restores
+the existing output. Range changes affect only outputs whose source layers are
+currently checked.
 
 - View value distributions as histograms and summary statistics in the **Histogram and Statistics Table** widget
 - Compare layers as merged, individual, or grouped data

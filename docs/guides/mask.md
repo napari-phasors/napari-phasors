@@ -36,6 +36,14 @@ When masking with a labels layer, the label selection dropdown allows you to res
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/filter%20labels%20mask.mp4" type="video/mp4">
 </video>
 
+### Analysing each label separately
+
+With more than one label selected, the analysis pools every masked pixel into
+one distribution. To compare the labels instead — one histogram curve and one
+statistics row per label — tick **Separate mask labels** in the **Histogram
+Settings** dialog or below the statistics table. See
+{doc}`histogram_statistics` for what changes.
+
 ## Masking with cursor selection
 
 When you use the cursor selection tools (circular, polar, elliptical) in the **Selection** tab, a new labels layer is created for each cursor. These labels layers can themselves be used as masks for further analysis or for other image layers.

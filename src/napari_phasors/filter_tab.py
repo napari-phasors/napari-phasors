@@ -24,7 +24,7 @@ from superqt import QRangeSlider, QToggleSwitch
 
 from ._utils import (
     analysis_section_stylesheet,
-    apply_filter_and_threshold,
+    apply_filter_and_threshold_to_layers,
     make_section,
     setup_primary_button,
     threshold_li,
@@ -76,6 +76,11 @@ class FilterWidget(QWidget):
         self.threshold_area_lower = None
         self.threshold_area_upper = None
         self._updating_threshold = False
+        # Thresholds that fall outside the slider's current range (a mask can
+        # shrink it) are pinned to the nearest handle position for display but
+        # kept here so applying does not silently drop them.
+        self._offscreen_threshold_lower = None
+        self._offscreen_threshold_upper = None
         self._dragging_line = None
         self._canvas = None
         self._histogram_needs_update = (
@@ -432,6 +437,8 @@ class FilterWidget(QWidget):
         min_value = self.threshold_slider.minimum()
 
         if method == "None":
+            self._offscreen_threshold_lower = None
+            self._offscreen_threshold_upper = None
             self._updating_threshold = True
             self.threshold_slider.setValue((min_value, max_value))
             self.min_threshold_edit.setText(
@@ -459,6 +466,7 @@ class FilterWidget(QWidget):
             lower_threshold = self.calculate_automatic_threshold(
                 method, merged_mean_data
             )
+            self._offscreen_threshold_lower = None
 
             _, current_upper_val = self.threshold_slider.value()
 
@@ -548,22 +556,37 @@ class FilterWidget(QWidget):
                 self.threshold_method_combobox.setCurrentText("None")
 
             if "threshold" in settings and settings["threshold"] is not None:
-                lower_val = max(
-                    slider_min,
-                    int(settings["threshold"] * self.threshold_factor),
+                stored_lower = int(
+                    settings["threshold"] * self.threshold_factor
+                )
+                lower_val = max(slider_min, stored_lower)
+                # A bound below/above the (possibly mask-reduced) slider range
+                # still sits at a handle extreme, which otherwise reads as "no
+                # limit" and would be dropped on the next apply. Remember it so
+                # it survives until the user moves that handle themselves.
+                self._offscreen_threshold_lower = (
+                    settings["threshold"]
+                    if stored_lower < slider_min
+                    else None
                 )
                 # An absent/None upper is "no limit": pin the handle exactly to
                 # the (ceil-rounded) slider maximum so it is not mistaken for a
                 # user-constrained value and frozen across mask changes.
                 if settings.get("threshold_upper") is not None:
+                    stored_upper = int(
+                        settings["threshold_upper"] * self.threshold_factor
+                    )
                     upper_val = min(
-                        int(
-                            settings["threshold_upper"] * self.threshold_factor
-                        ),
-                        self.threshold_slider.maximum(),
+                        stored_upper, self.threshold_slider.maximum()
+                    )
+                    self._offscreen_threshold_upper = (
+                        settings["threshold_upper"]
+                        if stored_upper > self.threshold_slider.maximum()
+                        else None
                     )
                 else:
                     upper_val = self.threshold_slider.maximum()
+                    self._offscreen_threshold_upper = None
                 self.threshold_slider.setValue((lower_val, upper_val))
                 self.min_threshold_edit.setText(
                     f'{lower_val / self.threshold_factor:.2f}'
@@ -572,6 +595,8 @@ class FilterWidget(QWidget):
                     f'{upper_val / self.threshold_factor:.2f}'
                 )
             else:
+                self._offscreen_threshold_lower = None
+                self._offscreen_threshold_upper = None
                 lower_val = slider_min
                 upper_val = self.threshold_slider.maximum()
                 self.threshold_slider.setValue((lower_val, upper_val))
@@ -634,6 +659,8 @@ class FilterWidget(QWidget):
             self.median_filter_repetition_spinbox.setValue(1)
             self.wavelet_sigma_spinbox.setValue(2.0)
             self.wavelet_levels_spinbox.setValue(1)
+            self._offscreen_threshold_lower = None
+            self._offscreen_threshold_upper = None
             lower_val = slider_min
             upper_val = self.threshold_slider.maximum()
             self.threshold_slider.setValue((lower_val, upper_val))
@@ -662,6 +689,10 @@ class FilterWidget(QWidget):
     def on_threshold_slider_change(self):
         """Callback function when the threshold slider value changes."""
         if not self._updating_threshold:
+            # A handle the user moved themselves defines the bound; any
+            # remembered off-range value is superseded.
+            self._offscreen_threshold_lower = None
+            self._offscreen_threshold_upper = None
             current_method = self.threshold_method_combobox.currentText()
             lower_val, upper_val = self.threshold_slider.value()
 
@@ -691,6 +722,7 @@ class FilterWidget(QWidget):
 
     def on_min_threshold_edit_changed(self):
         """Callback when the minimum threshold text edit is changed."""
+        self._offscreen_threshold_lower = None
         try:
             new_value = float(self.min_threshold_edit.text())
             new_slider_value = int(new_value * self.threshold_factor)
@@ -727,6 +759,7 @@ class FilterWidget(QWidget):
 
     def on_max_threshold_edit_changed(self):
         """Callback when the maximum threshold text edit is changed."""
+        self._offscreen_threshold_upper = None
         try:
             new_value = float(self.max_threshold_edit.text())
             new_slider_value = int(new_value * self.threshold_factor)
@@ -996,8 +1029,14 @@ class FilterWidget(QWidget):
             # (e.g. the reduced max while a mask is active).
             if lower_val > self.threshold_slider.minimum():
                 threshold_lower = lower_val / self.threshold_factor
+            elif self._offscreen_threshold_lower is not None:
+                # The handle only sits at the extreme because the stored bound
+                # is outside the current (mask-reduced) range.
+                threshold_lower = self._offscreen_threshold_lower
             if upper_val < self.threshold_slider.maximum():
                 threshold_upper = upper_val / self.threshold_factor
+            elif self._offscreen_threshold_upper is not None:
+                threshold_upper = self._offscreen_threshold_upper
 
         current_filter_method_text = self.filter_method_combobox.currentText()
         if current_filter_method_text == "Wavelet (binlet pawFLIM)":
@@ -1005,7 +1044,10 @@ class FilterWidget(QWidget):
         else:
             current_filter_method = current_filter_method_text.lower()
 
-        # Apply filter and threshold to each selected layer
+        # Collect each layer's parameters first. Every widget read has to
+        # happen here on the main thread, because the filtering itself is
+        # handed to a worker pool below.
+        layer_params = []
         for layer in selected_layers:
             filter_method = None
             size = None
@@ -1033,18 +1075,36 @@ class FilterWidget(QWidget):
                         sigma = self.wavelet_sigma_spinbox.value()
                         levels = self.wavelet_levels_spinbox.value()
 
-            apply_filter_and_threshold(
-                layer,
-                threshold=threshold_lower,
-                threshold_upper=threshold_upper,
-                threshold_method=threshold_method,
-                filter_method=filter_method,
-                size=size,
-                repeat=repeat,
-                sigma=sigma,
-                levels=levels,
-                harmonics=harmonics,
+            layer_params.append(
+                (
+                    layer,
+                    {
+                        "threshold": threshold_lower,
+                        "threshold_upper": threshold_upper,
+                        "threshold_method": threshold_method,
+                        "filter_method": filter_method,
+                        "size": size,
+                        "repeat": repeat,
+                        "sigma": sigma,
+                        "levels": levels,
+                        "harmonics": harmonics,
+                    },
+                )
             )
+
+        # Filtering is the expensive part and is independent per layer, so the
+        # layers are computed in parallel and written back in order.
+        errors = apply_filter_and_threshold_to_layers(layer_params)
+        failed = [
+            (layer.name, error)
+            for (layer, _), error in zip(layer_params, errors, strict=True)
+            if isinstance(error, BaseException)
+        ]
+        if failed:
+            details = "\n".join(
+                f"  \u2022 {name}: {error}" for name, error in failed
+            )
+            show_error(f"Could not filter {len(failed)} layer(s):\n{details}")
 
         if self.parent_widget is not None:
             self.parent_widget.refresh_phasor_data()

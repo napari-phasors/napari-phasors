@@ -29,19 +29,35 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._mapping_filters import (
+    FRET_EFFICIENCY,
+    MappingFilterList,
+    baseline_arrays,
+    combined_mask,
+    get_filters,
+    kept_fraction,
+    normalize_filters,
+    rebuild_layer_from_filters,
+    set_filters,
+)
+from ._parallel import parallel_map
 from ._timelapse import slice_datasets
 from ._utils import (
+    AutoUpdateMixin,
     CheckableComboBox,
     CurrentPageStackedWidget,
     HistogramWidget,
     analysis_section_stylesheet,
+    layer_colormap_from_settings,
     make_section,
     setup_primary_button,
     update_frequency_in_metadata,
 )
 
+_FRET_OUTPUT_METADATA_KEY = 'phasor_fret_output'
 
-class FretWidget(QWidget):
+
+class FretWidget(AutoUpdateMixin, QWidget):
     """Widget to perform FLIM FRET analysis."""
 
     def __init__(self, viewer, parent=None):
@@ -57,9 +73,13 @@ class FretWidget(QWidget):
             None  # Reference to first layer for backward compatibility
         )
         self.fret_layers = []  # List of all FRET efficiency layers
+        # Set while this tab rewrites the phasor arrays from the filter
+        # stack, so the refresh it triggers does not recurse back into it.
+        self._applying_mapping_filter = False
         self.colormap_contrast_limits = None
         self.fret_colormap = None
         self.colormap_gamma = 1.0
+        self._fret_range_initialized = False
         self._updating_linked_layers = (
             False  # Flag to prevent recursive updates
         )
@@ -71,6 +91,7 @@ class FretWidget(QWidget):
         self.current_background_circle = None
         self._updating_settings = False
         self._needs_update = False  # Deferred update flag
+        self._name_event_layers = {}
 
         # Initialize parameters
         self.donor_background = 0.1
@@ -346,7 +367,6 @@ class FretWidget(QWidget):
         self.colormap_checkbox.toggled.connect(
             self._on_colormap_checkbox_changed
         )
-        layout.addWidget(self.colormap_checkbox)
 
         # Plot button
         self.calculate_fret_efficiency_button = QPushButton(
@@ -361,12 +381,77 @@ class FretWidget(QWidget):
         )
         layout.addWidget(self.calculate_fret_efficiency_button)
 
+        layout.addWidget(
+            self._build_autoupdate_toggle(
+                self.calculate_fret_efficiency_button,
+                self._fret_validation,
+                self.calculate_fret_efficiency,
+                "Recalculate the FRET efficiency automatically whenever the "
+                "donor lifetime, frequency, background, fretting proportion, "
+                "layer selection, or filtered/calibrated phasor data change.",
+            )
+        )
+        layout.addWidget(self.colormap_checkbox)
+
+        # Filter section -----------------------------------------------------
+        # One efficiency criterion, always shown and switched on and off with
+        # its check box. It lives in the same per-layer stack the Phasor
+        # Mapping tab edits, so the two compose; that tab's criteria are left
+        # out of this list but are kept untouched in the stack.
+        filter_box, filter_box_layout = make_section("Filter")
+        self.filter_box = filter_box
+
+        self.filter_intro_label = QLabel(
+            "Discard pixels whose FRET efficiency falls outside a range."
+        )
+        self.filter_intro_label.setWordWrap(True)
+        self.filter_intro_label.setToolTip(
+            "The efficiency a filter tests is recomputed from the donor "
+            "trajectory, and re-captured every time you recalculate, so the "
+            "range always means the same thing as the map beside it."
+        )
+        filter_box_layout.addWidget(self.filter_intro_label)
+
+        self.filter_list = MappingFilterList([FRET_EFFICIENCY], single=True)
+        self.filter_list.set_params_provider(self._fret_filter_params)
+        self.filter_list.set_harmonic_provider(self._current_harmonic)
+        self.filter_list.filtersChanged.connect(self._on_filters_changed)
+        filter_box_layout.addWidget(self.filter_list)
+        layout.addWidget(filter_box)
+
         # Re-evaluate the button whenever a required input changes.
         self.frequency_input.textChanged.connect(
             lambda _=None: self._refresh_calculate_button()
         )
         self.donor_line_edit.textChanged.connect(
             lambda _=None: self._refresh_calculate_button()
+        )
+        self.frequency_input.textChanged.connect(
+            lambda _=None: self._refresh_filter_enable_state()
+        )
+        self.donor_line_edit.textChanged.connect(
+            lambda _=None: self._refresh_filter_enable_state()
+        )
+        # Autoupdate follows *committed* values -- a released slider, or a
+        # text field the user left -- so a drag or a half-typed number does
+        # not trigger one full recalculation per intermediate value.
+        self.frequency_input.editingFinished.connect(self.request_autoupdate)
+        self.donor_line_edit.editingFinished.connect(self.request_autoupdate)
+        self.background_real_edit.editingFinished.connect(
+            self.request_autoupdate
+        )
+        self.background_imag_edit.editingFinished.connect(
+            self.request_autoupdate
+        )
+        self.background_slider.sliderReleased.connect(self.request_autoupdate)
+        self.fretting_slider.sliderReleased.connect(self.request_autoupdate)
+        # Deriving the donor lifetime / background from layers fills the text
+        # fields programmatically, which emits no ``editingFinished``.
+        self.donor_lifetime_combobox.selectionChanged.connect(
+            self.request_autoupdate
+        )
+        self.background_image_combobox.selectionChanged.connect(
+            self.request_autoupdate
         )
 
         # NOTE: The widget is created here but NOT added to this tab's layout.
@@ -719,6 +804,7 @@ class FretWidget(QWidget):
                             self._update_background_combobox
                         )
                     layer.events.name.connect(self._update_background_combobox)
+                    self._name_event_layers[id(layer)] = layer
 
         finally:
             self._updating_background_combobox = False
@@ -760,12 +846,24 @@ class FretWidget(QWidget):
                     layer.events.name.connect(
                         self._update_donor_lifetime_combobox
                     )
+                    self._name_event_layers[id(layer)] = layer
 
         finally:
             self._updating_donor_combobox = False
 
     def _on_layer_changed(self):
         """Handle when layers are added or removed in the viewer."""
+        current_ids = {id(layer) for layer in self.viewer.layers}
+        for layer_id, layer in list(self._name_event_layers.items()):
+            if layer_id in current_ids:
+                continue
+            with contextlib.suppress(TypeError, ValueError):
+                layer.events.name.disconnect(self._update_background_combobox)
+            with contextlib.suppress(TypeError, ValueError):
+                layer.events.name.disconnect(
+                    self._update_donor_lifetime_combobox
+                )
+            self._name_event_layers.pop(layer_id, None)
         self._update_background_combobox()
         self._update_donor_lifetime_combobox()
 
@@ -1242,6 +1340,7 @@ class FretWidget(QWidget):
         finally:
             self._updating_linked_layers = False
 
+        self._remember_fret_display(source_layer)
         self.plot_donor_trajectory()
 
     def _on_contrast_limits_changed(self, event):
@@ -1282,7 +1381,35 @@ class FretWidget(QWidget):
         finally:
             self._updating_linked_layers = False
 
+        self._remember_fret_display(source_layer)
         self.plot_donor_trajectory()
+
+    def _remember_fret_display(self, layer):
+        """Keep *layer*'s colormap, limits and gamma for the next run.
+
+        The saved display is what a new run applies to the FRET layers. It
+        is otherwise only read from the metadata when the layer selection
+        changes, so without this a run would bring back whatever colormap
+        was saved then, undoing the user's later changes.
+        """
+        colormap = layer.colormap
+        colors = getattr(colormap, 'colors', None)
+        self._saved_colormap_name = getattr(colormap, 'name', 'custom')
+        self._saved_colormap_colors = (
+            None if colors is None else np.asarray(colors).tolist()
+        )
+        self._saved_contrast_limits = [float(v) for v in layer.contrast_limits]
+        self._saved_gamma = layer.gamma
+
+    def _saved_fret_colormap(self):
+        """Return the saved colormap as a layer colormap value."""
+        colormap = layer_colormap_from_settings(
+            {
+                'colormap_name': self._saved_colormap_name,
+                'colormap_colors': self._saved_colormap_colors,
+            }
+        )
+        return colormap if colormap is not None else 'viridis'
 
     def _get_default_fret_settings(self):
         """Get default settings dictionary for FRET parameters."""
@@ -1512,20 +1639,7 @@ class FretWidget(QWidget):
                     self._on_colormap_changed
                 )
 
-                if self._saved_colormap_colors is not None:
-                    from napari.utils.colormaps import Colormap
-
-                    if isinstance(self._saved_colormap_colors, list):
-                        saved_colors = np.array(self._saved_colormap_colors)
-                    else:
-                        saved_colors = self._saved_colormap_colors
-
-                    saved_colormap = Colormap(
-                        colors=saved_colors, name="saved_custom"
-                    )
-                    self.fret_layer.colormap = saved_colormap
-                else:
-                    self.fret_layer.colormap = self._saved_colormap_name
+                self.fret_layer.colormap = self._saved_fret_colormap()
 
                 if isinstance(self._saved_contrast_limits, list):
                     saved_limits = tuple(self._saved_contrast_limits)
@@ -1568,70 +1682,228 @@ class FretWidget(QWidget):
 
     def _reconnect_existing_fret_layer(self, layer_name):
         """Reconnect to existing FRET layer if it exists for this layer."""
-        fret_layer_name = f"FRET efficiency: {layer_name}"
+        outputs = self._fret_output_layers()
+        self._set_fret_layers(outputs.values())
+        self.fret_layer = outputs.get(layer_name)
+        if self.fret_layer is None:
+            return
 
-        if fret_layer_name in self.viewer.layers:
-            self.fret_layer = self.viewer.layers[fret_layer_name]
+        if hasattr(self, '_saved_colormap_name'):
+            self._apply_saved_fret_colormap_settings()
+        else:
+            self.fret_colormap = self.fret_layer.colormap.colors
+            self.colormap_contrast_limits = self.fret_layer.contrast_limits
+            self.colormap_gamma = self.fret_layer.gamma
 
-            self.fret_layer.events.colormap.connect(self._on_colormap_changed)
-            self.fret_layer.events.contrast_limits.connect(
+    def _get_selected_source_names(self) -> set[str]:
+        """Return names checked in the plotter's Phasor Layers selector."""
+        if self.parent_widget is None:
+            return set()
+        try:
+            return {
+                layer.name
+                for layer in self.parent_widget.get_selected_layers()
+            }
+        except (AttributeError, RuntimeError):
+            return set()
+
+    def _fret_output_source(self, layer):
+        """Return the source name for a FRET output layer."""
+        if not isinstance(layer, Image):
+            return None
+        tag = layer.metadata.get(_FRET_OUTPUT_METADATA_KEY)
+        if isinstance(tag, dict) and tag.get('source_layer'):
+            return tag['source_layer']
+        prefix = "FRET efficiency: "
+        if layer.name.startswith(prefix):
+            source_name = layer.name[len(prefix) :]
+            if source_name in self.viewer.layers:
+                source_layer = self.viewer.layers[source_name]
+                if (
+                    isinstance(source_layer, Image)
+                    and 'G' in source_layer.metadata
+                    and 'S' in source_layer.metadata
+                ):
+                    return source_name
+        return None
+
+    def _fret_output_layers(self, selected_only=False):
+        """Return FRET output layers keyed by source name."""
+        selected_names = (
+            self._get_selected_source_names() if selected_only else None
+        )
+        result = {}
+        for layer in self.viewer.layers:
+            source_name = self._fret_output_source(layer)
+            if source_name is None:
+                continue
+            if (
+                selected_names is not None
+                and source_name not in selected_names
+            ):
+                continue
+            existing = result.get(source_name)
+            layer_is_tagged = isinstance(
+                layer.metadata.get(_FRET_OUTPUT_METADATA_KEY), dict
+            )
+            existing_is_tagged = existing is not None and isinstance(
+                existing.metadata.get(_FRET_OUTPUT_METADATA_KEY), dict
+            )
+            if existing is None or (
+                layer_is_tagged and not existing_is_tagged
+            ):
+                result[source_name] = layer
+        return result
+
+    def _set_fret_layers(self, layers):
+        """Replace the FRET layer registry without duplicate event handlers."""
+        for layer in self.fret_layers:
+            with contextlib.suppress(
+                AttributeError, RuntimeError, TypeError, ValueError
+            ):
+                layer.events.colormap.disconnect(self._on_colormap_changed)
+                layer.events.contrast_limits.disconnect(
+                    self._on_contrast_limits_changed
+                )
+                layer.events.gamma.disconnect(self._on_colormap_changed)
+
+        self.fret_layers = list(layers)
+        for layer in self.fret_layers:
+            with contextlib.suppress(
+                AttributeError, RuntimeError, TypeError, ValueError
+            ):
+                layer.events.colormap.disconnect(self._on_colormap_changed)
+                layer.events.contrast_limits.disconnect(
+                    self._on_contrast_limits_changed
+                )
+                layer.events.gamma.disconnect(self._on_colormap_changed)
+            layer.events.colormap.connect(self._on_colormap_changed)
+            layer.events.contrast_limits.connect(
                 self._on_contrast_limits_changed
             )
-            self.fret_layer.events.gamma.connect(self._on_colormap_changed)
+            layer.events.gamma.connect(self._on_colormap_changed)
 
-            if hasattr(self, '_saved_colormap_name'):
-                self._apply_saved_fret_colormap_settings()
-            else:
-                self.fret_colormap = self.fret_layer.colormap.colors
-                self.colormap_contrast_limits = self.fret_layer.contrast_limits
-                self.colormap_gamma = self.fret_layer.gamma
+        selected_names = self._get_selected_source_names()
+        selected_layers = [
+            layer
+            for layer in self.fret_layers
+            if self._fret_output_source(layer) in selected_names
+        ]
+        self.fret_layer = (
+            selected_layers[0]
+            if selected_layers
+            else (self.fret_layers[0] if self.fret_layers else None)
+        )
+        if self.fret_layer is not None:
+            self.fret_colormap = self.fret_layer.colormap.colors
+            self.colormap_contrast_limits = self.fret_layer.contrast_limits
+            self.colormap_gamma = self.fret_layer.gamma
+
+    def _sync_fret_output_visibility(self):
+        """Show FRET outputs only when their source layer is selected."""
+        selected_names = self._get_selected_source_names()
+        self._updating_linked_layers = True
+        try:
+            for source_name, layer in self._fret_output_layers().items():
+                desired_visible = source_name in selected_names
+                if layer.visible != desired_visible:
+                    layer.visible = desired_visible
+        finally:
+            self._updating_linked_layers = False
+
+    def on_layer_selection_changed(self):
+        """Refresh FRET outputs after the Phasor Layers selection changes."""
+        all_layers = list(self._fret_output_layers().values())
+        self._set_fret_layers(all_layers)
+        self._sync_fret_output_visibility()
+        selected_layers = list(
+            self._fret_output_layers(selected_only=True).values()
+        )
+        self._update_fret_histogram(
+            preserve_range=self._fret_range_initialized
+        )
+        if selected_layers:
+            range_min, range_max = self.histogram_widget.get_range()
+            self._apply_fret_range_to_layers(
+                selected_layers, range_min, range_max
+            )
+            self._update_fret_histogram(update_bounds=False)
 
     def rename_layer(self, old_name: str, new_name: str):
         """Rename derived layers when base layer is renamed."""
-        fret_layer_name = f"FRET efficiency: {old_name}"
-        if fret_layer_name in self.viewer.layers:
-            new_fret_layer_name = f"FRET efficiency: {new_name}"
-            self.viewer.layers[fret_layer_name].name = new_fret_layer_name
-            if hasattr(self, 'histogram_widget'):
+        for output_layer in list(self.viewer.layers):
+            tag = output_layer.metadata.get(_FRET_OUTPUT_METADATA_KEY)
+            is_tagged_match = (
+                isinstance(tag, dict) and tag.get('source_layer') == old_name
+            )
+            is_legacy_match = (
+                output_layer.name == f"FRET efficiency: {old_name}"
+            )
+            if not is_tagged_match and not is_legacy_match:
+                continue
+            old_output_name = output_layer.name
+            output_layer.metadata[_FRET_OUTPUT_METADATA_KEY] = {
+                'source_layer': new_name
+            }
+            if old_output_name == f"FRET efficiency: {old_name}":
+                output_layer.name = f"FRET efficiency: {new_name}"
+            if output_layer.name != old_output_name:
                 self.histogram_widget.rename_dataset(
-                    fret_layer_name, new_fret_layer_name
+                    old_output_name, output_layer.name
                 )
 
-    def _update_fret_histogram(self):
+    def _update_fret_histogram(
+        self, *, update_bounds=True, preserve_range=False
+    ):
         """Update the FRET efficiency histogram from all selected FRET layers."""
-        if not self.fret_layers:
-            self.histogram_widget.hide()
+        output_layers = self._fret_output_layers(selected_only=True)
+        selected_layers = list(output_layers.values())
+        if not selected_layers:
+            self.histogram_widget.clear()
+            self.histogram_widget.show()
             return
 
-        per_layer = {}
-        all_data = []
-        for layer in self.fret_layers:
-            if layer in self.viewer.layers:
-                all_data.append(layer.data.ravel())
-                per_layer[layer.name] = layer.data
+        per_layer = {layer.name: layer.data for layer in selected_layers}
 
-        if not all_data:
-            self.histogram_widget.hide()
-            return
-
-        # ``merged`` stays pooled so the range slider spans the whole
-        # acquisition; only the histogram datasets follow the current frame.
-        merged = np.concatenate(all_data)
+        self.histogram_widget.set_dataset_sources(
+            {layer.name: source for source, layer in output_layers.items()}
+        )
+        original_arrays = [
+            np.asarray(
+                layer.metadata.get('fret_data_original', layer.data)
+            ).ravel()
+            for layer in selected_layers
+        ]
+        merged = np.concatenate(
+            [np.asarray(layer.data).ravel() for layer in selected_layers]
+        )
         per_layer = self._slice_datasets_for_frame(per_layer)
 
-        # Update range slider to match data extent
-        valid = merged[~np.isnan(merged) & np.isfinite(merged)]
-        if len(valid) > 0:
+        original_merged = np.concatenate(original_arrays)
+        valid = original_merged[
+            ~np.isnan(original_merged) & np.isfinite(original_merged)
+        ]
+        if update_bounds and len(valid) > 0:
             data_min = float(np.min(valid))
             data_max = float(np.max(valid))
             if data_max <= data_min:
                 data_max = data_min + 0.01
+            if preserve_range:
+                old_min, old_max = self.histogram_widget.get_range()
+                if old_max <= data_min or old_min >= data_max:
+                    range_min, range_max = data_min, data_max
+                else:
+                    range_min = max(data_min, old_min)
+                    range_max = min(data_max, old_max)
+            else:
+                range_min, range_max = data_min, data_max
             self.histogram_widget.set_range(
-                data_min,
-                data_max,
+                range_min,
+                range_max,
                 slider_min=data_min,
                 slider_max=data_max,
             )
+            self._fret_range_initialized = True
 
         self.histogram_widget.update_colormap(
             colormap_colors=self.fret_colormap,
@@ -1647,6 +1919,7 @@ class FretWidget(QWidget):
         else:
             label, data = next(iter(per_layer.items()), ("Layer", merged))
             self.histogram_widget.update_data(data, label=label)
+        self.histogram_widget.show()
 
     def _frame_context(self):
         """Return the plotter's time-lapse frame context, if available."""
@@ -1666,48 +1939,223 @@ class FretWidget(QWidget):
         """Re-feed the histogram after the displayed frame changed."""
         if not self.fret_layers:
             return
-        self._update_fret_histogram()
+        self._update_fret_histogram(update_bounds=False)
 
-    def _on_fret_range_changed(self, min_val, max_val):
-        """Handle range slider changes – clip FRET layers and update histogram."""
+    def _apply_fret_range_to_layers(self, layers, min_val, max_val):
+        """Clip FRET output layers from their original data."""
         self._updating_linked_layers = True
         try:
-            for layer in self.fret_layers:
-                if layer not in self.viewer.layers:
+            for layer in layers:
+                if 'fret_data_original' not in layer.metadata:
                     continue
-                # Re-read the original (unclipped) data from 'fret_data' if
-                # stored, otherwise use what the layer already has.
-                original = layer.metadata.get('fret_data_original', layer.data)
-                clipped = np.clip(original, min_val, max_val)
-                layer.data = clipped
+                original = layer.metadata['fret_data_original']
+                layer.data = np.clip(original, min_val, max_val)
                 layer.contrast_limits = [min_val, max_val]
-
             self.colormap_contrast_limits = [min_val, max_val]
         finally:
             self._updating_linked_layers = False
 
-        # Refresh histogram with clipped data
-        per_layer = {}
-        all_data = []
-        for layer in self.fret_layers:
-            if layer in self.viewer.layers:
-                all_data.append(layer.data.ravel())
-                per_layer[layer.name] = layer.data
-        if all_data:
-            merged = np.concatenate(all_data)
-            per_layer = self._slice_datasets_for_frame(per_layer)
-            self.histogram_widget.update_colormap(
-                colormap_colors=self.fret_colormap,
-                contrast_limits=[min_val, max_val],
-                gamma=self.colormap_gamma,
-            )
-            if len(per_layer) > 1:
-                self.histogram_widget.update_multi_data(per_layer)
-            else:
-                label, data = next(iter(per_layer.items()), ("Layer", merged))
-                self.histogram_widget.update_data(data, label=label)
+    def _on_fret_range_changed(self, min_val, max_val):
+        """Handle range slider changes – clip FRET layers and update histogram."""
+        selected_layers = list(
+            self._fret_output_layers(selected_only=True).values()
+        )
+        self._apply_fret_range_to_layers(selected_layers, min_val, max_val)
+
+        self.histogram_widget.update_colormap(
+            colormap_colors=self.fret_colormap,
+            contrast_limits=[min_val, max_val],
+            gamma=self.colormap_gamma,
+        )
+        self._update_fret_histogram(update_bounds=False)
 
         self.plot_donor_trajectory()
+
+    def _fret_filter_params(self, metric=None):
+        """Return the donor trajectory a new efficiency criterion should use.
+
+        The parameters are frozen into the criterion so that reloading a
+        saved layer reproduces the same efficiencies, and refreshed from the
+        tab on every recalculation so that a filter never keeps hiding pixels
+        by a trajectory the user has already moved on from.
+        """
+        params = {}
+        frequency = self._positive_float(self.frequency_input.text())
+        donor_lifetime = self._positive_float(self.donor_line_edit.text())
+        if frequency is None or donor_lifetime is None:
+            return params
+        params['frequency'] = frequency
+        params['donor_lifetime'] = donor_lifetime
+        params['donor_background'] = self.donor_background
+        params['background_real'] = self.background_real
+        params['background_imag'] = self.background_imag
+        params['donor_fretting'] = self.donor_fretting_proportion
+        return params
+
+    @staticmethod
+    def _positive_float(text):
+        """Return *text* as a finite positive float, or ``None``."""
+        try:
+            value = float(str(text).strip())
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(value) or value <= 0:
+            return None
+        return value
+
+    def _current_harmonic(self):
+        """Return the harmonic a new criterion should be measured on."""
+        return getattr(self.parent_widget, 'harmonic', 1) or 1
+
+    def _filter_enable_blocked_reason(self):
+        """Return why the efficiency filter cannot be switched on, else ``None``."""
+        if not self._filter_layers():
+            return "Select at least one image layer with phasor features."
+        if not self._fret_filter_params():
+            return (
+                "Enter the donor lifetime and the frequency (MHz) before "
+                "filtering on FRET efficiency."
+            )
+        return None
+
+    def _refresh_filter_enable_state(self):
+        """Explain on the card itself when the filter cannot be switched on."""
+        self.filter_list.set_enable_blocked(
+            self._filter_enable_blocked_reason()
+        )
+
+    def _filter_layers(self):
+        """Return the layers the filter stack is written to."""
+        if self.parent_widget is None:
+            return []
+        try:
+            return list(self.parent_widget.get_selected_layers())
+        except (AttributeError, RuntimeError):
+            return []
+
+    def _primary_filter_layer(self):
+        """Return the layer whose stack the cards show, or ``None``."""
+        layers = self._filter_layers()
+        return layers[0] if layers else None
+
+    def _layer_filter_params(self, layer):
+        """Return *layer*'s own intensity filter/threshold parameters."""
+        if self.parent_widget is None:
+            return {}
+        return self.parent_widget._filter_params_from_settings(layer)
+
+    def _sync_filter_ui(self):
+        """Show the stack stored on the primary layer."""
+        layer = self._primary_filter_layer()
+        if layer is None:
+            self.filter_list.set_filters([])
+            self.filter_list.set_filter_stats({}, "")
+            self._refresh_filter_enable_state()
+            return
+        self.filter_list.set_filters(self._own_filters(get_filters(layer)))
+        self._refresh_filter_stats()
+        self._refresh_filter_enable_state()
+
+    @staticmethod
+    def _own_filters(filters):
+        """Return the efficiency criteria of *filters*; this tab edits no others."""
+        return [f for f in filters if f['metric'] == FRET_EFFICIENCY]
+
+    def _refresh_filter_stats(self):
+        """Report what the efficiency criterion keeps."""
+        filters = self.filter_list.filters()
+        layer = self._primary_filter_layer()
+        if layer is None or not filters:
+            self.filter_list.set_filter_stats({}, "")
+            return
+        mean, real, imag = baseline_arrays(
+            layer, self._layer_filter_params(layer)
+        )
+        harmonics = layer.metadata.get('harmonics')
+        stats = {}
+        for entry in filters:
+            single = dict(entry, enabled=True)
+            mask = combined_mask([single], mean, real, imag, harmonics)
+            prefix = "" if entry['enabled'] else "off · "
+            stats[entry['id']] = (
+                f"{prefix}keeps {kept_fraction(mask, mean):.1%} of the pixels"
+            )
+        self.filter_list.set_filter_stats(stats)
+
+    def _refresh_fret_filter_params(self, layers=None):
+        """Point every efficiency criterion at the current donor trajectory.
+
+        The efficiency map on screen is rebuilt from the tab's live
+        parameters; a criterion left on an older trajectory would hide a
+        different set of pixels than the map it is displayed next to.
+        """
+        params = self._fret_filter_params()
+        if not params:
+            return False
+        changed = False
+        for layer in layers if layers is not None else self._filter_layers():
+            filters = get_filters(layer)
+            updated = []
+            for entry in filters:
+                if entry['metric'] == FRET_EFFICIENCY and (
+                    entry['params'] != params
+                ):
+                    entry = dict(entry, params=dict(params))
+                    changed = True
+                updated.append(entry)
+            if changed:
+                set_filters(layer, updated)
+        return changed
+
+    def _on_filters_changed(self, filters):
+        """Persist the edited stack and rebuild everything downstream of it."""
+        self._apply_filter_stack(filters)
+
+    def _apply_filter_stack(self, filters=None, layers=None):
+        """Write *filters* to *layers* and re-derive their phasor data."""
+        if self.parent_widget is None:
+            return
+        layers = self._filter_layers() if layers is None else list(layers)
+        if not layers:
+            return
+        if filters is None:
+            filters = self.filter_list.filters()
+        own = self._own_filters(normalize_filters(filters))
+        params = self._fret_filter_params()
+        # A criterion first switched on from the placeholder card carries no
+        # trajectory yet; it takes the tab's current one.
+        own = [
+            f if f['params'] or not params else dict(f, params=dict(params))
+            for f in own
+        ]
+
+        problems = []
+        self._applying_mapping_filter = True
+        try:
+            for layer in layers:
+                # The Phasor Mapping tab's criteria are not shown here, but
+                # they are part of the same stack and must survive untouched.
+                others = [
+                    f
+                    for f in get_filters(layer)
+                    if f['metric'] != FRET_EFFICIENCY
+                ]
+                stored = set_filters(layer, others + own)
+                rebuild_layer_from_filters(
+                    layer,
+                    stored,
+                    filter_params=self._layer_filter_params(layer),
+                    on_error=problems.append,
+                )
+            self.parent_widget.refresh_phasor_data()
+            if self.fret_layers:
+                self.calculate_fret_efficiency()
+        finally:
+            self._applying_mapping_filter = False
+
+        self._sync_filter_ui()
+        for message in dict.fromkeys(problems):
+            show_warning(message)
 
     def _fret_validation(self):
         """Return ``None`` if FRET efficiency can run, else the missing msg."""
@@ -1777,6 +2225,7 @@ class FretWidget(QWidget):
 
         if layer_name:
             self._reconnect_existing_fret_layer(layer_name)
+            self._sync_filter_ui()
 
             self._updating_settings = True
             try:
@@ -1808,6 +2257,7 @@ class FretWidget(QWidget):
                 self._updating_settings = False
 
             self._previous_layer_name = None
+            self._sync_filter_ui()
 
     def calculate_fret_efficiency(self):
         """Calculate FRET efficiency based on donor intensities."""
@@ -1834,18 +2284,21 @@ class FretWidget(QWidget):
         if not selected_layers:
             return
 
-        # Clear previous FRET layers list and disconnect events
-        for layer in self.fret_layers:
-            if layer in self.viewer.layers:
-                try:
-                    layer.events.colormap.disconnect(self._on_colormap_changed)
-                    layer.events.contrast_limits.disconnect(
-                        self._on_contrast_limits_changed
-                    )
-                    layer.events.gamma.disconnect(self._on_colormap_changed)
-                except Exception:  # noqa: BLE001
-                    pass
-        self.fret_layers = []
+        # An efficiency filter is only honest while it names the same donor
+        # trajectory the map beside it was computed from, so the stack is
+        # re-pointed at the current parameters before anything is computed.
+        # (Skipped mid-apply: the stack is what asked for this run.)
+        if not self._applying_mapping_filter and (
+            self._refresh_fret_filter_params(selected_layers)
+        ):
+            self._apply_filter_stack(
+                get_filters(selected_layers[0]), layers=selected_layers
+            )
+            return
+
+        # Clear the active registry and disconnect its events.
+        existing_outputs = self._fret_output_layers()
+        self._set_fret_layers([])
 
         # Save settings to metadata for primary layer
         primary_layer_name = self.parent_widget.get_primary_layer_name()
@@ -1912,31 +2365,39 @@ class FretWidget(QWidget):
                 donor_fretting=self.donor_fretting_proportion,
             )
 
-        # Process each selected layer
-        for layer in selected_layers:
-            # Retrieve arrays from metadata
+        # The nearest-neighbour search is the expensive step here and is
+        # independent per layer, so every efficiency map is computed up front
+        # in a thread pool. The harmonic is read once, on this thread,
+        # because it comes from a Qt spinbox.
+        harmonic = self.parent_widget.harmonic
+
+        def compute_efficiency(layer):
+            """Return one layer's FRET efficiency map, or ``None``.
+
+            Pure array work, safe to run in a worker thread.
+            """
             g_array = layer.metadata.get("G")
             s_array = layer.metadata.get("S")
             harmonics = layer.metadata.get("harmonics")
 
             if g_array is None or s_array is None:
-                continue
+                return None
 
-            if harmonics is not None:
+            if harmonics is not None and g_array.ndim > layer.data.ndim:
                 try:
-                    harmonics = np.atleast_1d(harmonics)
-                    harmonic_index = np.where(
-                        harmonics == self.parent_widget.harmonic
-                    )[0][0]
+                    harmonics_array = np.atleast_1d(harmonics)
+                    harmonic_index = np.where(harmonics_array == harmonic)[0][
+                        0
+                    ]
                     real = g_array[harmonic_index]
                     imag = s_array[harmonic_index]
                 except IndexError:
-                    continue
+                    return None
             else:
                 real = g_array
                 imag = s_array
 
-            fret_efficiency = phasor_nearest_neighbor(
+            return phasor_nearest_neighbor(
                 real,
                 imag,
                 neighbor_real,
@@ -1944,50 +2405,66 @@ class FretWidget(QWidget):
                 values=self._fret_efficiencies,
             )
 
+        efficiencies = parallel_map(
+            compute_efficiency, selected_layers, on_error="collect"
+        )
+
+        # Process each selected layer
+        for layer, fret_efficiency in zip(
+            selected_layers, efficiencies, strict=True
+        ):
+            if isinstance(fret_efficiency, BaseException):
+                show_error(
+                    f"FRET efficiency failed for {layer.name}: "
+                    f"{fret_efficiency}"
+                )
+                continue
+            if fret_efficiency is None:
+                continue
+
             fret_layer_name = f"FRET efficiency: {layer.name}"
 
-            default_colormap = 'viridis'
-            default_contrast_limits = (0, 1)
+            fret_layer = existing_outputs.get(layer.name)
 
+            # The saved display (kept in step with the user's changes by
+            # ``_remember_fret_display``) wins; without one, a layer that is
+            # already shown keeps its own, and only a new one gets defaults.
+            display_colormap = 'viridis'
+            display_contrast_limits = (0, 1)
+            display_gamma = None
             if (
                 hasattr(self, '_saved_colormap_name')
                 and not self._updating_settings
             ):
-                if self._saved_colormap_colors is not None:
-                    from napari.utils.colormaps import Colormap
+                display_colormap = self._saved_fret_colormap()
+                display_contrast_limits = tuple(self._saved_contrast_limits)
+                display_gamma = getattr(self, '_saved_gamma', None)
+            elif fret_layer is not None:
+                display_colormap = fret_layer.colormap
+                display_contrast_limits = tuple(fret_layer.contrast_limits)
+                display_gamma = fret_layer.gamma
 
-                    if isinstance(self._saved_colormap_colors, list):
-                        saved_colors = np.array(self._saved_colormap_colors)
-                    else:
-                        saved_colors = self._saved_colormap_colors
-                    default_colormap = Colormap(
-                        colors=saved_colors, name="saved_custom"
-                    )
-                else:
-                    default_colormap = self._saved_colormap_name
+            if fret_layer is None:
+                selected_fret_layer = Image(
+                    fret_efficiency,
+                    name=fret_layer_name,
+                    scale=layer.scale,
+                    colormap=display_colormap,
+                    contrast_limits=display_contrast_limits,
+                )
+                fret_layer = self.viewer.add_layer(selected_fret_layer)
+            else:
+                fret_layer.data = fret_efficiency
+                fret_layer.scale = layer.scale
+                fret_layer.colormap = display_colormap
+                fret_layer.contrast_limits = display_contrast_limits
+            if display_gamma is not None:
+                fret_layer.gamma = display_gamma
 
-                if isinstance(self._saved_contrast_limits, list):
-                    default_contrast_limits = tuple(
-                        self._saved_contrast_limits
-                    )
-                else:
-                    default_contrast_limits = self._saved_contrast_limits
-
-            selected_fret_layer = Image(
-                fret_efficiency,
-                name=fret_layer_name,
-                scale=layer.scale,
-                colormap=default_colormap,
-                contrast_limits=default_contrast_limits,
-            )
-
-            if fret_layer_name in self.viewer.layers:
-                self.viewer.layers.remove(self.viewer.layers[fret_layer_name])
-
-            fret_layer = self.viewer.add_layer(selected_fret_layer)
-
-            # Store original unclipped data for range slider support
             fret_layer.metadata['fret_data_original'] = fret_efficiency.copy()
+            fret_layer.metadata[_FRET_OUTPUT_METADATA_KEY] = {
+                'source_layer': layer.name
+            }
 
             # Add to list of FRET layers and connect events
             self.fret_layers.append(fret_layer)
@@ -2013,6 +2490,8 @@ class FretWidget(QWidget):
             except ValueError:
                 pass
 
+        self._set_fret_layers(self._fret_output_layers().values())
+
         if (
             not hasattr(self, '_saved_colormap_name')
             or self._updating_settings
@@ -2021,12 +2500,26 @@ class FretWidget(QWidget):
                 'colormap_settings.colormap_name',
                 self.fret_layer.colormap.name,
             )
+            # A built-in colormap is restored by name; only a custom one
+            # needs its colours to come back in another session.
+            colormap = self.fret_layer.colormap
+            colors = np.asarray(colormap.colors).tolist()
+            is_builtin = (
+                layer_colormap_from_settings(
+                    {'colormap_name': colormap.name, 'colormap_colors': colors}
+                )
+                == colormap.name
+            )
             self._update_fret_setting_in_metadata(
-                'colormap_settings.colormap_colors', None
+                'colormap_settings.colormap_colors',
+                None if is_builtin else colors,
             )
             self._update_fret_setting_in_metadata(
                 'colormap_settings.contrast_limits',
-                self.fret_layer.contrast_limits,
+                [float(v) for v in self.fret_layer.contrast_limits],
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.gamma', self.fret_layer.gamma
             )
             self._update_fret_setting_in_metadata(
                 'colormap_settings.colormap_changed', False
@@ -2034,9 +2527,12 @@ class FretWidget(QWidget):
 
         self._update_fret_histogram()
         self.plot_donor_trajectory()
+        self._sync_filter_ui()
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""
+        self._set_fret_layers([])
+
         # Disconnect viewer events
         with contextlib.suppress(TypeError, ValueError, AttributeError):
             self.viewer.layers.events.inserted.disconnect(
@@ -2047,13 +2543,14 @@ class FretWidget(QWidget):
                 self._on_layer_changed
             )
 
-        # Disconnect all layer name change events
-        with contextlib.suppress(TypeError, ValueError, AttributeError):
-            for layer in self.viewer.layers:
-                with contextlib.suppress(TypeError, ValueError):
-                    layer.events.name.disconnect(
-                        self._update_background_combobox
-                    )
+        for layer in self._name_event_layers.values():
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                layer.events.name.disconnect(self._update_background_combobox)
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                layer.events.name.disconnect(
+                    self._update_donor_lifetime_combobox
+                )
+        self._name_event_layers.clear()
 
         event.accept()
 

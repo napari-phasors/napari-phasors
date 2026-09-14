@@ -29,9 +29,12 @@ classifiers = [
 ]
 dependencies = [
     "phasorpy>=0.12",
+    # psygnal 0.16.0 emits to a snapshot of the slots (psygnal#413), so a
+    # napari TransformChain slice freed mid-emission is still called and
+    # raises ReferenceError whenever a layer's scale/translate changes.
+    "psygnal<0.16",
     "qtpy",
-    "biaplotter>=0.4.2",
-    "fbdfile",
+    "fbdfile==2026.8.30",
     "sdtfile",
     "ptufile",
     "tifffile",
@@ -52,10 +55,10 @@ testing = [
     "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
     "pytest-xdist",  # https://pytest-xdist.readthedocs.io/ (parallel test runs)
     "pytest-timeout",  # https://pypi.org/project/pytest-timeout/ (kills hung Qt workers)
+    "filelock",  # cross-worker lock so xdist workers do not race on one download
     "napari",
     "qtpy",
     "scikit-image",
-    "biaplotter>=0.4.2",
     "pyqt6",
     "pandas",
     "black",
@@ -64,7 +67,7 @@ testing = [
     "pre-commit",
     "phasorpy>=0.12",
     "tifffile",
-    "fbdfile",
+    "fbdfile==2026.8.30",
     "sdtfile",
     "ptufile",
     "pawflim",
@@ -135,7 +138,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-"*" = ["*.yaml"]
+"*" = ["*.yaml", "icons/**/*.png"]
 
 [tool.setuptools_scm]
 write_to = "src/napari_phasors/_version.py"

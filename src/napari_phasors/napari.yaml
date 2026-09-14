@@ -18,6 +18,9 @@ contributions:
     - id: napari-phasors.paramecium_HSI_sample_data
       python_name: napari_phasors._sample_data:paramecium_HSI_sample_data
       title: Load Paramecium Hyperspectral Image sample data
+    - id: napari-phasors.fret_FLIM_sample_data
+      python_name: napari_phasors._sample_data:fret_FLIM_sample_data
+      title: Load FLIM-FRET training sample data
     - id: napari-phasors.plot_phasor
       python_name: napari_phasors:PlotterWidget
       title: Plot Phasor
@@ -66,6 +69,9 @@ contributions:
     - command: napari-phasors.paramecium_HSI_sample_data
       display_name: Paramecium Hyperspectral Image
       key: unique_id.3
+    - command: napari-phasors.fret_FLIM_sample_data
+      display_name: FLIM-FRET Training Dataset
+      key: unique_id.4
   widgets:
     - command: napari-phasors.plot_phasor
       display_name: Phasor Plot

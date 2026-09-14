@@ -4,8 +4,10 @@ This module contains utility functions used by other modules.
 """
 
 import os
+import re
 import warnings
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,13 +18,9 @@ from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from matplotlib.figure import Figure
 from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
-from napari.layers import Image
+from napari.layers import Image, Labels
 from napari.utils import progress as _napari_progress
-from phasorpy.filter import (
-    phasor_filter_median,
-    phasor_filter_pawflim,
-    phasor_threshold,
-)
+from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
 from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
@@ -53,8 +51,10 @@ from qtpy.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
@@ -66,7 +66,92 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from superqt import QRangeSlider
+from superqt import QRangeSlider, QToggleSwitch
+
+from ._mapping_filters import apply_layer_filters
+from ._parallel import parallel_filter_median
+
+#: Precisions the phasor arrays may be stored at. ``"native"`` keeps whatever
+#: phasorpy produced, which is float64 for the integer signals most raw
+#: formats decode to. ``"float32"`` halves the memory every layer occupies.
+PHASOR_STORAGE_DTYPES = ("native", "float32")
+
+_phasor_storage_dtype = "native"
+
+
+def phasor_storage_dtype():
+    """Return the precision new phasor layers are stored at."""
+    return _phasor_storage_dtype
+
+
+def set_phasor_storage_dtype(name):
+    """Set the precision new phasor layers are stored at.
+
+    A layer holds six full-size arrays -- the intensity twice, and ``G``,
+    ``S`` and their unfiltered originals -- so the storage precision is the
+    single largest lever on how much memory an open image costs. Halving it
+    halves both the resident layer and every transient copy a filter makes.
+
+    Unlike the parallel-processing switch, this one *does* change the
+    numbers: phasor coordinates lie in [-1, 1], where float32 carries about
+    seven significant digits against float64's sixteen. That is far below
+    photon noise in any real acquisition, but it is not bit-identical, so it
+    is off by default and applies only to layers read after it is set.
+
+    Parameters
+    ----------
+    name : str
+        One of :data:`PHASOR_STORAGE_DTYPES`.
+
+    Raises
+    ------
+    ValueError
+        If *name* is not one of the supported precisions.
+    """
+    global _phasor_storage_dtype
+    if name not in PHASOR_STORAGE_DTYPES:
+        msg = (
+            f"unknown phasor storage precision {name!r}; "
+            f"expected one of {PHASOR_STORAGE_DTYPES}"
+        )
+        raise ValueError(msg)
+    _phasor_storage_dtype = name
+
+
+def cast_phasor_storage(*arrays):
+    """Return *arrays* at the configured storage precision.
+
+    Integer arrays are left alone -- only the floating-point phasor
+    coordinates and intensities are downcast -- and an array already at the
+    target precision is returned unchanged rather than copied.
+
+    Parameters
+    ----------
+    *arrays : array-like or None
+        Arrays to cast. ``None`` entries pass straight through, so callers
+        can hand over optional metadata without checking first.
+
+    Returns
+    -------
+    tuple
+        One entry per input, in order.
+    """
+    if _phasor_storage_dtype == "native":
+        return arrays
+
+    target = np.dtype(_phasor_storage_dtype)
+
+    def cast(array):
+        if array is None:
+            return None
+        array = np.asarray(array)
+        if not np.issubdtype(array.dtype, np.floating):
+            return array
+        if array.dtype == target or array.dtype.itemsize <= target.itemsize:
+            return array
+        return array.astype(target)
+
+    return tuple(cast(array) for array in arrays)
 
 
 def analysis_section_stylesheet():
@@ -98,6 +183,124 @@ def make_section(title):
     box = QGroupBox(title)
     layout = QVBoxLayout(box)
     return box, layout
+
+
+#: Fallback for :func:`theme_warning_color`, matching the amber napari's own
+#: themes use, so the text next to the warning triangle stays legible even if
+#: the theme cannot be resolved.
+_FALLBACK_WARNING_COLOR = "#e3b617"
+
+
+def theme_warning_color():
+    """Return the current napari theme's warning colour as a hex string.
+
+    Read from the theme rather than hard-coded so the "Experimental" text
+    matches the triangle beside it, which napari's stylesheet recolours with
+    this same value.
+    """
+    try:
+        from napari.settings import get_settings
+        from napari.utils.theme import get_theme
+
+        return get_theme(get_settings().appearance.theme).warning.as_hex()
+    except Exception:  # noqa: BLE001 - a missing/renamed theme must not
+        # take the widget that asked down with it.
+        return _FALLBACK_WARNING_COLOR
+
+
+#: Logical size, in pixels, to render the "Experimental" warning triangle at.
+#: napari's stylesheet pins ``#error_label`` to an 18 px box with 2 px of
+#: padding, so 14 px is the content area the label actually has. Drawing
+#: larger than this clips the triangle into an unrecognisable wedge, because
+#: the pixmap is painted inside that content rect.
+WARNING_ICON_SIZE = 14
+
+
+def warning_pixmap(size=WARNING_ICON_SIZE):
+    """Return napari's warning triangle as a pixmap, or ``None``.
+
+    Rendered from napari's own ``warning.svg`` in the theme's warning colour,
+    which is exactly what napari's stylesheet does for the ``error_label``
+    object name -- so the two agree pixel for pixel and the marker is the one
+    napari uses for its own experimental controls.
+
+    ``size`` is a *logical* size. ``QIcon.pixmap`` already does the high-DPI
+    work: it renders denser pixels and tags the result with their device
+    pixel ratio, so the pixmap keeps the requested logical size. Pre-scaling
+    the request, or re-stamping the ratio afterwards, doubles the triangle
+    and it then overflows the box the stylesheet gives the label.
+    """
+    try:
+        from napari._qt.qt_resources import QColoredSVGIcon
+
+        icon = QColoredSVGIcon.from_resources("warning").colored(
+            theme_warning_color()
+        )
+    except Exception:  # noqa: BLE001 - a missing resource must not take the
+        # widget that asked down with it; the label just stays empty.
+        return None
+    return icon.pixmap(size, size)
+
+
+def make_experimental_warning(tooltip, parent=None):
+    """Return an "Experimental" banner row marking a feature as unproven.
+
+    The marker is napari's own: ``warning.svg`` -- the triangle with the
+    exclamation mark -- in the current theme's warning colour, which is what
+    napari puts on its own experimental controls. The icon label carries the
+    ``error_label`` object name napari's stylesheet targets *and* renders
+    that same resource itself, so it looks right whether or not the
+    stylesheet reaches this widget. Reusing napari's icon rather than
+    shipping our own keeps every banner identical in every theme.
+
+    Parameters
+    ----------
+    tooltip : str
+        Shown on both the triangle and the text. Say what is unproven and
+        what to do about it, not just that the feature is new.
+    parent : QWidget, optional
+        Parent widget.
+
+    Returns
+    -------
+    QWidget
+        A row holding the triangle and the word "Experimental", left
+        aligned. The two labels are exposed as ``icon_label`` and
+        ``text_label`` so a caller can keep its own references to them.
+    """
+    widget = QWidget(parent)
+    row = QHBoxLayout(widget)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(4)
+
+    icon_label = QLabel()
+    icon_label.setObjectName("error_label")
+    icon_label.setToolTip(tooltip)
+    # napari's stylesheet targets ``#error_label`` with ``image: url(...)``,
+    # but Qt paints the stylesheet's ``image`` in addition to any pixmap set
+    # on the QLabel. When both are active, Qt renders two slightly misaligned
+    # triangles, creating a double-triangle visual artifact that fills in the
+    # exclamation mark cutout. Suppressing the stylesheet's duplicate image
+    # allows the single rendered pixmap to display cleanly with its
+    # exclamation mark intact, while retaining the geometry rules of
+    # ``#error_label``.
+    icon_label.setStyleSheet("image: none;")
+    icon_label.setAlignment(Qt.AlignCenter)
+    pixmap = warning_pixmap()
+    if pixmap is not None:
+        icon_label.setPixmap(pixmap)
+
+    text_label = QLabel("Experimental")
+    text_label.setToolTip(tooltip)
+    text_label.setStyleSheet(f"color: {theme_warning_color()};")
+
+    row.addWidget(icon_label)
+    row.addWidget(text_label)
+    row.addStretch(1)
+
+    widget.icon_label = icon_label
+    widget.text_label = text_label
+    return widget
 
 
 class CurrentPageStackedWidget(QStackedWidget):
@@ -207,6 +410,88 @@ def setup_primary_button(button, validator, run_callback, ready_tooltip=""):
     return refresh
 
 
+class AutoUpdateMixin:
+    """Adds an "Autoupdate" toggle that re-runs a tab's analysis on change.
+
+    Analysis tabs normally recompute only when their primary button is
+    clicked. A tab mixing this in calls :meth:`_build_autoupdate_toggle` to
+    create the switch, and then :meth:`request_autoupdate` from every place
+    that changes something the result depends on -- its own inputs, and the
+    external events the parent plotter forwards (a filter or calibration that
+    rewrote the phasor data, a new harmonic, a different layer selection).
+
+    The analysis only re-runs while the toggle is on *and* the tab's validator
+    reports that the inputs are complete, so a half-filled form never triggers
+    a run. Re-entrancy is blocked: an analysis writes layers and metadata,
+    which fires the very signals that requested it.
+    """
+
+    #: Class-level defaults so ``request_autoupdate`` is safe to call on a tab
+    #: that has not built its toggle yet (e.g. during ``__init__``).
+    _autoupdate_enabled = False
+    _autoupdate_running = False
+    _autoupdate_validator = None
+    _autoupdate_action = None
+    _autoupdate_run_button = None
+
+    def _build_autoupdate_toggle(self, run_button, validator, action, tooltip):
+        """Create the "Autoupdate" switch and return the widget holding it.
+
+        ``run_button`` is the tab's primary button; it is disabled while
+        autoupdate is on, since the analysis then runs on its own.
+        """
+        self._autoupdate_validator = validator
+        self._autoupdate_action = action
+        self._autoupdate_run_button = run_button
+
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.autoupdate_check = QToggleSwitch("Autoupdate")
+        self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
+        self.autoupdate_check.setChecked(False)
+        self.autoupdate_check.setToolTip(tooltip)
+        self.autoupdate_check.toggled.connect(self._on_autoupdate_toggled)
+        row.addWidget(self.autoupdate_check)
+        self.autoupdate_container = container
+        return container
+
+    def _on_autoupdate_toggled(self, checked):
+        """Handle the Autoupdate switch changing state."""
+        self._autoupdate_enabled = bool(checked)
+        if self._autoupdate_run_button is not None:
+            self._autoupdate_run_button.setEnabled(
+                not self._autoupdate_enabled
+            )
+        if self._autoupdate_enabled:
+            self.request_autoupdate()
+
+    def autoupdate_enabled(self):
+        """Return whether the tab re-runs its analysis automatically."""
+        return bool(self._autoupdate_enabled)
+
+    def request_autoupdate(self):
+        """Re-run the analysis if autoupdate is on and the inputs are valid.
+
+        Returns ``True`` when the analysis actually ran.
+        """
+        if not self._autoupdate_enabled or self._autoupdate_running:
+            return False
+        if self._autoupdate_action is None:
+            return False
+        if (
+            self._autoupdate_validator is not None
+            and self._autoupdate_validator() is not None
+        ):
+            return False
+        self._autoupdate_running = True
+        try:
+            self._autoupdate_action()
+        finally:
+            self._autoupdate_running = False
+        return True
+
+
 def _check_state_value(state):
     """Return the integer value of a Qt check-state.
 
@@ -302,6 +587,32 @@ def make_solid_contour_cmap(name, target_color):
     return LinearSegmentedColormap.from_list(
         name, [tuple(low_color), tuple(target)]
     )
+
+
+def colormap_max_color(cmap_name):
+    """Return the RGB at the top of *cmap_name*, or None if unresolvable.
+
+    Dialogs that only offer solid colours use it to show a group that was
+    given a colormap elsewhere in a matching colour, so the same group looks
+    the same wherever it is configured.
+    """
+    cmap = resolve_colormap_by_name(cmap_name)
+    if cmap is None:
+        return None
+    return tuple(float(channel) for channel in cmap(1.0)[:3])
+
+
+def group_style_mode(style, default='solid'):
+    """Return ``"colormap"`` or ``"solid"`` from a group style dict.
+
+    Group styles reach this module under two spellings: the contour dialog
+    and its renderer use ``"mode"``, while the copy persisted in layer
+    metadata uses ``"style"``. Read either so a style survives the round trip.
+    """
+    if not isinstance(style, dict):
+        return default
+    mode = style.get('mode', style.get('style'))
+    return mode if mode in ('colormap', 'solid') else default
 
 
 class PopoutWindowMixin:
@@ -511,6 +822,70 @@ def resolve_napari_layer_colormap(
     if custom_color is None:
         return None
     return create_napari_colormap_from_qcolor(custom_color)
+
+
+def layer_colormap_to_settings(colormap, gamma=None) -> dict:
+    """Return a JSON-friendly description of a layer's colormap.
+
+    Both the name and the colours are kept: the name restores a built-in
+    colormap exactly, and the colours rebuild a custom one (a picked solid
+    colour, say) in a session where that name means nothing.
+
+    Parameters
+    ----------
+    colormap : napari.utils.colormaps.Colormap
+        The layer's colormap.
+    gamma : float, optional
+        The layer's gamma, stored alongside when given.
+
+    Returns
+    -------
+    dict
+        ``{"colormap_name", "colormap_colors", "gamma"}``.
+    """
+    colors = getattr(colormap, "colors", None)
+    return {
+        "colormap_name": getattr(colormap, "name", None),
+        "colormap_colors": (
+            np.asarray(colors, dtype=float).tolist()
+            if colors is not None
+            else None
+        ),
+        "gamma": None if gamma is None else float(gamma),
+    }
+
+
+def layer_colormap_from_settings(entry):
+    """Return a layer colormap stored by :func:`layer_colormap_to_settings`.
+
+    A name that napari already knows with the same colours comes back as that
+    name, so the layer shows the familiar entry in its colormap menu. Anything
+    else is rebuilt from the stored colours. Returns None when *entry* holds
+    nothing usable.
+    """
+    if not isinstance(entry, dict):
+        return None
+    from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
+
+    name = entry.get("colormap_name")
+    colors = entry.get("colormap_colors")
+    known = AVAILABLE_COLORMAPS.get(name) if isinstance(name, str) else None
+    if colors is None:
+        return name if known is not None else None
+    colors = np.asarray(colors, dtype=float)
+    if (
+        colors.ndim != 2
+        or colors.shape[0] < 2
+        or colors.shape[1] not in (3, 4)
+    ):
+        return name if known is not None else None
+    if known is not None:
+        known_colors = np.asarray(known.colors, dtype=float)
+        if known_colors.shape == colors.shape and np.allclose(
+            known_colors, colors
+        ):
+            return name
+    return Colormap(colors=colors, name=name or "custom")
 
 
 def create_colormap_icon(cmap_name, width=25, height=10):
@@ -937,8 +1312,49 @@ def validate_harmonics_for_wavelet(harmonics):
     return True
 
 
+def _layer_mask_invalid(layer: Image):
+    """Return the boolean "outside the mask" array for *layer*, or ``None``.
+
+    Honours the label selection (``mask_labels``) and ``mask_invert`` stored
+    alongside the mask. ``None`` means the layer carries no mask.
+    """
+    if 'mask' not in layer.metadata:
+        return None
+    mask = layer.metadata['mask']
+    mask_labels = layer.metadata.get('mask_labels')
+    invert = layer.metadata.get('mask_invert', False)
+    # Build mask_invalid respecting label-specific selection
+    if mask_labels is not None:
+        if len(mask_labels) > 0:
+            # Only the selected labels are valid
+            if invert:
+                return np.isin(mask, mask_labels)
+            return ~np.isin(mask, mask_labels)
+        # No labels selected -> display data as if it was without a mask
+        return np.zeros(mask.shape, dtype=bool)
+    # No label selection: all non-zero pixels are valid
+    return mask <= 0 if not invert else mask > 0
+
+
+def _mask_phasor_arrays(layer: Image, mean, real, imag, harmonics):
+    """Set the pixels outside *layer*'s mask to NaN in the given arrays."""
+    mask_invalid = _layer_mask_invalid(layer)
+    if mask_invalid is None:
+        return mean, real, imag
+
+    mean = np.where(mask_invalid, np.nan, mean)
+    if real.ndim > mean.ndim:
+        for h in range(len(harmonics)):
+            real[h] = np.where(mask_invalid, np.nan, real[h])
+            imag[h] = np.where(mask_invalid, np.nan, imag[h])
+    else:
+        real = np.where(mask_invalid, np.nan, real)
+        imag = np.where(mask_invalid, np.nan, imag)
+    return mean, real, imag
+
+
 def _extract_phasor_arrays_from_layer(
-    layer: Image, harmonics: np.ndarray = None
+    layer: Image, harmonics: np.ndarray = None, apply_mask: bool = True
 ):
     """Extract phasor arrays from layer metadata.
 
@@ -948,6 +1364,10 @@ def _extract_phasor_arrays_from_layer(
         Napari image layer with phasor features.
     harmonics : np.ndarray, optional
         Harmonic values. If None, will be extracted from layer.
+    apply_mask : bool, optional
+        Whether to NaN out the pixels outside the layer's mask. Pass ``False``
+        to get the unmasked arrays and mask them yourself *after* filtering
+        (see :func:`compute_filter_and_threshold`).
 
     Returns
     -------
@@ -964,29 +1384,10 @@ def _extract_phasor_arrays_from_layer(
     real = layer.metadata['G_original'].copy()
     imag = layer.metadata['S_original'].copy()
 
-    # Apply mask if present in metadata
-    if 'mask' in layer.metadata:
-        mask = layer.metadata['mask']
-        mask_labels = layer.metadata.get('mask_labels')
-        invert = layer.metadata.get('mask_invert', False)
-        # Build mask_invalid respecting label-specific selection
-        if mask_labels is not None:
-            if len(mask_labels) > 0:
-                # Only the selected labels are valid
-                if invert:
-                    mask_invalid = np.isin(mask, mask_labels)
-                else:
-                    mask_invalid = ~np.isin(mask, mask_labels)
-            else:
-                # No labels selected -> display data as if it was without a mask
-                mask_invalid = np.zeros(mask.shape, dtype=bool)
-        else:
-            # No label selection: all non-zero pixels are valid
-            mask_invalid = mask <= 0 if not invert else mask > 0
-        mean = np.where(mask_invalid, np.nan, mean)
-        for h in range(len(harmonics)):
-            real[h] = np.where(mask_invalid, np.nan, real[h])
-            imag[h] = np.where(mask_invalid, np.nan, imag[h])
+    if apply_mask:
+        mean, real, imag = _mask_phasor_arrays(
+            layer, mean, real, imag, harmonics
+        )
 
     return mean, real, imag, harmonics
 
@@ -1044,7 +1445,11 @@ def _apply_filter_and_threshold_to_phasor_arrays(
         # Filter each XY slice independently. For ndim>2, all leading axes are
         # treated as slice/index axes and therefore skipped by the median filter.
         skip_axis = tuple(range(mean.ndim - 2)) if mean.ndim > 2 else None
-        mean, real, imag = phasor_filter_median(
+        # Median filtering is by far the most expensive thing the filter tab
+        # does, and it re-runs on every slider move. ``parallel_filter_median``
+        # splits large images into row bands with enough halo to stay
+        # bit-identical to the unsplit call; small ones go straight through.
+        mean, real, imag = parallel_filter_median(
             mean,
             real,
             imag,
@@ -1116,8 +1521,81 @@ def apply_filter_and_threshold(
         Harmonic values for wavelet filter. If None, will be extracted from layer.
 
     """
+    arrays = compute_filter_and_threshold(
+        layer,
+        threshold=threshold,
+        threshold_upper=threshold_upper,
+        filter_method=filter_method,
+        size=size,
+        repeat=repeat,
+        sigma=sigma,
+        levels=levels,
+        harmonics=harmonics,
+    )
+    assign_filter_and_threshold(
+        layer,
+        arrays,
+        threshold=threshold,
+        threshold_upper=threshold_upper,
+        threshold_method=threshold_method,
+        filter_method=filter_method,
+        size=size,
+        repeat=repeat,
+        sigma=sigma,
+        levels=levels,
+    )
+    return
+
+
+def compute_filter_and_threshold(
+    layer: Image,
+    /,
+    *,
+    threshold: float = None,
+    threshold_upper: float = None,
+    filter_method: str = None,
+    size: int = None,
+    repeat: int = None,
+    sigma: float = None,
+    levels: int = None,
+    harmonics: np.ndarray = None,
+    apply_mapping_filters: bool = True,
+):
+    """Compute a layer's filtered and thresholded phasor arrays.
+
+    The array half of :func:`apply_filter_and_threshold`. It only reads the
+    layer's metadata dict and returns fresh arrays, touching no Qt or napari
+    state, so it is safe to run in a worker thread. Pair it with
+    :func:`assign_filter_and_threshold` on the main thread.
+
+    Parameters
+    ----------
+    layer : napari.layers.Image
+        Napari image layer with phasor features.
+    threshold, threshold_upper, filter_method, size, repeat, sigma, levels : optional
+        As in :func:`apply_filter_and_threshold`.
+    harmonics : np.ndarray, optional
+        Harmonic values. Read from the layer when None.
+    apply_mapping_filters : bool, optional
+        Also apply the layer's metric filter stack (see
+        :mod:`napari_phasors._mapping_filters`). On by default so that every
+        path which rebuilds the phasor arrays from the originals -- an
+        intensity threshold, a mask edit, an imported analysis -- reproduces
+        the metric filters instead of dropping them. Pass ``False`` to obtain
+        the unfiltered baseline the metrics themselves are measured on.
+
+    Returns
+    -------
+    tuple
+        ``(mean, real, imag)`` arrays.
+    """
+    # The mask is applied *after* filtering: a mask restricts which pixels are
+    # shown, it must not change the phasor coordinates of the pixels it keeps.
+    # Masking first would filter every kept pixel against NaN neighbours, which
+    # moves it away from the position it had when it was selected (a phasor
+    # cursor selection is scattered, so nearly all of its pixels border NaN).
     mean, real, imag, harmonics = _extract_phasor_arrays_from_layer(
-        layer, harmonics
+        layer, harmonics, apply_mask=False
     )
 
     mean, real, imag = _apply_filter_and_threshold_to_phasor_arrays(
@@ -1133,6 +1611,47 @@ def apply_filter_and_threshold(
         sigma=sigma,
         levels=levels,
     )
+
+    mean, real, imag = _mask_phasor_arrays(layer, mean, real, imag, harmonics)
+
+    if apply_mapping_filters:
+        mean, real, imag = apply_layer_filters(
+            layer, (mean, real, imag), harmonics=harmonics
+        )
+
+    return mean, real, imag
+
+
+def assign_filter_and_threshold(
+    layer: Image,
+    arrays,
+    /,
+    *,
+    threshold: float = None,
+    threshold_upper: float = None,
+    threshold_method: str = None,
+    filter_method: str = None,
+    size: int = None,
+    repeat: int = None,
+    sigma: float = None,
+    levels: int = None,
+):
+    """Write computed phasor arrays and their settings back into a layer.
+
+    The napari half of :func:`apply_filter_and_threshold`: it mutates the
+    layer and refreshes it, so it must run on the main thread.
+
+    Parameters
+    ----------
+    layer : napari.layers.Image
+        Layer to update.
+    arrays : tuple
+        ``(mean, real, imag)`` as returned by
+        :func:`compute_filter_and_threshold`.
+    threshold, threshold_upper, threshold_method, filter_method, size, repeat, sigma, levels : optional
+        Settings to record in the layer metadata.
+    """
+    mean, real, imag = arrays
 
     layer.metadata['G'] = real
     layer.metadata['S'] = imag
@@ -1162,7 +1681,79 @@ def apply_filter_and_threshold(
     layer.metadata["settings"]["threshold_method"] = threshold_method
     layer.refresh()
 
-    return
+
+def apply_filter_and_threshold_to_layers(
+    layer_params, workers=None, progress=None
+):
+    """Filter and threshold several layers, computing them concurrently.
+
+    Each layer's filtering is independent and spends its time inside
+    phasorpy's Cython kernels, which release the GIL, so the computations run
+    in a thread pool while the layer updates happen in order on the calling
+    thread.
+
+    Parameters
+    ----------
+    layer_params : sequence of tuple
+        ``(layer, params)`` pairs, where *params* is the keyword dict for
+        :func:`compute_filter_and_threshold`. Per-layer parameters are
+        supported because settings such as the wavelet harmonics differ from
+        one layer to the next.
+    workers : int, optional
+        Thread count. Defaults to one per core, capped.
+    progress : callable, optional
+        Called with each index as its computation finishes.
+
+    Returns
+    -------
+    list
+        One entry per layer: ``None`` on success, or the exception raised
+        while computing that layer.
+    """
+    from ._parallel import parallel_compute_apply
+
+    pairs = list(layer_params)
+    if not pairs:
+        return []
+
+    def compute(pair):
+        layer, params = pair
+        return compute_filter_and_threshold(
+            layer,
+            threshold=params.get("threshold"),
+            threshold_upper=params.get("threshold_upper"),
+            filter_method=params.get("filter_method"),
+            size=params.get("size"),
+            repeat=params.get("repeat"),
+            sigma=params.get("sigma"),
+            levels=params.get("levels"),
+            harmonics=params.get("harmonics"),
+        )
+
+    def apply(pair, arrays):
+        layer, params = pair
+        assign_filter_and_threshold(
+            layer,
+            arrays,
+            threshold=params.get("threshold"),
+            threshold_upper=params.get("threshold_upper"),
+            threshold_method=params.get("threshold_method"),
+            filter_method=params.get("filter_method"),
+            size=params.get("size"),
+            repeat=params.get("repeat"),
+            sigma=params.get("sigma"),
+            levels=params.get("levels"),
+        )
+        return None
+
+    return parallel_compute_apply(
+        pairs,
+        compute,
+        apply,
+        workers=workers,
+        progress=progress,
+        on_error="collect",
+    )
 
 
 def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
@@ -1217,6 +1808,175 @@ def _get_layer_group_entry(layer):
     if g:
         return g
     return layer.metadata.get('group')
+
+
+def format_phasor_layer_name(
+    stem: str,
+    channel_label: Any = None,
+    *,
+    is_stack: bool = False,
+    is_mosaic: bool = False,
+) -> str:
+    """Format a consistent napari layer name for phasor intensity images.
+
+    Follows the convention:
+    - Single channel: ``'<stem> Intensity [Phasor]'``
+    - Multi-channel: ``'<stem> Intensity: Channel <channel_label> [Phasor]'``
+    - Stack: ``'<stem> Stack Intensity [Phasor]'``
+    - Mosaic: ``'<stem> Mosaic Intensity [Phasor]'``
+
+    Parameters
+    ----------
+    stem : str
+        Base filename or directory stem without extension.
+    channel_label : Any, optional
+        Channel index or label. If provided and non-empty, appends
+        ``': Channel <channel_label>'``.
+    is_stack : bool, optional
+        Whether the layer is a z/t-stack.
+    is_mosaic : bool, optional
+        Whether the layer is a stitched mosaic.
+
+    Returns
+    -------
+    str
+        Formatted layer name.
+    """
+    qualifiers = []
+    if is_mosaic:
+        qualifiers.append("Mosaic")
+    if is_stack:
+        qualifiers.append("Stack")
+    qualifier_str = f"{' '.join(qualifiers)} " if qualifiers else ""
+    name = f"{stem} {qualifier_str}Intensity"
+    if channel_label is not None and str(channel_label).strip() != "":
+        name = f"{name}: Channel {channel_label}"
+    return f"{name} [Phasor]"
+
+
+def extract_channel_label(
+    layer_name: str | None = None,
+    metadata: dict | None = None,
+) -> str | None:
+    """Extract channel label from metadata settings or a layer name.
+
+    Parameters
+    ----------
+    layer_name : str, optional
+        Layer name, potentially ending with ``': Channel <label> [Phasor]'``.
+    metadata : dict, optional
+        Layer metadata dict, potentially containing ``settings['channel']``.
+
+    Returns
+    -------
+    str or None
+        The extracted channel label as a string, or None if not found.
+    """
+    if metadata and isinstance(metadata, dict):
+        settings = metadata.get("settings")
+        if isinstance(settings, dict) and "channel" in settings:
+            ch = settings["channel"]
+            if ch is not None:
+                return str(ch)
+    if layer_name:
+        match = re.search(
+            r":\s*Channel\s+([^:\[]+?)(?:\s*\[Phasor\])?(?:\s*\[\d+\])?$",
+            layer_name,
+        )
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def extract_channel_suffix(layer_name: str | None) -> str:
+    """Extract channel suffix (e.g. ``': Channel 0'``) from a layer name.
+
+    Returns an empty string if no channel suffix is present.
+    """
+    if not layer_name:
+        return ""
+    match = re.search(
+        r"(:\s*Channel\s+[^:\[]+?)(?:\s*\[Phasor\])?(?:\s*\[\d+\])?$",
+        layer_name,
+    )
+    return match.group(1) if match else ""
+
+
+def name_match_stem(value, strip_directory=True):
+    """Return the comparable stem of a file path or layer name.
+
+    Drops any directory part, the extension, and any further compound
+    suffix, so ``"sample.ome.tif"``, ``"sample.tif Intensity [Phasor]"`` and
+    ``"sample"`` all compare as ``"sample"``.
+
+    Parameters
+    ----------
+    value : str
+        File path or layer name.
+    strip_directory : bool, optional
+        Take the basename first. True for file paths; False for napari
+        layer names, which may legitimately contain a ``/``.
+
+    Returns
+    -------
+    str
+        Lower-cased stem, possibly empty.
+    """
+    if strip_directory:
+        value = os.path.basename(value)
+    stem = os.path.splitext(value)[0].split(".")[0]
+    stem = re.sub(
+        r"\s*(?:Intensity.*?\[Phasor\]|\[Phasor\]\s*Intensity|Intensity\s*Image).*$",
+        "",
+        stem,
+        flags=re.IGNORECASE,
+    )
+    return stem.lower()
+
+
+def rank_mask_candidates(target, candidates, strip_directory=True):
+    """Return the *candidates* whose name pairs with *target*, best first.
+
+    Only exact and substring stem matches are returned: pairing masks by
+    name is only useful when it is right, and a looser (fuzzy) rule
+    silently pairs sibling names such as ``sample_control`` with
+    ``sample_treated_mask``. Anything that does not match is left out
+    entirely, so callers can tell "no candidate" from "a weak candidate"
+    and leave the choice to the user.
+
+    Parameters
+    ----------
+    target : str
+        File path or layer name to find masks for.
+    candidates : iterable of str
+        Mask file paths or mask layer names.
+    strip_directory : bool, optional
+        Passed to :func:`name_match_stem` for both sides.
+
+    Returns
+    -------
+    list of str
+        Matching candidates, best match first; empty when none match.
+    """
+    target_stem = name_match_stem(target, strip_directory)
+    if not target_stem:
+        return []
+    scored = []
+    for candidate in candidates:
+        stem = name_match_stem(candidate, strip_directory)
+        if not stem:
+            continue
+        if stem == target_stem:
+            score = 0
+        elif target_stem in stem or stem in target_stem:
+            # Closest in length wins: "s1_mask" beats "s1_mask_edited".
+            score = 1 + abs(len(stem) - len(target_stem))
+        else:
+            continue
+        scored.append((score, candidate))
+    # Name is the tie-breaker, so the ranking is stable and predictable.
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [candidate for _score, candidate in scored]
 
 
 def build_groups_from_layer_metadata(viewer, layer_names):
@@ -1304,7 +2064,10 @@ def build_group_styles_from_layer_metadata(viewer, layer_names):
             c = tuple(gcolor) if gcolor is not None else (1.0, 0.0, 0.0)
             colors[next_gid] = c
             styles[next_gid] = {
+                # Both spellings: the contour dialog and its renderer read
+                # ``mode``, older persisted styles say ``style``.
                 'style': gstyle,
+                'mode': gstyle,
                 'colormap': gcmap or 'jet',
                 'color': c,
             }
@@ -1312,6 +2075,15 @@ def build_group_styles_from_layer_metadata(viewer, layer_names):
         assignments[layer_name] = name_to_gid[gname]
 
     return assignments, names, colors, styles
+
+
+def _colors_match(first, second, tolerance=1e-3):
+    """Return True when two RGB colours are the same within *tolerance*."""
+    if first is None or second is None:
+        return False
+    first = np.asarray(normalize_rgb(first), dtype=float)[:3]
+    second = np.asarray(normalize_rgb(second), dtype=float)[:3]
+    return bool(np.allclose(first, second, atol=tolerance))
 
 
 def save_groups_to_layer_metadata(
@@ -1343,7 +2115,11 @@ def save_groups_to_layer_metadata(
     group_styles : dict {gid: dict}, optional
         Contour-specific style data with keys ``style``, ``colormap``,
         ``color``.  When provided the ``colormap`` and ``style`` keys are
-        also persisted so the contour dialog can restore them.
+        also persisted so the contour dialog can restore them.  When it is
+        omitted — as it is for every caller that does not draw contours —
+        any style already stored for a group of the same name is carried
+        over, so grouping edited from the histogram does not silently reset
+        the contour styling.
     """
     for layer_name in layer_names:
         try:
@@ -1364,11 +2140,205 @@ def save_groups_to_layer_metadata(
         }
         if group_styles:
             style_data = group_styles.get(gid, {})
-            gstyle = style_data.get('style', 'solid')
+            gstyle = group_style_mode(style_data)
             group_data['style'] = gstyle
             if gstyle == 'colormap':
-                group_data['colormap'] = style_data.get('colormap', 'jet')
+                colormap_name = style_data.get('colormap', 'jet')
+                group_data['colormap'] = colormap_name
+                # Dialogs that only offer solid colours read ``color``, so
+                # store the top of the colormap: the group then shows up
+                # there in the colour it is actually drawn with.
+                max_color = colormap_max_color(colormap_name)
+                if max_color is not None:
+                    group_data['color'] = list(max_color)
+        else:
+            # A caller that does not draw contours keeps whatever contour
+            # styling the group already had — unless the colour it is saving
+            # is no longer the colormap's, which means the user picked a new
+            # one and the contour should be regenerated from it.
+            existing = _get_layer_group_entry(layer) or {}
+            existing_cmap = existing.get('colormap')
+            if existing.get('name') == gname and (
+                group_style_mode(existing) == 'solid'
+                or gcolor is None
+                or _colors_match(gcolor, colormap_max_color(existing_cmap))
+            ):
+                for key in ('style', 'colormap'):
+                    if key in existing:
+                        group_data[key] = existing[key]
         layer.metadata['settings']['group'] = group_data
+
+
+def split_items_by_group(items, group_assignments):
+    """Split ``{label: value}`` into per-group members and unassigned labels.
+
+    Layers with no entry in *group_assignments* are returned separately
+    rather than being folded into the first group: an unassigned layer must
+    never contribute silently to another group's mean, SD or statistics.
+
+    Parameters
+    ----------
+    items : dict
+        ``{label: value}`` where *value* is any per-layer payload.
+    group_assignments : dict
+        ``{label: gid}``; labels missing from it are treated as unassigned.
+
+    Returns
+    -------
+    groups : dict {gid: list of (label, value)}
+    unassigned : list of str
+        Labels with no group, in the order they appear in *items*.
+    """
+    groups = {}
+    unassigned = []
+    for label, value in items.items():
+        gid = group_assignments.get(label)
+        if gid is None:
+            unassigned.append(label)
+            continue
+        groups.setdefault(gid, []).append((label, value))
+    return groups, unassigned
+
+
+def confirm_unassigned_layers(parent, unassigned, what="plot and statistics"):
+    """Ask the user what to do with layers that belong to no group.
+
+    Grouped-mode dialogs only assign the layers the user actually ticked.
+    A layer left out takes part in no group and is dropped from the output,
+    so it must never disappear without the user being told.
+
+    Parameters
+    ----------
+    parent : QWidget
+        Dialog the message box belongs to.
+    unassigned : list of str
+        Layer names with no group. An empty list confirms immediately.
+    what : str, optional
+        Name of the output the layers are excluded from, used in the message.
+
+    Returns
+    -------
+    bool
+        ``True`` to go ahead and exclude them, ``False`` to keep the
+        settings dialog open so the user can fix the assignment.
+    """
+    if not unassigned:
+        return True
+    listed = "\n".join(f"  \u2022 {name}" for name in unassigned)
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle("Layers without a group")
+    box.setText(
+        f"{len(unassigned)} layer(s) are not assigned to any group and "
+        f"will be excluded from the grouped {what}:"
+    )
+    box.setInformativeText(listed)
+    back_btn = box.addButton("Go back", QMessageBox.RejectRole)
+    box.addButton("Exclude them", QMessageBox.AcceptRole)
+    box.setDefaultButton(back_btn)
+    box.exec()
+    return box.clickedButton() is not back_btn
+
+
+def unassigned_layer_labels(layer_labels, group_assignments):
+    """Return the *layer_labels* missing from *group_assignments*, in order."""
+    return [label for label in layer_labels if label not in group_assignments]
+
+
+#: Joins a dataset name and the mask label it was split into, giving names
+#: like ``"Lifetime: cells.tif - label 3"``.
+MASK_LABEL_SEPARATOR = " \u2013 "
+
+
+def mask_label_split_name(label, value):
+    """Return the dataset name for mask label *value* of *label*."""
+    return f"{label}{MASK_LABEL_SEPARATOR}label {value}"
+
+
+def mask_label_values(metadata):
+    """Return the mask label values a masked layer is analysed with.
+
+    Parameters
+    ----------
+    metadata : dict
+        ``metadata`` of an analysed image layer, as written by the mask
+        controls of the Phasor Plot widget.
+
+    Returns
+    -------
+    list of int
+        The positive label values the mask restricts the analysis to, in
+        ascending order. Empty when the layer carries no mask that describes
+        one region per label: no mask at all, an inverted one (whose analysed
+        pixels are the complement of the labels, not one region each), or one
+        with no label selected, which the plugin treats as no masking.
+    """
+    mask = metadata.get('mask') if metadata else None
+    if mask is None or metadata.get('mask_invert', False):
+        return []
+    selected = metadata.get('mask_labels')
+    # ``None`` means every label of the mask is analysed; the plugin
+    # normalises "all ticked" to it (see PlotterWidget._on_mask_layer_changed).
+    values = (
+        np.unique(np.asarray(mask))
+        if selected is None
+        else np.atleast_1d(np.asarray(list(selected)))
+    )
+    return sorted({int(value) for value in values.ravel() if value > 0})
+
+
+def find_labels_layer_for_mask(viewer, mask):
+    """Return the Labels layer whose data is *mask*, or None.
+
+    A layer stores the mask it was analysed with as a plain array; matching
+    it back to a layer is what lets the per-label curves be drawn in the
+    colours napari paints those labels with.
+    """
+    mask = np.asarray(mask)
+    for layer in getattr(viewer, "layers", []):
+        if not isinstance(layer, Labels):
+            continue
+        data = np.asarray(layer.data)
+        if data.shape == mask.shape and np.array_equal(data, mask):
+            return layer
+    return None
+
+
+def split_data_by_mask_labels(data, mask, values, keep_shape=False):
+    """Split *data* into the pixels of each mask label.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Array shaped like the analysed layer.
+    mask : np.ndarray
+        Label array of the same shape, as stored in the layer metadata.
+    values : iterable of int
+        Label values to extract; empty ones are skipped.
+    keep_shape : bool, optional
+        Return arrays shaped like *data* with every other label set to NaN,
+        instead of a flat array of the label's pixels. Needed by callers
+        that go on to slice the result along a frame axis.
+
+    Returns
+    -------
+    dict
+        ``{label_value: np.ndarray}``, empty when *mask* does not line up
+        with *data*.
+    """
+    data = np.asarray(data)
+    mask = np.asarray(mask)
+    if mask.shape != data.shape:
+        return {}
+    parts = {}
+    for value in values:
+        selected = mask == value
+        if not selected.any():
+            continue
+        parts[value] = (
+            np.where(selected, data, np.nan) if keep_shape else data[selected]
+        )
+    return parts
 
 
 class _ColormapDelegate(QStyledItemDelegate):
@@ -1406,7 +2376,20 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         """Return the item size, heightened to fit the primary-layer action."""
         base = super().sizeHint(option, index)
-        return QSize(base.width(), max(base.height(), 24))
+        width = base.width()
+        is_header = index.data(self.PRIMARY_ROLE + 1) is not None
+        if self._enable_primary_layer and not is_header:
+            fm_primary = QFontMetrics(self._label_font)
+            fm_action = QFontMetrics(self._action_font)
+            extra_label_width = (
+                max(
+                    fm_primary.horizontalAdvance("Primary layer"),
+                    fm_action.horizontalAdvance("Set as primary"),
+                )
+                + 18
+            )
+            width += extra_label_width
+        return QSize(width, max(base.height(), 24))
 
     def paint(self, painter, option, index):
         """Draw the item plus its primary-layer action or indicator."""
@@ -1635,6 +2618,8 @@ class CheckableComboBox(QComboBox):
         # small fixed option sets where every state should read literally.
         self._show_checked_list = show_checked_list
         self._header_count = 0  # number of non-checkable header rows at top
+        # Items kept in the model but not offered in the dropdown.
+        self._hidden_items = set()
         self.lineEdit().setPlaceholderText(self._placeholder_text)
 
         self._enable_primary_layer = enable_primary_layer
@@ -1818,8 +2803,14 @@ class CheckableComboBox(QComboBox):
 
     def clear(self):
         """Clear all items."""
+        # Row visibility lives on the view, keyed by row index, so drop it
+        # before the model shrinks or a stale flag would hide a new item.
+        view = self.view()
+        for i in range(self.model().rowCount()):
+            view.setRowHidden(i, False)
         self.model().clear()
         self._header_count = 0
+        self._hidden_items = set()
         self._primary_layer_name = ""
         self._last_emitted_primary = ""
         self._update_display_text()
@@ -1839,6 +2830,37 @@ class CheckableComboBox(QComboBox):
             self.model().item(i).text()
             for i in range(self._header_count, self.model().rowCount())
             if self.model().item(i)
+        ]
+
+    def setHiddenItems(self, texts):
+        """Hide the named items from the dropdown, showing all the others.
+
+        The items stay in the model (so check states and row order survive);
+        they are simply not offered in the list. Used to keep an option that
+        already belongs elsewhere — a layer assigned to another group, say —
+        out of this dropdown.
+
+        Parameters
+        ----------
+        texts : iterable of str
+            Item texts to hide. Pass an empty iterable to show everything.
+        """
+        hidden = set(texts)
+        self._hidden_items = hidden
+        view = self.view()
+        for i in range(self._header_count, self.model().rowCount()):
+            item = self.model().item(i)
+            if item is not None:
+                view.setRowHidden(i, item.text() in hidden)
+
+    def hiddenItems(self):
+        """Return the set of item texts currently hidden from the dropdown."""
+        return set(self._hidden_items)
+
+    def visibleItems(self):
+        """Return the item texts offered in the dropdown, in list order."""
+        return [
+            text for text in self.allItems() if text not in self._hidden_items
         ]
 
     def getPrimaryLayer(self):
@@ -2000,9 +3022,41 @@ class CheckableComboBox(QComboBox):
                 line_edit.setText(f"{len(checked)} {self._unit} selected")
 
     def showPopup(self):
-        """Show the popup and track visibility."""
+        """Show the popup and track visibility.
+
+        Ensures the popup dropdown list is wide enough to display the full
+        width of all items (checkboxes, labels, primary action if enabled,
+        and scrollbars) even when the dock widget or combobox is narrow.
+        """
         self._popup_visible = True
+
+        view = self.view()
+        max_col_w = max(view.sizeHintForColumn(0), 0)
+
+        scrollbar = view.verticalScrollBar()
+        scrollbar_w = (
+            scrollbar.sizeHint().width()
+            if scrollbar is not None and scrollbar.sizeHint().width() > 0
+            else self.style().pixelMetric(
+                QStyle.PM_ScrollBarExtent, None, self
+            )
+        )
+        frame_w = view.frameWidth() * 2
+        content_w = max_col_w + scrollbar_w + frame_w + 10
+
+        min_popup_width = max(self.width(), content_w, 150)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            min_popup_width = min(
+                min_popup_width, screen.availableGeometry().width()
+            )
+
+        view.setMinimumWidth(min_popup_width)
         super().showPopup()
+
+        popup_win = view.window()
+        if popup_win is not None and popup_win.width() < min_popup_width:
+            popup_win.resize(min_popup_width, popup_win.height())
 
     def hidePopup(self):
         """Hide the popup and clear hover state."""
@@ -2022,15 +3076,75 @@ class CheckableComboBox(QComboBox):
             item.setCheckState(state)
 
 
-class HistogramSettingsDialog(QDialog):
+class ExclusiveGroupRowsMixin:
+    """Keeps every layer in at most one group row of a settings dialog.
+
+    Grouped-mode dialogs list the same layers in one checkable combobox per
+    group. Without this, a layer could be ticked in several groups at once
+    and would end up counted twice — or silently resolved to a single group
+    the user never picked. The mixin removes a layer from every *other*
+    group's dropdown as soon as one group claims it, so the exclusivity is
+    visible rather than enforced after the fact.
+
+    Hosts must provide ``self._group_row_data``: a list of dicts with a
+    ``"layer_combo"`` :class:`CheckableComboBox`. Call
+    :meth:`_sync_group_exclusivity` after building, adding or removing a
+    row, and connect each combobox's ``selectionChanged`` to it.
+    """
+
+    def _sync_group_exclusivity(self) -> None:
+        """Offer each layer only in the group row that currently claims it."""
+        if getattr(self, "_syncing_group_rows", False):
+            return
+        self._syncing_group_rows = True
+        try:
+            # First row to claim a layer keeps it; interactively this never
+            # ties, since a claimed layer is hidden from the other rows.
+            owner = {}
+            for index, row in enumerate(self._group_row_data):
+                for label in row["layer_combo"].checkedItems():
+                    owner.setdefault(label, index)
+
+            for index, row in enumerate(self._group_row_data):
+                combo = row["layer_combo"]
+                taken = [
+                    label
+                    for label, owner_index in owner.items()
+                    if owner_index != index
+                ]
+                # Drop a stale duplicate claim before hiding the layer here,
+                # so what the dropdown shows matches what the row reports.
+                duplicates = [
+                    label for label in combo.checkedItems() if label in taken
+                ]
+                if duplicates:
+                    combo.setCheckedItems(
+                        [
+                            label
+                            for label in combo.checkedItems()
+                            if label not in duplicates
+                        ]
+                    )
+                combo.setHiddenItems(taken)
+        finally:
+            self._syncing_group_rows = False
+
+
+class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     """Dialog for histogram visualization settings.
 
     Provides controls for:
     - Display mode: Merged / Individual layers / Grouped.
+    - Splitting the masked layers into one curve per mask label.
     - Toggling SD shading (for Merged and Grouped modes).
+    - Normalising every curve to its own maximum.
+    - Logarithmic y axis.
+    - Number of histogram bins.
     - Central-tendency vertical line (Mean / Median / Center of mass).
     - Show / hide legend.
     - Per-layer colour selection (Individual layers mode).
+    - Curve colouring and per-series colours when several quantities are
+      merged into one curve each (Merged mode).
     - Group assignment and per-group colour (Grouped mode).
 
     Parameters
@@ -2039,16 +3153,39 @@ class HistogramSettingsDialog(QDialog):
         Initial display mode.
     show_sd : bool
         Initial state of the *Show standard deviation* checkbox.
+    normalize : bool
+        Initial state of the *Normalize to maximum* checkbox.
     central_tendency : str
         Initial central-tendency line selection.
     show_legend : bool
         Initial state of the *Show legend* checkbox.
+    log_scale : bool, optional
+        Initial state of the *Logarithmic y axis* checkbox.
+    bins : int, optional
+        Initial number of histogram bins.
+    split_mask_labels : bool, optional
+        Initial state of the *Separate mask labels* checkbox.
+    split_mask_labels_available : bool, optional
+        Whether that checkbox is shown at all. It only means something when
+        the analysed layers are masked with several labels.
     layer_labels : list of str, optional
-        Layer names for group assignment.
+        Dataset names offered per-curve colours in *Individual layers* mode.
+    group_labels : list of str, optional
+        Names offered for group assignment, defaulting to *layer_labels*.
+        They can differ: a tab that plots several quantities per acquisition
+        groups the acquisitions, not each of the curves derived from them.
     group_assignments : dict, optional
-        ``{label: group_int}`` initial group assignments.
+        ``{group_label: group_int}`` initial group assignments.
     layer_colors : dict, optional
         ``{label: (r, g, b)}`` initial per-layer colours (0-1 floats).
+    series_labels : list of str, optional
+        Names of the series merged into one curve each. When given, Merged
+        mode offers a colouring choice and one colour per series.
+    series_colors : dict, optional
+        ``{series_name: (r, g, b)}`` initial per-series colours.
+    series_style : str, optional
+        ``"colormap"`` to draw each series in its layers' colormap, or
+        ``"solid"`` for one flat colour per series.
     group_colors : dict, optional
         ``{group_id: (r, g, b)}`` initial per-group colours (0-1 floats).
     group_names : dict, optional
@@ -2065,17 +3202,28 @@ class HistogramSettingsDialog(QDialog):
         "Median",
     )
     MAX_GROUPS = 6
+    MIN_BINS = 5
+    MAX_BINS = 2000
 
     def __init__(
         self,
         display_mode: str = "Merged",
         show_sd: bool = False,
+        normalize: bool = False,
         central_tendency: str = "None",
         show_legend: bool = False,
         aspect_ratio: str = "auto",
+        log_scale: bool = False,
+        bins: int = 150,
+        split_mask_labels: bool = False,
+        split_mask_labels_available: bool = False,
         layer_labels: list = None,
+        group_labels: list = None,
         group_assignments: dict = None,
         layer_colors: dict = None,
+        series_labels: list = None,
+        series_colors: dict = None,
+        series_style: str = "colormap",
         group_colors: dict = None,
         group_names: dict = None,
         parent: QWidget = None,
@@ -2096,10 +3244,61 @@ class HistogramSettingsDialog(QDialog):
         mode_layout.addWidget(self.mode_combo)
         layout.addLayout(mode_layout)
 
+        # --- Separate mask labels ---
+        self.split_labels_checkbox = QCheckBox("Separate mask labels")
+        self.split_labels_checkbox.setToolTip(
+            "Analyse each label of the mask on its own: one curve per label "
+            "in the histogram and one row per label in the statistics table, "
+            "instead of one per layer. Shown when the analysed layers are "
+            "masked with more than one label."
+        )
+        self.split_labels_checkbox.setChecked(split_mask_labels)
+        self.split_labels_checkbox.setVisible(split_mask_labels_available)
+        self.split_labels_checkbox.toggled.connect(
+            self._on_split_labels_toggled
+        )
+        layout.addWidget(self.split_labels_checkbox)
+
         # --- Show SD ---
         self.sd_checkbox = QCheckBox("Show standard deviation")
         self.sd_checkbox.setChecked(show_sd)
         layout.addWidget(self.sd_checkbox)
+
+        # --- Normalise to maximum ---
+        self.normalize_checkbox = QCheckBox("Normalize to maximum")
+        self.normalize_checkbox.setToolTip(
+            "Scale every curve so its highest point is 1. Distributions "
+            "with very different pixel counts can then be compared in the "
+            "same plot."
+        )
+        self.normalize_checkbox.setChecked(normalize)
+        layout.addWidget(self.normalize_checkbox)
+
+        # --- Logarithmic y axis ---
+        self.log_scale_checkbox = QCheckBox("Logarithmic y axis")
+        self.log_scale_checkbox.setToolTip(
+            "Show the y axis on a logarithmic scale, so sparse tails stay "
+            "visible next to a tall peak. Empty bins are drawn on the zero "
+            "baseline instead of leaving gaps in the curve."
+        )
+        self.log_scale_checkbox.setChecked(log_scale)
+        layout.addWidget(self.log_scale_checkbox)
+
+        # --- Number of bins ---
+        bins_layout = QHBoxLayout()
+        bins_layout.addWidget(QLabel("Number of bins:"))
+        self.bins_spinbox = QSpinBox()
+        self.bins_spinbox.setRange(self.MIN_BINS, self.MAX_BINS)
+        self.bins_spinbox.setValue(
+            int(np.clip(int(bins), self.MIN_BINS, self.MAX_BINS))
+        )
+        self.bins_spinbox.setToolTip(
+            "How many bins the value range is divided into. The statistics "
+            "that depend on the bins (center of mass) follow the same choice."
+        )
+        bins_layout.addWidget(self.bins_spinbox)
+        bins_layout.addStretch()
+        layout.addLayout(bins_layout)
 
         # --- Central tendency ---
         ct_layout = QHBoxLayout()
@@ -2166,6 +3365,48 @@ class HistogramSettingsDialog(QDialog):
                 self._layer_color_buttons[label] = btn
         layout.addWidget(self._layer_section)
 
+        # --- Series colours (Merged mode with several quantities) ---
+        self._series_section = QWidget()
+        series_layout = QVBoxLayout(self._series_section)
+        series_layout.setContentsMargins(0, 0, 0, 0)
+
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("Curve colours:"))
+        self.series_style_combo = QComboBox()
+        self.series_style_combo.addItem("Layer colormap", "colormap")
+        self.series_style_combo.addItem("Solid colours", "solid")
+        self.series_style_combo.setToolTip(
+            "Draw each curve as a gradient in the colormap of its own layers, "
+            "or in one flat colour. Solid colours read better when the "
+            "colormaps are reversals of each other, as they are for the two "
+            "components of a Linear Projection."
+        )
+        index = self.series_style_combo.findData(series_style)
+        self.series_style_combo.setCurrentIndex(max(index, 0))
+        style_row.addWidget(self.series_style_combo)
+        style_row.addStretch()
+        series_layout.addLayout(style_row)
+
+        self._series_color_buttons = {}
+        if series_labels:
+            for idx, label in enumerate(series_labels):
+                row = QHBoxLayout()
+                name_lbl = QLabel(label)
+                name_lbl.setMaximumWidth(200)
+                row.addWidget(name_lbl)
+                if series_colors and label in series_colors:
+                    color = series_colors[label]
+                else:
+                    color = default_tab10[idx % len(default_tab10)][:3]
+                btn = QPushButton()
+                btn.setFixedSize(24, 24)
+                self._set_btn_color(btn, color)
+                btn.clicked.connect(lambda checked, b=btn: self._pick_color(b))
+                row.addWidget(btn)
+                series_layout.addLayout(row)
+                self._series_color_buttons[label] = btn
+        layout.addWidget(self._series_section)
+
         # --- Group section (Grouped mode) ---
         self._group_section = QWidget()
         group_layout = QVBoxLayout(self._group_section)
@@ -2183,9 +3424,14 @@ class HistogramSettingsDialog(QDialog):
         #   'container', 'name_edit', 'color_btn', 'layer_combo'
         self._group_row_data = []
         self._layer_labels = layer_labels or []
+        # What the group rows offer; the histogram groups source layers, which
+        # are not always the datasets it draws.
+        self._group_labels = (
+            list(group_labels) if group_labels else list(self._layer_labels)
+        )
 
         # Populate groups from existing assignments
-        if group_assignments and layer_labels:
+        if group_assignments and self._group_labels:
             # Infer groups from assignments and keep explicitly configured
             # groups (name/color) even if currently empty.
             groups_seen = {}
@@ -2223,6 +3469,10 @@ class HistogramSettingsDialog(QDialog):
                 color=gc,
                 checked_layers=[],
             )
+
+        # A layer belongs to at most one group, so hide the ones already
+        # claimed from every other row's dropdown.
+        self._sync_group_exclusivity()
 
         # Add group button
         add_group_btn = QPushButton("+ Add Group")
@@ -2270,12 +3520,29 @@ class HistogramSettingsDialog(QDialog):
             rgb = (chosen.redF(), chosen.greenF(), chosen.blueF())
             self._set_btn_color(btn, rgb)
 
+    def _on_split_labels_toggled(self, checked: bool) -> None:
+        """Move to *Individual layers* when the per-label split is enabled.
+
+        Separating the labels exists to tell them apart, which one merged
+        curve cannot show. The mode stays a free choice; this only picks the
+        useful default when the split is switched on from *Merged*.
+        """
+        if checked and self.mode_combo.currentText() == "Merged":
+            self.mode_combo.setCurrentText("Individual layers")
+
     def _update_ui_for_mode(self, mode: str) -> None:
         """Show/hide controls depending on the selected mode."""
         is_grouped = mode == "Grouped"
         is_individual = mode == "Individual layers"
         self._group_section.setVisible(is_grouped)
         self._layer_section.setVisible(is_individual)
+        # Series colours only drive the Merged curves; the other modes colour
+        # by layer or by group.
+        self._series_section.setVisible(
+            bool(self._series_color_buttons)
+            and not is_grouped
+            and not is_individual
+        )
         # SD only meaningful for Merged / Grouped
         self.sd_checkbox.setEnabled(not is_individual)
         # Legend only meaningful for Individual / Grouped
@@ -2331,9 +3598,10 @@ class HistogramSettingsDialog(QDialog):
         layer_combo = CheckableComboBox(
             placeholder="Select layers...", parent=self
         )
-        layer_combo.addItems(self._layer_labels)
+        layer_combo.addItems(self._group_labels)
         if checked_layers:
             layer_combo.setCheckedItems(checked_layers)
+        layer_combo.selectionChanged.connect(self._sync_group_exclusivity)
         row_layout.addWidget(layer_combo, 1)
 
         # Remove button
@@ -2357,6 +3625,7 @@ class HistogramSettingsDialog(QDialog):
         """Slot for the *Add Group* button."""
         idx = len(self._group_row_data) + 1
         self._add_group_row(name=f"Group {idx}")
+        self._sync_group_exclusivity()
 
     def _on_remove_group(self, row_widget: QWidget) -> None:
         """Remove a group row by its container widget."""
@@ -2367,18 +3636,60 @@ class HistogramSettingsDialog(QDialog):
                 self._group_rows_layout.removeWidget(row_widget)
                 row_widget.deleteLater()
                 self._group_row_data.pop(i)
+                # Its layers are free again for the remaining groups.
+                self._sync_group_exclusivity()
                 break
 
     # ------------------------------------------------------------------
     # Accessors
     # ------------------------------------------------------------------
 
+    def get_unassigned_layers(self) -> list:
+        """Return the layers not checked in any group row.
+
+        These layers take part in no group: they are excluded from the
+        grouped curves and statistics rather than being folded into the
+        first group.
+        """
+        return unassigned_layer_labels(
+            self._group_labels, self.get_group_assignments()
+        )
+
+    def accept(self) -> None:
+        """Confirm the dialog, warning about layers left out of every group.
+
+        In *Grouped* mode a layer that the user forgot to tick belongs to no
+        group and is dropped from the plot and the statistics. Ask before
+        closing instead of letting it disappear unnoticed.
+        """
+        if self.mode_combo.currentText() == "Grouped" and (
+            not confirm_unassigned_layers(
+                self, self.get_unassigned_layers(), "histogram and statistics"
+            )
+        ):
+            return
+        super().accept()
+
+    def get_series_style(self) -> str:
+        """Return ``"colormap"`` or ``"solid"`` for the merged curves."""
+        return self.series_style_combo.currentData()
+
+    def get_series_colors(self) -> dict:
+        """Return ``{series_name: (r, g, b)}`` from the colour buttons."""
+        return {
+            label: btn._color
+            for label, btn in self._series_color_buttons.items()
+        }
+
     def get_group_assignments(self) -> dict:
         """Return ``{label: group_int}`` from the dialog.
 
         Groups are numbered starting from 1 in the order they appear.
-        A layer that is checked in multiple groups is assigned to the
-        last group that contains it (later rows take precedence).
+        Only layers actually checked in a group row appear in the result;
+        an unchecked layer is left out entirely (see
+        :meth:`get_unassigned_layers`) instead of falling back to group 1.
+        A layer belongs to at most one group: once claimed it is hidden
+        from every other row (see :class:`ExclusiveGroupRowsMixin`).
         """
         assignments = {}
         for gid_zero, row in enumerate(self._group_row_data):
@@ -2429,7 +3740,8 @@ class HistogramWidget(QWidget):
     ylabel : str, optional
         Label for the y-axis, by default ``"Pixel count"``.
     bins : int, optional
-        Number of histogram bins, by default 300.
+        Number of histogram bins, by default 150. Changed at runtime from
+        the settings dialog or :meth:`set_bins`.
     default_colormap_name : str, optional
         Name of the Matplotlib colormap to use as fallback when no explicit
         colormap colors are provided, by default ``"plasma"``.
@@ -2448,6 +3760,10 @@ class HistogramWidget(QWidget):
     exclude_nonpositive : bool, optional
         If ``True``, values ``<= 0`` are removed before histogramming.
         If ``False`` (default), only NaN/Inf values are removed.
+    normalize : bool, optional
+        If ``True``, every curve is divided by its own maximum so
+        distributions with different pixel counts share one y scale.
+        Toggled at runtime from the settings dialog, by default ``False``.
     viewer : napari.Viewer, optional
         Napari viewer instance used to look up layer metadata for restoring
         group assignments across analyses.  When provided, grouped-mode
@@ -2474,6 +3790,7 @@ class HistogramWidget(QWidget):
         range_label_prefix: str = "Range",
         range_factor: int = 1000,
         exclude_nonpositive: bool = False,
+        normalize: bool = False,
         viewer=None,
         parent: QWidget = None,
     ):
@@ -2493,10 +3810,39 @@ class HistogramWidget(QWidget):
 
         # Multi-layer state
         self._datasets = {}  # {label: valid_1d_array}
+        # {label: source image layer name}; grouping is stored on the source
+        # layer so every tab and the plot settings share one set of groups.
+        self._dataset_sources = {}
+        # {label: series name} plus optional per-series colors. A series is a
+        # family of datasets that may be pooled together in Merged mode (e.g.
+        # every layer analysed for one component); datasets of different
+        # series are never merged into a single curve.
+        self._dataset_series = {}
+        self._series_colors = {}
+        self._series_colormaps = {}
+        # How the per-series curves are coloured: in each series' own layer
+        # colormap, or in one solid colour each. Mirrored colormaps (the two
+        # components of a Linear Projection) read as noise, so a tab can ask
+        # for solid by default; an explicit choice in the dialog wins.
+        self._series_style = "colormap"
+        self._series_style_explicit = False
+        self._series_color_overrides = {}
         self._counts_per_dataset = {}  # {label: counts on common bins}
         self._previous_dataset_count = (
             0  # Track transitions for auto-enabling SD
         )
+
+        # The datasets exactly as the analysis tab handed them over, kept so
+        # the per-mask-label split can be re-applied when the user toggles it
+        # without the tab having to feed the data again.
+        self._input_datasets = {}
+        self._input_single = False
+        # Mask-label split: whether it is on, {split label: (source dataset,
+        # mask label value)} for what is currently drawn, and the colour
+        # napari paints each of those labels with.
+        self._split_by_mask_labels = False
+        self._split_labels = {}
+        self._mask_label_colors = {}
 
         # Colormap state (set externally)
         self.colormap_colors = None  # Nx4 array of RGBA colors
@@ -2512,13 +3858,18 @@ class HistogramWidget(QWidget):
         # statistics, never to render.
         self._frame_context = None
         self._frame_source_datasets = {}
+        # Lazily computed split of the above; see :meth:`frame_source_datasets`.
+        self._frame_source_split = None
 
         # Display settings
         self._display_mode = (
             "Merged"  # "Merged", "Individual layers", "Grouped"
         )
         self._show_sd = False
-        self._group_assignments = {}  # {label: group_int}
+        self._normalize = normalize
+        # {source layer name: group_int}; a layer's group applies to every
+        # dataset derived from it (see :meth:`set_dataset_sources`).
+        self._group_assignments = {}
         self._group_names = {}  # {group_id: str}
         self._central_tendency = "None"
         self._show_legend = True
@@ -2527,6 +3878,7 @@ class HistogramWidget(QWidget):
         self._white_background = False
         self._smooth_curves = True
         self._aspect_ratio = "auto"
+        self._log_scale = False
 
         # Range slider state
         self._range_slider_enabled = range_slider_enabled
@@ -2795,7 +4147,14 @@ class HistogramWidget(QWidget):
         self.fig.canvas.draw_idle()
 
     def _save_histogram_csv(self):
-        """Save the histogram data as a CSV file."""
+        """Save the histogram data as a CSV file.
+
+        With *Normalize to maximum* enabled the exported curves are scaled
+        the way they are drawn — each one divided by its own peak — and the
+        column headers say so. The scaling is computed from the raw binned
+        counts written here, not from the smoothed display curve, so the
+        exported peak is 1 by construction.
+        """
         if self.counts is None or self.bin_centers is None:
             return
 
@@ -2818,36 +4177,48 @@ class HistogramWidget(QWidget):
             with open(file_path, mode='w', newline='') as file:
                 writer = csv.writer(file)
                 n_datasets = len(self._counts_per_dataset)
+                prefix = 'Normalized ' if self._normalize else ''
 
                 if self._display_mode == "Individual layers":
                     # Export individual counts per dataset aligned on the same bins
-                    header = ['Bin Center'] + list(
-                        self._counts_per_dataset.keys()
-                    )
+                    header = ['Bin Center'] + [
+                        f"{prefix}{label}"
+                        for label in self._counts_per_dataset
+                    ]
                     writer.writerow(header)
+                    scaled = {
+                        label: counts * self._display_scale(counts)
+                        for label, counts in self._counts_per_dataset.items()
+                    }
                     for i in range(len(self.bin_centers)):
                         row = [self.bin_centers[i]]
-                        for label in self._counts_per_dataset:
-                            row.append(self._counts_per_dataset[label][i])
+                        for label in scaled:
+                            row.append(scaled[label][i])
                         writer.writerow(row)
 
                 elif self._display_mode == "Grouped":
-                    # Export grouped means and stdevs
-                    groups = {}
-                    for label, counts in self._counts_per_dataset.items():
-                        g = self._group_assignments.get(label, 1)
-                        groups.setdefault(g, []).append((label, counts))
+                    # Export grouped means and stdevs, one column pair per
+                    # group and series exactly as they are drawn. Layers left
+                    # out of every group are excluded rather than folded into
+                    # the first group.
+                    curves, _unassigned = self._grouped_series_curves(
+                        self._counts_per_dataset
+                    )
+                    series_order = list(
+                        self._series_members(self._counts_per_dataset)
+                    )
+                    multiple_series = len(series_order) > 1
 
                     header = ['Bin Center']
-                    group_stats = {}
+                    group_stats = []
 
-                    for group_id, members in sorted(groups.items()):
-                        group_label = self._group_names.get(
-                            group_id, f"Group {group_id}"
+                    for group_id, series_name, members in curves:
+                        curve_label = self._grouped_curve_label(
+                            group_id, series_name, multiple_series
                         )
-                        header.append(f"{group_label} Mean")
+                        header.append(f"{curve_label} {prefix}Mean")
                         if len(members) > 1:
-                            header.append(f"{group_label} Std")
+                            header.append(f"{curve_label} {prefix}Std")
 
                         all_counts = np.array(
                             [c for _, c in members], dtype=float
@@ -2858,15 +4229,17 @@ class HistogramWidget(QWidget):
                             if len(members) > 1
                             else None
                         )
-                        group_stats[group_id] = (mean_c, std_c)
+                        scale = self._display_scale(mean_c)
+                        mean_c = mean_c * scale
+                        if std_c is not None:
+                            std_c = std_c * scale
+                        group_stats.append((mean_c, std_c))
 
                     writer.writerow(header)
 
                     for i in range(len(self.bin_centers)):
                         row = [self.bin_centers[i]]
-                        for _group_id, (mean_c, std_c) in sorted(
-                            group_stats.items()
-                        ):
+                        for mean_c, std_c in group_stats:
                             row.append(mean_c[i])
                             if std_c is not None:
                                 row.append(std_c[i])
@@ -2874,16 +4247,55 @@ class HistogramWidget(QWidget):
 
                 else:
                     # Merged mode
-                    if n_datasets > 1:
+                    series = self._series_members(self._counts_per_dataset)
+                    if len(series) > 1:
+                        # One merged curve per series: pool layers, not series.
+                        header = ['Bin Center']
+                        series_stats = {}
+                        for name, members in series.items():
+                            header.append(f"{name} {prefix}Mean")
+                            if len(members) > 1:
+                                header.append(f"{name} {prefix}Std")
+                            all_counts = np.array(
+                                [c for _, c in members], dtype=float
+                            )
+                            mean_c = np.mean(all_counts, axis=0)
+                            std_c = (
+                                np.std(all_counts, axis=0, ddof=1)
+                                if len(members) > 1
+                                else None
+                            )
+                            scale = self._display_scale(mean_c)
+                            mean_c = mean_c * scale
+                            if std_c is not None:
+                                std_c = std_c * scale
+                            series_stats[name] = (mean_c, std_c)
+
+                        writer.writerow(header)
+                        for i in range(len(self.bin_centers)):
+                            row = [self.bin_centers[i]]
+                            for mean_c, std_c in series_stats.values():
+                                row.append(mean_c[i])
+                                if std_c is not None:
+                                    row.append(std_c[i])
+                            writer.writerow(row)
+                    elif n_datasets > 1:
                         all_counts = np.array(
                             list(self._counts_per_dataset.values()),
                             dtype=float,
                         )
                         mean_counts = np.mean(all_counts, axis=0)
                         std_counts = np.std(all_counts, axis=0, ddof=1)
+                        scale = self._display_scale(mean_counts)
+                        mean_counts = mean_counts * scale
+                        std_counts = std_counts * scale
 
                         writer.writerow(
-                            ['Bin Center', 'Mean Counts', 'Std Counts']
+                            [
+                                'Bin Center',
+                                f'{prefix}Mean Counts',
+                                f'{prefix}Std Counts',
+                            ]
                         )
                         for i in range(len(self.bin_centers)):
                             writer.writerow(
@@ -2894,48 +4306,300 @@ class HistogramWidget(QWidget):
                                 ]
                             )
                     else:
-                        writer.writerow(['Bin Center', 'Counts'])
+                        counts = self.counts.astype(float)
+                        counts = counts * self._display_scale(counts)
+                        writer.writerow(['Bin Center', f'{prefix}Counts'])
                         for i in range(len(self.bin_centers)):
-                            writer.writerow(
-                                [self.bin_centers[i], self.counts[i]]
-                            )
+                            writer.writerow([self.bin_centers[i], counts[i]])
         except (OSError, csv.Error) as e:
             from napari.utils.notifications import show_error
 
             show_error(f"Error saving CSV: {str(e)}")
 
+    def set_dataset_sources(self, sources: dict) -> None:
+        """Record the source image layer each dataset was derived from.
+
+        Grouping is a property of the acquisition, not of one analysis, so it
+        is stored on the source layer rather than on the derived layer that
+        happens to be plotted. Telling the histogram which layer each dataset
+        came from is what lets the Components, FRET and Phasor Mapping
+        histograms — and the grouped modes of the Plot Settings tab — all show
+        the same groups.
+
+        Parameters
+        ----------
+        sources : dict
+            ``{dataset_label: source_layer_name}``. Labels left out fall back
+            to being their own source.
+        """
+        self._dataset_sources = dict(sources or {})
+
+    def set_dataset_series(
+        self, series: dict, colors: dict = None, colormaps: dict = None
+    ) -> None:
+        """Group datasets into series that Merged mode may pool together.
+
+        Merging exists to average replicates, not to blend quantities that
+        mean different things. When a tab plots more than one quantity at once
+        — the Components tab drawing several component fractions, say — it
+        names the series each dataset belongs to here, and Merged mode then
+        draws one curve per series, each pooling only its own layers.
+
+        Parameters
+        ----------
+        series : dict
+            ``{dataset_label: series_name}``. Labels left out share a single
+            unnamed series, which reproduces the plain merged curve.
+        colors : dict, optional
+            ``{series_name: color}`` used for the per-series curves. Any
+            series without one falls back to the default color cycle.
+        colormaps : dict, optional
+            ``{series_name: (colormap_colors, contrast_limits, gamma)}``.
+            A series with a colormap has its curve drawn as a gradient in
+            that colormap — the one its own layers are displayed with —
+            rather than in a flat color.
+        """
+        self._dataset_series = dict(series or {})
+        self._series_colors = dict(colors or {})
+        self._series_colormaps = dict(colormaps or {})
+
+    def set_series_colormaps(self, colormaps: dict) -> None:
+        """Update the per-series colormaps and re-draw.
+
+        Separate from :meth:`set_dataset_series` so a tab can follow a layer
+        whose colormap, contrast limits or gamma changed without recomputing
+        any histogram.
+
+        Parameters
+        ----------
+        colormaps : dict
+            ``{series_name: (colormap_colors, contrast_limits, gamma)}``.
+        """
+        self._series_colormaps = dict(colormaps or {})
+        if self.counts is not None:
+            self._render()
+
+    def _series_members(self, items: dict) -> dict:
+        """Return ``{series_name: [(label, value)]}`` for *items*.
+
+        Datasets with no series share the ``None`` key, so a widget that never
+        calls :meth:`set_dataset_series` always sees exactly one series.
+        """
+        grouped = {}
+        for label, value in items.items():
+            grouped.setdefault(self._dataset_series.get(label), []).append(
+                (label, value)
+            )
+        return grouped
+
+    def set_default_series_style(self, style: str) -> None:
+        """Set how per-series curves are coloured, unless the user chose.
+
+        Tabs call this to propose the sensible default for what they are
+        plotting — solid colours when the series' colormaps are reversals of
+        one another and a gradient would only confuse. A choice made in the
+        settings dialog is never overridden.
+
+        Parameters
+        ----------
+        style : {"colormap", "solid"}
+        """
+        if self._series_style_explicit or style == self._series_style:
+            return
+        self._series_style = style
+        if self.counts is not None:
+            self._render()
+
+    def _series_color(self, name, index):
+        """Return the color for series *name*, falling back to the cycle.
+
+        A colour picked in the settings dialog wins over the one the tab
+        proposed, which in turn wins over the default cycle.
+        """
+        default_colors = plt.cm.tab10.colors
+        if name in self._series_color_overrides:
+            return self._series_color_overrides[name]
+        return self._series_colors.get(
+            name, default_colors[index % len(default_colors)][:3]
+        )
+
+    def _series_names(self) -> list:
+        """Return the series names currently drawn, in dataset order."""
+        return [
+            name
+            for name in self._series_members(self._datasets)
+            if name is not None
+        ]
+
+    def _series_cmap_and_norm(self, name):
+        """Return ``(cmap, norm)`` for series *name*, or None if it has none."""
+        entry = self._series_colormaps.get(name)
+        if not entry:
+            return None
+        colors, contrast_limits, gamma = entry
+        if colors is None or contrast_limits is None:
+            return None
+        vmin, vmax = float(contrast_limits[0]), float(contrast_limits[1])
+        if vmax <= vmin:
+            return None
+        cmap = LinearSegmentedColormap.from_list("series_cmap", colors)
+        gamma = gamma or 1.0
+        norm = (
+            PowerNorm(gamma, vmin=vmin, vmax=vmax)
+            if gamma != 1.0
+            else plt.Normalize(vmin=vmin, vmax=vmax)
+        )
+        return cmap, norm
+
+    def _source_for(self, label: str) -> str:
+        """Return the source layer name behind *label* (the label itself by
+        default)."""
+        return self._dataset_sources.get(label, label)
+
+    def _group_source_names(self) -> list:
+        """Return the layers that can be grouped, in dataset order.
+
+        Grouping applies to the analysed layers behind the plot, so several
+        curves derived from the same acquisition — one per component, say —
+        contribute a single entry.
+        """
+        sources = []
+        for label in self._datasets:
+            source = self._source_for(label)
+            if source not in sources:
+                sources.append(source)
+        return sources
+
+    def _group_state_from_metadata(self, sources):
+        """Return ``(assignments, names, colors)`` read from the source layers.
+
+        Assignments come back keyed by source layer, the same key the Plot
+        Settings dialogs use.
+        """
+        if self._viewer is None or not sources:
+            return {}, {}, {}
+        return build_groups_from_layer_metadata(self._viewer, sources)
+
+    def _group_state_for_dialog(self, sources):
+        """Return the group state to open the settings dialog with.
+
+        The layer metadata wins, so a grouping made in another tab or in the
+        Plot Settings tab shows up here. Layers the metadata says nothing
+        about keep the group they have in this widget, matched by group name
+        so the two sources of truth cannot end up with clashing ids.
+        """
+        meta_assignments, meta_names, meta_colors = (
+            self._group_state_from_metadata(sources)
+        )
+        if not meta_assignments:
+            return (
+                dict(self._group_assignments),
+                dict(self._group_names),
+                dict(self._group_colors),
+            )
+
+        assignments = dict(meta_assignments)
+        names = dict(meta_names)
+        colors = dict(meta_colors)
+        name_to_gid = {name: gid for gid, name in names.items()}
+
+        for source in sources or []:
+            if source in assignments:
+                continue
+            local_gid = self._group_assignments.get(source)
+            if local_gid is None:
+                continue
+            group_name = self._group_names.get(local_gid, f"Group {local_gid}")
+            gid = name_to_gid.get(group_name)
+            if gid is None:
+                gid = max(names, default=0) + 1
+                names[gid] = group_name
+                if local_gid in self._group_colors:
+                    colors[gid] = self._group_colors[local_gid]
+                name_to_gid[group_name] = gid
+            assignments[source] = gid
+
+        return assignments, names, colors
+
+    def _save_groups_to_sources(self, sources) -> None:
+        """Persist the current grouping onto the grouped layers themselves."""
+        if self._viewer is None or not sources:
+            return
+
+        assignments = {
+            source: self._group_assignments[source]
+            for source in sources
+            if source in self._group_assignments
+        }
+        save_groups_to_layer_metadata(
+            self._viewer,
+            list(sources),
+            assignments,
+            self._group_names,
+            self._group_colors,
+        )
+
     def _open_settings_dialog(self):
         """Open the histogram settings dialog."""
         layer_labels = list(self._datasets.keys()) if self._datasets else None
+        # Offer every drawn curve its current colour, so a mask label starts
+        # from the colour napari gives it rather than the default cycle.
+        layer_colors = {
+            label: self._dataset_color(label, index)
+            for index, label in enumerate(layer_labels or [])
+        }
+        # Curves get their own colours, but groups are assigned to the layers
+        # behind them: with several components on screen the group rows still
+        # list the analysed layers, not one entry per component.
+        group_labels = self._group_source_names()
 
-        # Pre-populate groups from per-layer metadata when none are set yet
-        group_assignments = self._group_assignments
-        group_names = self._group_names
-        group_colors = self._group_colors
-        if self._viewer is not None and not group_assignments and layer_labels:
-            group_assignments, group_names, group_colors = (
-                build_groups_from_layer_metadata(self._viewer, layer_labels)
-            )
+        group_assignments, group_names, group_colors = (
+            self._group_state_for_dialog(group_labels)
+        )
+
+        series_labels = self._series_names()
+        series_colors = {
+            name: self._series_color(name, index)
+            for index, name in enumerate(series_labels)
+        }
 
         dlg = HistogramSettingsDialog(
             display_mode=self._display_mode,
             show_sd=self._show_sd,
+            normalize=self._normalize,
             central_tendency=self._central_tendency,
             show_legend=self._show_legend,
+            split_mask_labels=self._split_by_mask_labels,
+            split_mask_labels_available=self.mask_label_split_available(),
             layer_labels=layer_labels,
+            group_labels=group_labels,
+            series_labels=series_labels if len(series_labels) > 1 else None,
+            series_colors=series_colors,
+            series_style=self._series_style,
             group_assignments=group_assignments,
-            layer_colors=self._layer_colors,
+            layer_colors=layer_colors,
             group_colors=group_colors,
             group_names=group_names,
             aspect_ratio=self._aspect_ratio,
+            log_scale=self._log_scale,
+            bins=self.bins,
             parent=self,
         )
         dlg.white_bg_checkbox.setChecked(self._white_background)
         dlg.smooth_checkbox.setChecked(self._smooth_curves)
 
         if dlg.exec() == QDialog.Accepted:
+            split_changed = (
+                dlg.split_labels_checkbox.isChecked()
+                != self._split_by_mask_labels
+            )
+            bins_changed = dlg.bins_spinbox.value() != self.bins
+            self._split_by_mask_labels = dlg.split_labels_checkbox.isChecked()
+            self.bins = dlg.bins_spinbox.value()
+            self._log_scale = dlg.log_scale_checkbox.isChecked()
             self._display_mode = dlg.mode_combo.currentText()
             self._show_sd = dlg.sd_checkbox.isChecked()
+            self._normalize = dlg.normalize_checkbox.isChecked()
             self._central_tendency = dlg.central_tendency_combo.currentText()
             self._show_legend = dlg.legend_checkbox.isChecked()
             self._white_background = dlg.white_bg_checkbox.isChecked()
@@ -2945,19 +4609,212 @@ class HistogramWidget(QWidget):
                 self._group_assignments = dlg.get_group_assignments()
                 self._group_colors = dlg.get_group_colors()
                 self._group_names = dlg.get_group_names()
-                if self._viewer is not None and layer_labels:
-                    save_groups_to_layer_metadata(
-                        self._viewer,
-                        layer_labels,
-                        self._group_assignments,
-                        self._group_names,
-                        self._group_colors,
-                    )
+                self._save_groups_to_sources(group_labels)
             if dlg._layer_color_buttons:
                 self._layer_colors = dlg.get_layer_colors()
+            if dlg._series_color_buttons:
+                self._series_color_overrides = dlg.get_series_colors()
+                self._series_style = dlg.get_series_style()
+                self._series_style_explicit = True
+            if split_changed or bins_changed:
+                # Splitting changes which datasets exist and new bins change
+                # every count, so the histogram has to be recomputed rather
+                # than only re-drawn.
+                self._ingest(auto_sd=False)
+                return
             if self.counts is not None:
                 self._render()
             self.dataChanged.emit()
+
+    # ------------------------------------------------------------------
+    # Mask-label split
+    # ------------------------------------------------------------------
+
+    @property
+    def split_by_mask_labels(self) -> bool:
+        """Whether each mask label is analysed as its own dataset."""
+        return self._split_by_mask_labels
+
+    @split_by_mask_labels.setter
+    def split_by_mask_labels(self, value: bool):
+        """Toggle the per-label split and re-histogram the stored data."""
+        value = bool(value)
+        if value == self._split_by_mask_labels:
+            return
+        self._split_by_mask_labels = value
+        if self._input_datasets:
+            self._ingest(auto_sd=False)
+
+    def mask_label_split_available(self) -> bool:
+        """True when the analysed layers carry a mask with several labels.
+
+        The split is only offered then: with one label (or none) it would
+        just rename the layer's own curve.
+        """
+        if self._viewer is None or not self._input_datasets:
+            return False
+        sources = {self._source_for(label) for label in self._input_datasets}
+        return any(
+            len(self._mask_split_values(source)) > 1 for source in sources
+        )
+
+    def mask_label_split_active(self) -> bool:
+        """True when the drawn datasets are one per mask label."""
+        return bool(self._split_labels)
+
+    def _source_metadata(self, source):
+        """Return the metadata of the analysed layer *source*, or ``{}``."""
+        if self._viewer is None:
+            return {}
+        try:
+            layer = self._viewer.layers[source]
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
+            return {}
+        return getattr(layer, "metadata", None) or {}
+
+    def _mask_split_values(self, source):
+        """Return the mask labels *source* is analysed with.
+
+        Cheap enough to call on every update: it only reads the metadata the
+        mask controls left on the layer.
+        """
+        return mask_label_values(self._source_metadata(source))
+
+    def _mask_split_info(self, source):
+        """Return ``(mask, values, colors)`` for *source*, or None.
+
+        None means the layer is not masked in a way that describes one
+        region per label (see :func:`mask_label_values`).
+        """
+        metadata = self._source_metadata(source)
+        values = mask_label_values(metadata)
+        if len(values) < 2:
+            return None
+        mask = np.asarray(metadata['mask'])
+        mask_layer = find_labels_layer_for_mask(self._viewer, mask)
+        colors = {}
+        if mask_layer is not None:
+            for value in values:
+                rgba = mask_layer.get_color(value)
+                if rgba is not None:
+                    colors[value] = tuple(float(c) for c in rgba[:3])
+        return mask, values, colors
+
+    def _align_mask(self, mask, shape):
+        """Return *mask* matching *shape*, or None when it cannot.
+
+        In per-frame time-lapse mode the tabs feed one frame at a time while
+        the mask always covers the whole layer, so it is sliced the same way
+        before the two are compared pixel by pixel.
+        """
+        mask = np.asarray(mask)
+        shape = tuple(shape)
+        if mask.shape == shape:
+            return mask
+        context = self._frame_context
+        if context is not None and context.is_per_frame:
+            sliced = np.asarray(context.slice_array(mask))
+            if sliced.shape == shape:
+                return sliced
+        return None
+
+    def _forget_split_labels(self) -> None:
+        """Drop the bookkeeping left by the previous split."""
+        for name in self._split_labels:
+            self._dataset_sources.pop(name, None)
+            self._dataset_series.pop(name, None)
+            self._mask_label_colors.pop(name, None)
+        self._split_labels = {}
+        self._frame_source_split = None
+
+    def _split_datasets(self, datasets, *, keep_shape=False, record=False):
+        """Return *datasets* expanded into one entry per mask label.
+
+        A dataset whose source layer carries no per-label mask — or whose
+        array does not line up with that mask — is passed through whole, so
+        a selection mixing masked and unmasked layers keeps them all.
+
+        Parameters
+        ----------
+        datasets : dict
+            ``{label: np.ndarray}`` as handed over by the analysis tab.
+        keep_shape : bool, optional
+            Return arrays shaped like the layer, with the pixels of the
+            other labels set to NaN, instead of the label's pixels alone.
+        record : bool, optional
+            Remember what each split came from, and mirror the split onto
+            the dataset sources, series and label colours so that grouping,
+            per-quantity series and colouring follow the new names.
+
+        Returns
+        -------
+        dict
+            ``{label: np.ndarray}`` with one entry per mask label of every
+            dataset that could be split.
+        """
+        if record:
+            self._forget_split_labels()
+        if not self._split_by_mask_labels:
+            return dict(datasets)
+
+        expanded = {}
+        split_labels = {}
+        info_cache = {}
+        for label, data in datasets.items():
+            source = self._source_for(label)
+            if source not in info_cache:
+                info_cache[source] = self._mask_split_info(source)
+            info = info_cache[source]
+            parts = {}
+            if info is not None:
+                mask = self._align_mask(info[0], np.shape(data))
+                if mask is not None:
+                    parts = split_data_by_mask_labels(
+                        data, mask, info[1], keep_shape=keep_shape
+                    )
+            if not parts:
+                expanded[label] = data
+                continue
+            for value, part in parts.items():
+                name = mask_label_split_name(label, value)
+                expanded[name] = part
+                split_labels[name] = (label, value)
+                if not record:
+                    continue
+                self._dataset_sources[name] = source
+                if label in self._dataset_series:
+                    self._dataset_series[name] = self._dataset_series[label]
+                if value in info[2]:
+                    self._mask_label_colors[name] = info[2][value]
+        if record:
+            self._split_labels = split_labels
+        return expanded
+
+    def frame_source_datasets(self) -> dict:
+        """Return the un-sliced arrays behind the plot, one per drawn curve.
+
+        Mirrors what is on screen: with the mask labels separated, each
+        layer's array is split into one array per label so the per-timepoint
+        statistics and their CSV list the same rows as the histogram. Those
+        arrays keep the layer's shape — the other labels are NaN — because
+        the caller slices them frame by frame. They are computed on demand
+        and cached, since a stack split many ways is a lot of memory to hold
+        for a table that may never be opened.
+        """
+        if not self._split_labels or not self._frame_source_datasets:
+            return self._frame_source_datasets
+        if self._frame_source_split is None:
+            self._frame_source_split = self._split_datasets(
+                self._frame_source_datasets, keep_shape=True
+            )
+        return self._frame_source_split
 
     def set_frame_source(self, frame_context, datasets) -> None:
         """Record the un-sliced per-layer arrays behind the displayed data.
@@ -2976,6 +4833,7 @@ class HistogramWidget(QWidget):
         """
         self._frame_context = frame_context
         self._frame_source_datasets = dict(datasets or {})
+        self._frame_source_split = None
 
     def has_frame_source(self) -> bool:
         """Return True when per-timepoint statistics can be exported."""
@@ -2990,7 +4848,9 @@ class HistogramWidget(QWidget):
         NaN/Inf values are always excluded. Non-positive values are
         excluded only when ``exclude_nonpositive=True`` was passed to
         the constructor. This is the single-dataset entry point;
-        multi-layer features are disabled.
+        multi-layer features are disabled — unless the layer is masked and
+        its labels are being separated, which turns the one dataset into one
+        per label and takes the multi-layer route.
 
         Parameters
         ----------
@@ -3001,16 +4861,56 @@ class HistogramWidget(QWidget):
             column). Defaults to ``"Layer"``; callers should pass the
             analyzed image layer's name so it matches the multi-layer view.
         """
+        self._input_datasets = {label: data}
+        self._input_single = True
+        self._ingest()
+
+    def update_multi_data(self, datasets: dict) -> None:
+        """Compute histograms from multiple datasets and render.
+
+        Each dataset (one per layer) is stored individually so that
+        *Individual layers*, *Grouped*, and *Merged + SD* display modes
+        can operate on per-layer counts.
+
+        Parameters
+        ----------
+        datasets : dict
+            ``{label: np.ndarray}`` mapping layer names to their scalar
+            data arrays.  Arrays will be flattened and filtered.
+        """
+        self._input_datasets = dict(datasets)
+        self._input_single = False
+        self._ingest()
+
+    def _ingest(self, *, auto_sd: bool = True) -> None:
+        """Histogram the stored datasets, separating mask labels first.
+
+        Both entry points funnel through here so a single layer split into
+        several mask labels is drawn exactly like several layers, and so
+        toggling the split re-runs the computation without the analysis tab
+        having to feed the data again.
+
+        Parameters
+        ----------
+        auto_sd : bool, optional
+            Whether going from one curve to several may switch SD shading
+            on. False when re-running after a settings change, where the
+            user has just said what they want.
+        """
+        datasets = self._split_datasets(self._input_datasets, record=True)
+        if self._input_single and len(datasets) <= 1:
+            label, data = next(iter(datasets.items()), ("Layer", np.array([])))
+            self._ingest_single(data, label)
+        else:
+            self._ingest_multi(datasets, auto_sd=auto_sd)
+
+    def _ingest_single(self, data: np.ndarray, label: str) -> None:
+        """Histogram one dataset, with the multi-layer features disabled."""
         valid = self._filter_valid_values(data)
 
         if len(valid) == 0:
-            self.ax.clear()
-            self._style_axes()
-            self.fig.canvas.draw_idle()
-            self._settings_button.setEnabled(False)
-            self.save_button.setEnabled(False)
+            self._clear_histogram_data(clear_frame_source=False)
             self.show()
-            self.dataChanged.emit()
             return
 
         self._datasets = {label: valid}
@@ -3031,19 +4931,8 @@ class HistogramWidget(QWidget):
         self.show()
         self.dataChanged.emit()
 
-    def update_multi_data(self, datasets: dict) -> None:
-        """Compute histograms from multiple datasets and render.
-
-        Each dataset (one per layer) is stored individually so that
-        *Individual layers*, *Grouped*, and *Merged + SD* display modes
-        can operate on per-layer counts.
-
-        Parameters
-        ----------
-        datasets : dict
-            ``{label: np.ndarray}`` mapping layer names to their scalar
-            data arrays.  Arrays will be flattened and filtered.
-        """
+    def _ingest_multi(self, datasets: dict, *, auto_sd: bool = True) -> None:
+        """Histogram several datasets on one set of common bins."""
         self._datasets = {}
         for label, data in datasets.items():
             valid = self._filter_valid_values(data)
@@ -3051,13 +4940,8 @@ class HistogramWidget(QWidget):
                 self._datasets[label] = valid
 
         if not self._datasets:
-            self.ax.clear()
-            self._style_axes()
-            self.fig.canvas.draw_idle()
-            self._settings_button.setEnabled(False)
-            self.save_button.setEnabled(False)
+            self._clear_histogram_data(clear_frame_source=False)
             self.show()
-            self.dataChanged.emit()
             return
 
         all_valid = np.concatenate(list(self._datasets.values()))
@@ -3074,7 +4958,7 @@ class HistogramWidget(QWidget):
             self._counts_per_dataset[label] = counts
 
         current_count = len(self._datasets)
-        if current_count > 1 and self._previous_dataset_count <= 1:
+        if auto_sd and current_count > 1 and self._previous_dataset_count <= 1:
             self._show_sd = True
         self._previous_dataset_count = current_count
 
@@ -3086,6 +4970,23 @@ class HistogramWidget(QWidget):
 
     def rename_dataset(self, old_name: str, new_name: str) -> None:
         """Handle renaming of a dataset to preserve colors and groupings."""
+        if old_name in self._input_datasets:
+            self._input_datasets = {
+                (new_name if key == old_name else key): value
+                for key, value in self._input_datasets.items()
+            }
+        split_renames = {
+            name: mask_label_split_name(new_name, value)
+            for name, (base, value) in self._split_labels.items()
+            if base == old_name
+        }
+        if split_renames:
+            # The per-label names embed the dataset name, so they all move
+            # with it; re-splitting under the new one keeps the colours and
+            # groups the remap has just carried over.
+            self.remap_dataset_keys({old_name: new_name, **split_renames})
+            self._ingest(auto_sd=False)
+            return
         if old_name in self._datasets:
             self._datasets[new_name] = self._datasets.pop(old_name)
         if old_name in self._counts_per_dataset:
@@ -3098,6 +4999,16 @@ class HistogramWidget(QWidget):
             self._group_assignments[new_name] = self._group_assignments.pop(
                 old_name
             )
+        if old_name in self._frame_source_datasets:
+            self._frame_source_datasets[new_name] = (
+                self._frame_source_datasets.pop(old_name)
+            )
+        if old_name in self._dataset_sources:
+            self._dataset_sources[new_name] = self._dataset_sources.pop(
+                old_name
+            )
+        if old_name in self._dataset_series:
+            self._dataset_series[new_name] = self._dataset_series.pop(old_name)
 
         if self._datasets:
             self._render()
@@ -3111,7 +5022,7 @@ class HistogramWidget(QWidget):
         the caller re-feeds the *same* underlying datasets under different
         labels (e.g. the components tab relabelling fraction data when the
         selected component changes), those persisted mappings would otherwise
-        no longer match and the datasets would collapse into the default group.
+        no longer match and the datasets would drop out of every group.
 
         This copies the existing ``_group_assignments`` and ``_layer_colors``
         entries from each old label to its new label. It does not re-render;
@@ -3125,17 +5036,35 @@ class HistogramWidget(QWidget):
         """
         new_group_assignments = dict(self._group_assignments)
         new_layer_colors = dict(self._layer_colors)
+        new_frame_source_datasets = dict(self._frame_source_datasets)
+        new_dataset_sources = dict(self._dataset_sources)
+        new_dataset_series = dict(self._dataset_series)
         for old_label, new_label in old_to_new.items():
             if old_label == new_label:
                 continue
+            if old_label in new_dataset_sources:
+                new_dataset_sources[new_label] = new_dataset_sources.pop(
+                    old_label
+                )
+            if old_label in new_dataset_series:
+                new_dataset_series[new_label] = new_dataset_series.pop(
+                    old_label
+                )
             if old_label in self._group_assignments:
                 new_group_assignments[new_label] = self._group_assignments[
                     old_label
                 ]
             if old_label in self._layer_colors:
                 new_layer_colors[new_label] = self._layer_colors[old_label]
+            if old_label in new_frame_source_datasets:
+                new_frame_source_datasets[new_label] = (
+                    new_frame_source_datasets.pop(old_label)
+                )
         self._group_assignments = new_group_assignments
         self._layer_colors = new_layer_colors
+        self._frame_source_datasets = new_frame_source_datasets
+        self._dataset_sources = new_dataset_sources
+        self._dataset_series = new_dataset_series
 
     def update_colormap(
         self,
@@ -3162,8 +5091,8 @@ class HistogramWidget(QWidget):
         if self.counts is not None:
             self._render()
 
-    def clear(self) -> None:
-        """Clear the histogram data and show empty axes with disabled buttons."""
+    def _clear_histogram_data(self, *, clear_frame_source):
+        """Reset histogram state, optionally discarding time-lapse sources."""
         self.counts = None
         self.bin_edges = None
         self.bin_centers = None
@@ -3171,12 +5100,21 @@ class HistogramWidget(QWidget):
         self._counts_per_dataset = {}
         self._raw_valid_data = None
         self._previous_dataset_count = 0
+        self._input_datasets = {}
+        self._forget_split_labels()
+        if clear_frame_source:
+            self._frame_context = None
+            self._frame_source_datasets = {}
         self.ax.clear()
         self._style_axes()
         self.fig.canvas.draw_idle()
         self._settings_button.setEnabled(False)
         self.save_button.setEnabled(False)
         self.dataChanged.emit()
+
+    def clear(self) -> None:
+        """Clear histogram data, including any time-lapse source."""
+        self._clear_histogram_data(clear_frame_source=True)
 
     @property
     def display_mode(self) -> str:
@@ -3201,6 +5139,41 @@ class HistogramWidget(QWidget):
         self._show_sd = value
         if self.counts is not None:
             self._render()
+
+    @property
+    def normalize(self) -> bool:
+        """Whether each curve is scaled to its own maximum."""
+        return self._normalize
+
+    @normalize.setter
+    def normalize(self, value: bool):
+        """Toggle max-normalisation and re-render if data is loaded."""
+        self._normalize = bool(value)
+        if self.counts is not None:
+            self._render()
+
+    @property
+    def log_scale(self) -> bool:
+        """Whether the y axis is drawn on a logarithmic scale."""
+        return self._log_scale
+
+    @log_scale.setter
+    def log_scale(self, value: bool):
+        """Toggle the logarithmic y axis and re-render if data is loaded."""
+        self._log_scale = bool(value)
+        if self.counts is not None:
+            self._render()
+
+    def set_bins(self, bins: int) -> None:
+        """Use *bins* histogram bins, re-histogramming the stored data."""
+        bins = int(bins)
+        if bins < 1:
+            raise ValueError(f"bins must be positive, got {bins}")
+        if bins == self.bins:
+            return
+        self.bins = bins
+        if self._input_datasets:
+            self._ingest(auto_sd=False)
 
     @property
     def white_background(self) -> bool:
@@ -3249,7 +5222,10 @@ class HistogramWidget(QWidget):
         for spine in self.ax.spines.values():
             spine.set_color(color)
             spine.set_linewidth(1)
-        self.ax.set_ylabel(self.ylabel, fontsize=6, color=color)
+        ylabel = (
+            f"{self.ylabel} (normalized)" if self._normalize else self.ylabel
+        )
+        self.ax.set_ylabel(ylabel, fontsize=6, color=color)
         self.ax.set_xlabel(self.xlabel, fontsize=6, color=color)
 
         if self._range_slider_enabled:
@@ -3332,6 +5308,21 @@ class HistogramWidget(QWidget):
             y_fine = y.astype(float)
         return x_fine, y_fine
 
+    def _display_scale(self, reference) -> float:
+        """Return the factor that maps *reference* onto the displayed y axis.
+
+        With *Normalize to maximum* enabled every curve is divided by its own
+        peak, so distributions whose pixel counts differ by orders of
+        magnitude can be compared in one plot. The factor is computed once
+        per curve and applied to its SD band as well, which keeps the band's
+        width relative to the curve.
+        """
+        if not self._normalize:
+            return 1.0
+        reference = np.asarray(reference, dtype=float)
+        peak = float(np.max(reference)) if reference.size else 0.0
+        return 1.0 / peak if peak > 0 else 1.0
+
     @staticmethod
     def _compute_central_tendency(
         data: np.ndarray,
@@ -3371,13 +5362,11 @@ class HistogramWidget(QWidget):
         if choice == "None":
             return
 
-        default_colors = plt.cm.tab10.colors
         n_datasets = len(self._counts_per_dataset)
 
         if n_datasets > 1 and self._display_mode == "Individual layers":
             for idx, (label, valid) in enumerate(self._datasets.items()):
-                default_c = default_colors[idx % len(default_colors)][:3]
-                color = self._layer_colors.get(label, default_c)
+                color = self._dataset_color(label, idx)
                 val = self._compute_central_tendency(
                     valid, choice, self.bin_centers, self.bin_edges
                 )
@@ -3386,14 +5375,24 @@ class HistogramWidget(QWidget):
                         val, color=color, ls="--", lw=2, alpha=0.85
                     )
         elif n_datasets > 1 and self._display_mode == "Grouped":
-            groups: dict[int, list] = {}
-            for label, valid in self._datasets.items():
-                g = self._group_assignments.get(label, 1)
-                groups.setdefault(g, []).append(valid)
-            for _gidx, (gid, data_list) in enumerate(sorted(groups.items())):
-                default_c = default_colors[(gid - 1) % len(default_colors)][:3]
-                color = self._group_colors.get(gid, default_c)
-                pooled = np.concatenate(data_list)
+            curves, _unassigned = self._grouped_series_curves(self._datasets)
+            for gid, _series_name, members in curves:
+                color = self._group_color(gid)
+                pooled = np.concatenate([v for _, v in members])
+                val = self._compute_central_tendency(
+                    pooled, choice, self.bin_centers, self.bin_edges
+                )
+                if val is not None:
+                    self.ax.axvline(
+                        val, color=color, ls="--", lw=2, alpha=0.85
+                    )
+        elif n_datasets > 1 and len(self._series_members(self._datasets)) > 1:
+            # Merged mode with several series: one line per merged curve.
+            for index, (name, members) in enumerate(
+                self._series_members(self._datasets).items()
+            ):
+                color = self._series_color(name, index)
+                pooled = np.concatenate([v for _, v in members])
                 val = self._compute_central_tendency(
                     pooled, choice, self.bin_centers, self.bin_edges
                 )
@@ -3444,14 +5443,57 @@ class HistogramWidget(QWidget):
             self._render_bars()
 
         self._draw_central_tendency_lines()
+        if self._log_scale:
+            self._apply_log_scale()
         self._style_axes()
         self.fig.canvas.draw_idle()
+
+    def _log_linear_threshold(self) -> float:
+        """Return the smallest non-zero value a curve can take on screen.
+
+        Counts are integers, so the smallest non-zero bin is one pixel; a
+        merged curve averages up to one count per dataset, and normalising
+        divides by the tallest peak. Below this value nothing but the empty
+        bins remain, so the log axis turns linear there and zero sits on the
+        baseline instead of at minus infinity.
+        """
+        arrays = [
+            np.asarray(counts, dtype=float)
+            for counts in self._counts_per_dataset.values()
+        ]
+        if not arrays and self.counts is not None:
+            arrays = [np.asarray(self.counts, dtype=float)]
+        if not any(np.any(counts > 0) for counts in arrays):
+            return 1.0
+        threshold = 1.0 / len(arrays)
+        if self._normalize:
+            peak = max(float(np.max(counts)) for counts in arrays)
+            if peak > 0:
+                threshold /= peak
+        return threshold
+
+    def _apply_log_scale(self) -> None:
+        """Put the y axis on a log scale that keeps empty bins at zero.
+
+        A plain log axis cannot show zero: empty bins would drop out and
+        leave gaps in the curves and fills. A symmetric-log axis is
+        logarithmic above the smallest real count and linear below it, so an
+        empty bin is drawn on the zero baseline.
+        """
+        _bottom, top = self.ax.get_ylim()
+        self.ax.set_yscale(
+            "symlog", linthresh=self._log_linear_threshold(), linscale=0.5
+        )
+        # Autoscaling may leave a small negative margin, which a symlog axis
+        # would show as a spurious negative decade.
+        self.ax.set_ylim(0, max(top, 0) * 1.5 or 1.0)
 
     def _render_bars(self) -> None:
         """Render the standard colormap-colored bar histogram."""
         cmap, norm = self._get_cmap_and_norm()
         x = self.bin_centers
         y = self.counts.astype(float)
+        y = y * self._display_scale(y)
         self._fill_gradient(x, y, np.zeros_like(y), cmap, norm, alpha=0.7)
 
     def _fill_gradient(
@@ -3514,10 +5556,12 @@ class HistogramWidget(QWidget):
         norm,
         *,
         linewidth: float = 2,
+        label: str = None,
     ) -> None:
         """Draw a line colored by a smooth colormap gradient.
 
-        Uses a ``LineCollection`` for efficient per-segment coloring.
+        Uses a ``LineCollection`` for efficient per-segment coloring. Passing
+        *label* makes the line appear in the legend.
         """
         from matplotlib.collections import LineCollection
 
@@ -3527,14 +5571,180 @@ class HistogramWidget(QWidget):
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
         colors = cmap(norm(x[:-1]))
         lc = LineCollection(segments, colors=colors, linewidths=linewidth)
+        if label is not None:
+            lc.set_label(label)
         self.ax.add_collection(lc)
+        # A LineCollection does not take part in autoscaling, so make sure the
+        # curve it draws is inside the view.
+        self.ax.update_datalim(np.column_stack([x, y]))
+        self.ax.autoscale_view()
+
+    def _label_group_assignments(self, labels) -> dict:
+        """Return ``{dataset_label: gid}`` from the source-keyed grouping.
+
+        Groups are assigned to the analysed layers, not to the individual
+        curves derived from them, so every dataset of a grouped layer — each
+        component fraction of one image, say — inherits that layer's group.
+        """
+        assignments = {}
+        for label in labels:
+            gid = self._group_assignments.get(self._source_for(label))
+            if gid is not None:
+                assignments[label] = gid
+        return assignments
+
+    def _grouped_series_curves(self, items: dict):
+        """Return ``([(gid, series_name, members)], unassigned)`` for *items*.
+
+        One entry per group and series: a group pools its layers, never two
+        series.
+        """
+        groups, unassigned = split_items_by_group(
+            items, self._label_group_assignments(items)
+        )
+        curves = []
+        for group_id in sorted(groups):
+            members = dict(groups[group_id])
+            for series_name, series_members in self._series_members(
+                members
+            ).items():
+                curves.append((group_id, series_name, series_members))
+        return curves, unassigned
+
+    def statistics_quantity_label(self):
+        """Return the name of the quantity the statistics describe.
+
+        Used to label the statistics columns, so a table (or its CSV) says
+        what was measured — ``"FRET efficiency"``, ``"Lifetime (ns)"``,
+        ``"Component 1"`` — instead of a bare ``Mean``. Returns None when
+        several quantities share the table: their names are then on the rows,
+        and one column cannot stand for all of them.
+        """
+        names = self._series_names()
+        if len(names) == 1:
+            return names[0]
+        if names:
+            return None
+        return self.xlabel or None
+
+    def statistics_row_name(self, label):
+        """Return the statistics row *label* belongs to.
+
+        Rows are the analysed layers, so the curves of several quantities
+        derived from one layer share a row. Separated mask labels are the
+        exception: they are different regions of the layer, so each keeps
+        its own row.
+        """
+        source = self._source_for(label)
+        split = self._split_labels.get(label)
+        if split is None:
+            return source
+        return mask_label_split_name(source, split[1])
+
+    def series_statistics_datasets(self):
+        """Return ``({layer: {series: values}}, series_names)`` for the table.
+
+        Used when several quantities are plotted at once: the table then shows
+        one row per analysed layer and one column block per quantity, instead
+        of one row per layer and quantity. Returns ``(None, [])`` when a single
+        quantity is on screen, where the simple layout already says everything.
+        """
+        names = self._series_names()
+        if len(names) < 2:
+            return None, []
+        rows = {}
+        for label, values in self._datasets.items():
+            rows.setdefault(self.statistics_row_name(label), {})[
+                self._dataset_series.get(label)
+            ] = values
+        return rows, names
+
+    def grouped_series_statistics_datasets(self):
+        """Return ``({group: {series: pooled}}, series_names)``.
+
+        The grouped counterpart of :meth:`series_statistics_datasets`: one row
+        per group, one column block per quantity.
+        """
+        names = self._series_names()
+        if len(names) < 2:
+            return None, []
+        curves, _unassigned = self._grouped_series_curves(self._datasets)
+        rows = {}
+        for group_id, series_name, members in curves:
+            label = self._group_names.get(group_id, f"Group {group_id}")
+            rows.setdefault(label, {})[series_name] = np.concatenate(
+                [values for _, values in members]
+            )
+        return rows, names
+
+    def grouped_dataset_statistics(self) -> dict:
+        """Return ``{curve_label: pooled_values}``, one entry per drawn curve.
+
+        Mirrors what Grouped mode plots, so the statistics table never pools
+        two series into one row either.
+        """
+        curves, _unassigned = self._grouped_series_curves(self._datasets)
+        multiple_series = len(self._series_members(self._datasets)) > 1
+        pooled = {}
+        for group_id, series_name, members in curves:
+            label = self._grouped_curve_label(
+                group_id, series_name, multiple_series
+            )
+            pooled[label] = np.concatenate([values for _, values in members])
+        return pooled
+
+    def _dataset_color(self, label, index):
+        """Return the colour of one dataset's curve.
+
+        A colour picked in the settings dialog wins; a dataset that is one
+        label of a mask otherwise takes the colour napari paints that label
+        with, so the curves and the labels layer read as the same thing.
+        Everything else falls back to the default colour cycle.
+        """
+        default_colors = plt.cm.tab10.colors
+        fallback = self._mask_label_colors.get(
+            label, default_colors[index % len(default_colors)][:3]
+        )
+        return self._layer_colors.get(label, fallback)
+
+    def _group_color(self, group_id):
+        """Return the color of *group_id*, falling back to the cycle."""
+        default_colors = plt.cm.tab10.colors
+        return self._group_colors.get(
+            group_id, default_colors[(group_id - 1) % len(default_colors)][:3]
+        )
+
+    @staticmethod
+    def _series_linestyle(series_name, series_order):
+        """Return the line style telling *series_name* apart within a group."""
+        styles = ("-", "--", ":", "-.")
+        try:
+            index = series_order.index(series_name)
+        except ValueError:
+            index = 0
+        return styles[index % len(styles)]
+
+    def _grouped_curve_label(self, group_id, series_name, multiple_series):
+        """Return the legend label for one grouped curve."""
+        group_label = self._group_names.get(group_id, f"Group {group_id}")
+        if multiple_series and series_name is not None:
+            return f"{group_label} \u2013 {series_name}"
+        return group_label
 
     def _render_merged(self) -> None:
         """Render merged histogram with optional SD shading.
 
-        Uses ``imshow`` with polygon clipping for seamless color-mapped
-        gradient fills, and ``LineCollection`` for efficient line rendering.
+        Layers are pooled, series are not: when the datasets belong to several
+        series (see :meth:`set_dataset_series`) each one gets its own curve
+        averaging only its own layers. A single series keeps the classic
+        colormap-gradient curve, drawn with ``imshow`` plus polygon clipping
+        for a seamless fill and a ``LineCollection`` for the outline.
         """
+        series = self._series_members(self._counts_per_dataset)
+        if len(series) > 1:
+            self._render_merged_series(series)
+            return
+
         cmap, norm = self._get_cmap_and_norm()
         n = len(self._counts_per_dataset)
 
@@ -3551,6 +5761,11 @@ class HistogramWidget(QWidget):
             _, lower_fine = self._smooth_curve(lower)
             _, upper_fine = self._smooth_curve(upper)
 
+            scale = self._display_scale(mean_fine)
+            mean_fine = mean_fine * scale
+            lower_fine = lower_fine * scale
+            upper_fine = upper_fine * scale
+
             self._fill_gradient(
                 x_fine, upper_fine, lower_fine, cmap, norm, alpha=0.35
             )
@@ -3560,6 +5775,7 @@ class HistogramWidget(QWidget):
         elif self._show_sd and n == 1:
             counts = list(self._counts_per_dataset.values())[0]
             x_fine, y_fine = self._smooth_curve(counts)
+            y_fine = y_fine * self._display_scale(y_fine)
             self._draw_gradient_line(x_fine, y_fine, cmap, norm, linewidth=2)
             self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
             self.ax.set_ylim(0, float(np.max(y_fine)) * 1.05)
@@ -3573,6 +5789,7 @@ class HistogramWidget(QWidget):
                 mean_counts = list(self._counts_per_dataset.values())[0]
 
             x_fine, mean_fine = self._smooth_curve(mean_counts)
+            mean_fine = mean_fine * self._display_scale(mean_fine)
 
             self._fill_gradient(
                 x_fine,
@@ -3586,15 +5803,76 @@ class HistogramWidget(QWidget):
                 x_fine, mean_fine, cmap, norm, linewidth=2
             )
 
+    def _render_merged_series(self, series: dict) -> None:
+        """Draw one merged curve per series, each pooling only its own layers.
+
+        Parameters
+        ----------
+        series : dict
+            ``{series_name: [(label, counts)]}`` from :meth:`_series_members`.
+        """
+        for index, (name, members) in enumerate(series.items()):
+            color = self._series_color(name, index)
+            all_counts = np.array([c for _, c in members], dtype=float)
+            mean_counts = np.mean(all_counts, axis=0)
+
+            x_fine, mean_fine = self._smooth_curve(mean_counts)
+            scale = self._display_scale(mean_fine)
+            mean_fine = mean_fine * scale
+
+            # Draw the outline in the series' own colormap when it has one and
+            # the user has not asked for solid colours, so the curve is colored
+            # like the layers it summarises.
+            series_cmap = (
+                self._series_cmap_and_norm(name)
+                if self._series_style == "colormap"
+                else None
+            )
+            if series_cmap is not None:
+                cmap, norm = series_cmap
+                self._draw_gradient_line(
+                    x_fine,
+                    mean_fine,
+                    cmap,
+                    norm,
+                    linewidth=2,
+                    label=str(name),
+                )
+            else:
+                self.ax.plot(
+                    x_fine,
+                    mean_fine,
+                    color=color,
+                    linewidth=2,
+                    label=str(name),
+                )
+
+            if self._show_sd and len(members) > 1:
+                std_counts = np.std(all_counts, axis=0, ddof=1)
+                lower = np.maximum(mean_counts - std_counts, 0)
+                upper = mean_counts + std_counts
+                _, lower_fine = self._smooth_curve(lower)
+                _, upper_fine = self._smooth_curve(upper)
+                self.ax.fill_between(
+                    x_fine,
+                    lower_fine * scale,
+                    upper_fine * scale,
+                    color=color,
+                    alpha=0.25,
+                    linewidth=0,
+                )
+
+        if self._show_legend:
+            self.ax.legend(fontsize=5, loc="upper right")
+
     def _render_individual(self) -> None:
         """Render each dataset as a smooth outline."""
-        default_colors = plt.cm.tab10.colors
         for idx, (label, counts) in enumerate(
             self._counts_per_dataset.items()
         ):
-            default_c = default_colors[idx % len(default_colors)][:3]
-            color = self._layer_colors.get(label, default_c)
+            color = self._dataset_color(label, idx)
             x_fine, y_fine = self._smooth_curve(counts)
+            y_fine = y_fine * self._display_scale(y_fine)
             self.ax.plot(
                 x_fine,
                 y_fine,
@@ -3606,30 +5884,36 @@ class HistogramWidget(QWidget):
             self.ax.legend(fontsize=5, loc="upper right")
 
     def _render_grouped(self) -> None:
-        """Render grouped histograms with smooth curves and optional SD."""
-        default_colors = plt.cm.tab10.colors
+        """Render grouped histograms with smooth curves and optional SD.
 
-        groups: dict[int, list[tuple[str, np.ndarray]]] = {}
-        for label, counts in self._counts_per_dataset.items():
-            g = self._group_assignments.get(label, 1)
-            groups.setdefault(g, []).append((label, counts))
+        A group pools the layers assigned to it, but never two series: with
+        several series on screen each group contributes one curve per series,
+        colored by the group and dashed differently per series, so both the
+        group and the quantity stay readable.
+        """
+        curves, _unassigned = self._grouped_series_curves(
+            self._counts_per_dataset
+        )
+        series_order = list(self._series_members(self._counts_per_dataset))
+        multiple_series = len(series_order) > 1
 
-        for _gidx, (group_id, members) in enumerate(sorted(groups.items())):
-            default_c = default_colors[(group_id - 1) % len(default_colors)][
-                :3
-            ]
-            color = self._group_colors.get(group_id, default_c)
+        for group_id, series_name, members in curves:
+            color = self._group_color(group_id)
             all_counts = np.array([c for _, c in members], dtype=float)
             mean_counts = np.mean(all_counts, axis=0)
 
             x_fine, mean_fine = self._smooth_curve(mean_counts)
-            group_label = self._group_names.get(group_id, f"Group {group_id}")
+            scale = self._display_scale(mean_fine)
+            mean_fine = mean_fine * scale
             self.ax.plot(
                 x_fine,
                 mean_fine,
                 color=color,
                 linewidth=2,
-                label=group_label,
+                linestyle=self._series_linestyle(series_name, series_order),
+                label=self._grouped_curve_label(
+                    group_id, series_name, multiple_series
+                ),
             )
 
             if self._show_sd and len(members) > 1:
@@ -3638,6 +5922,8 @@ class HistogramWidget(QWidget):
                 upper = mean_counts + std_counts
                 _, lower_fine = self._smooth_curve(lower)
                 _, upper_fine = self._smooth_curve(upper)
+                lower_fine = lower_fine * scale
+                upper_fine = upper_fine * scale
                 self.ax.fill_between(
                     x_fine,
                     lower_fine,
@@ -3647,7 +5933,7 @@ class HistogramWidget(QWidget):
                     linewidth=0,
                 )
 
-        if self._show_legend and groups:
+        if self._show_legend and curves:
             self.ax.legend(fontsize=5, loc="upper right")
 
 
@@ -3766,113 +6052,21 @@ def write_rows_to_csv(file_path, rows, float_format="{:.6f}"):
 
 
 def patch_biaplotter_capture_selection_geometry():
-    """Make biaplotter's selectors remember the region the user drew.
-
-    biaplotter's selectors turn the drawn shape into indices into the data
-    that is *currently plotted* and then discard the geometry. That is enough
-    while the phasor plot shows every timepoint at once, but when it shows a
-    single time-lapse frame the indices only cover that frame, so a selection
-    could never be applied to the rest of the stack.
-
-    Wrapping the geometry-only ``on_select`` of each base selector records
-    the call on the instance, which lets
-    :func:`active_selection_region` replay it against any other set of
-    points — reusing biaplotter's own maths for every shape rather than
-    reimplementing it here.
-
-    Safe to call repeatedly; the patch installs at most once.
-    """
-    try:
-        from biaplotter.selectors import (
-            BaseEllipseSelector,
-            BaseLassoSelector,
-            BaseRectangleSelector,
-        )
-    except ImportError:  # pragma: no cover - biaplotter is a hard dependency
-        return
-
-    for selector_class in (
-        BaseRectangleSelector,
-        BaseEllipseSelector,
-        BaseLassoSelector,
-    ):
-        if getattr(
-            selector_class, "_napari_phasors_capture_geometry_patch", False
-        ):
-            continue
-
-        original_on_select = selector_class.on_select
-
-        def _on_select_recording(self, *args, _original=original_on_select):
-            self._napari_phasors_region = (_original, args)
-            return _original(self, *args)
-
-        selector_class.on_select = _on_select_recording
-        selector_class._napari_phasors_capture_geometry_patch = True
+    """Deprecated no-op. Retained for backwards compatibility."""
+    return
 
 
 def patch_biaplotter_fixed_histogram_range():
-    """Let a 2D histogram keep one colour scale across time-lapse frames.
-
-    biaplotter derives the histogram's colour normalisation from the counts
-    it is currently drawing. That is right for a static plot, but when the
-    phasor plot shows one timepoint at a time it rescales on every frame, so
-    the same colour — and the colorbar beside it — means a different number
-    of pixels at each timepoint.
-
-    The patch honours an optional ``_napari_phasors_fixed_counts_range``
-    attribute on the artist, pinning vmin/vmax for the histogram (never for
-    the selection overlay). When the attribute is absent or None,
-    biaplotter's own behaviour is used unchanged.
-
-    Safe to call repeatedly; the patch installs at most once.
-    """
-    try:
-        from biaplotter.artists import Histogram2D
-    except ImportError:  # pragma: no cover - biaplotter is a hard dependency
-        return
-
-    if getattr(Histogram2D, "_napari_phasors_fixed_range_patch", False):
-        return
-
-    original_get_normalization = Histogram2D._get_normalization
-
-    def _get_normalization_fixed(self, values, is_overlay: bool = True):
-        fixed = getattr(self, "_napari_phasors_fixed_counts_range", None)
-        if is_overlay or fixed is None:
-            return original_get_normalization(
-                self, values, is_overlay=is_overlay
-            )
-
-        method = self._histogram_color_normalization_method
-        norm_class = self._normalization_methods.get(method)
-        if norm_class is None or method not in ("linear", "log"):
-            return original_get_normalization(
-                self, values, is_overlay=is_overlay
-            )
-
-        vmin, vmax = (float(fixed[0]), float(fixed[1]))
-        if method == "log":
-            # LogNorm cannot represent a non-positive floor.
-            vmin = max(vmin, 0.01)
-            vmax = max(vmax, vmin * 1.000001)
-        elif vmax <= vmin:
-            vmax = vmin + 1.0
-        return norm_class(vmin=vmin, vmax=vmax)
-
-    Histogram2D._get_normalization = _get_normalization_fixed
-    Histogram2D._napari_phasors_fixed_range_patch = True
+    """Deprecated no-op. Retained for backwards compatibility."""
+    return
 
 
 def active_selection_region(canvas_widget):
     """Return a predicate for the region last drawn on *canvas_widget*.
 
-    Requires :func:`patch_biaplotter_capture_selection_geometry` to have been
-    applied (it is, on importing the plotter module).
-
     Parameters
     ----------
-    canvas_widget : biaplotter.plotter.CanvasWidget
+    canvas_widget : napari_phasors._canvas.PhasorCanvasWidget
         Canvas whose active selector should be inspected.
 
     Returns
@@ -3882,6 +6076,11 @@ def active_selection_region(canvas_widget):
         boolean mask of the points inside the drawn region, or None when no
         region has been drawn (or the geometry could not be captured).
     """
+    if hasattr(canvas_widget, "active_selection_region"):
+        fn = canvas_widget.active_selection_region()
+        if fn is not None:
+            return fn
+
     selector = getattr(canvas_widget, "active_selector", None)
     recorded = getattr(selector, "_napari_phasors_region", None)
     if recorded is None:
@@ -4023,16 +6222,39 @@ class StatisticsTableWidget(QTableWidget):
     COLUMNS = ["Name", "Center of Mass", "Mean", "Median", "Std Dev"]
     #: Column layout used when one row is shown per time-lapse frame.
     FRAME_COLUMNS = ["Frame", *COLUMNS]
+    #: Starting width per column; anything unlisted uses
+    #: :data:`DEFAULT_COLUMN_WIDTH`. Names are the widest content, frames
+    #: the narrowest, and the last column stretches over the remainder.
+    COLUMN_WIDTHS = {"Name": 140, "Frame": 60}
+    #: Starting width for the numeric statistic columns. The defaults add
+    #: up to a table that fits a narrow dock without a horizontal
+    #: scrollbar, and the stretching last column absorbs any extra width.
+    DEFAULT_COLUMN_WIDTH = 70
     #: Background of the row for the frame currently on screen.
     CURRENT_FRAME_COLOR = QColor(74, 111, 165, 120)
 
     def __init__(self, parent=None):
         """Build the read-only statistics table with its fixed columns."""
         super().__init__(parent)
+        # Name of the quantity summarised, prefixed onto the statistic
+        # columns so a table or its export says what was measured.
+        self._quantity_label = None
+        #: Widths the user set by dragging, keyed by column name so they
+        #: survive the switch between ``COLUMNS`` and ``FRAME_COLUMNS``.
+        self._user_column_widths = {}
+        #: Guard so our own ``setColumnWidth`` calls are not mistaken for
+        #: a user drag in :meth:`_on_section_resized`.
+        self._applying_column_widths = False
         self.setColumnCount(len(self.COLUMNS))
         self.setHorizontalHeaderLabels(self.COLUMNS)
-        self.horizontalHeader().setStretchLastSection(True)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.horizontalHeader()
+        # Interactive (not Stretch) so columns can be resized by dragging;
+        # the last section still stretches, so the table keeps filling the
+        # dock instead of leaving a gap or forcing a horizontal scrollbar.
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        header.sectionResized.connect(self._on_section_resized)
+        self._apply_column_widths()
         self.setEditTriggers(QTableWidget.NoEditTriggers)
         self.setSelectionMode(QTableWidget.ExtendedSelection)
         self.setSelectionBehavior(QTableWidget.SelectItems)
@@ -4139,8 +6361,72 @@ class StatisticsTableWidget(QTableWidget):
                     QTableWidgetItem(f"{stats[column_name]:.4f}"),
                 )
 
+    def set_quantity_label(self, label):
+        """Name the quantity summarised, or None to keep generic columns.
+
+        The statistic columns are shown as ``"<quantity> Mean"`` and so on,
+        which carries into the CSV export since that reads the live headers.
+        """
+        self._quantity_label = label or None
+
+    def _display_headers(self, columns):
+        """Return *columns* with the quantity prefixed onto the statistics."""
+        if not self._quantity_label:
+            return list(columns)
+        return [
+            (
+                column
+                if column in ("Name", "Frame")
+                else f"{self._quantity_label} {column}"
+            )
+            for column in columns
+        ]
+
+    def update_series_statistics(
+        self, rows, series_names, bin_centers=None, bin_edges=None
+    ):
+        """Show one row per name and one column block per quantity.
+
+        Parameters
+        ----------
+        rows : dict
+            ``{row_label: {series_name: np.ndarray}}``. A row without data for
+            a series leaves those cells empty.
+        series_names : list of str
+            Quantities to lay out, in column order.
+        bin_centers, bin_edges : np.ndarray, optional
+            Binning used for the centre of mass.
+        """
+        columns = ["Name"] + [
+            f"{series} {column}"
+            for series in series_names
+            for column in self.COLUMNS[1:]
+        ]
+        self._apply_columns(columns)
+        self.setRowCount(len(rows))
+
+        for row, (name, per_series) in enumerate(rows.items()):
+            self.setItem(row, 0, QTableWidgetItem(str(name)))
+            col = 1
+            for series in series_names:
+                data = per_series.get(series)
+                stats = (
+                    compute_dataset_statistics(data, bin_centers, bin_edges)
+                    if data is not None
+                    else None
+                )
+                for column_name in self.COLUMNS[1:]:
+                    text = (
+                        f"{stats[column_name]:.4f}"
+                        if stats is not None
+                        else ""
+                    )
+                    self.setItem(row, col, QTableWidgetItem(text))
+                    col += 1
+
     def _apply_columns(self, columns):
         """Switch the table to *columns*, leaving it alone if already set."""
+        headers = self._display_headers(columns)
         current = [
             (
                 self.horizontalHeaderItem(index).text()
@@ -4149,10 +6435,44 @@ class StatisticsTableWidget(QTableWidget):
             )
             for index in range(self.columnCount())
         ]
-        if current == list(columns):
+        if current == headers:
             return
-        self.setColumnCount(len(columns))
-        self.setHorizontalHeaderLabels(list(columns))
+        self.setColumnCount(len(headers))
+        self.setHorizontalHeaderLabels(headers)
+        # Widths are positional, so without this the width of (say) "Name"
+        # would be inherited by "Frame" when the layout changes.
+        self._apply_column_widths()
+
+    def _on_section_resized(self, index, _old_width, new_width):
+        """Remember a width the user set by dragging the header."""
+        if self._applying_column_widths:
+            return
+        # The last section is sized by ``setStretchLastSection``; its
+        # "resizes" are just the table following the dock width.
+        if index == self.columnCount() - 1:
+            return
+        item = self.horizontalHeaderItem(index)
+        if item is not None:
+            self._user_column_widths[item.text()] = new_width
+
+    def _apply_column_widths(self):
+        """Size every column, preferring a width the user chose."""
+        self._applying_column_widths = True
+        try:
+            for index in range(self.columnCount()):
+                item = self.horizontalHeaderItem(index)
+                name = item.text() if item is not None else ""
+                self.setColumnWidth(
+                    index,
+                    self._user_column_widths.get(
+                        name,
+                        self.COLUMN_WIDTHS.get(
+                            name, self.DEFAULT_COLUMN_WIDTH
+                        ),
+                    ),
+                )
+        finally:
+            self._applying_column_widths = False
 
     def update_frame_statistics(self, rows, current_frame=None):
         """Show one row per time-lapse frame, highlighting the current one.
@@ -4222,14 +6542,13 @@ class StatisticsTableWidget(QTableWidget):
         """
         if group_names is None:
             group_names = {}
-        groups = {}
-        for label, data in datasets.items():
-            gid = group_assignments.get(label, 1)
-            groups.setdefault(gid, []).append(data)
+        # Layers with no group assignment are left out entirely; pooling them
+        # into the first group would silently corrupt its statistics.
+        groups, _unassigned = split_items_by_group(datasets, group_assignments)
 
         pooled_datasets = {}
         for gid in sorted(groups):
-            pooled = np.concatenate(groups[gid])
+            pooled = np.concatenate([data for _, data in groups[gid]])
             name = group_names.get(gid, f"Group {gid}")
             pooled_datasets[name] = pooled
 
@@ -4331,6 +6650,22 @@ class StatisticsDockWidget(QWidget):
         main_layout.addWidget(self.group_stats_section)
         self.group_stats_section.setVisible(False)
 
+        # Mirror of the histogram's per-label split. The table is where one
+        # row per masked region is most often wanted, so the option is
+        # offered here as well as in the histogram settings; both drive the
+        # same state on the histogram widget.
+        self.split_labels_checkbox = QCheckBox("Separate mask labels")
+        self.split_labels_checkbox.setToolTip(
+            "Show one row per label of the mask instead of one per layer. "
+            "Shown when the analysed layers are masked with more than one "
+            "label. The histogram follows, drawing one curve per label."
+        )
+        self.split_labels_checkbox.setVisible(False)
+        self.split_labels_checkbox.toggled.connect(
+            self._on_split_labels_toggled
+        )
+        main_layout.addWidget(self.split_labels_checkbox)
+
         self.export_csv_button = QPushButton("Export Table as CSV")
         self.export_csv_button.setMinimumWidth(140)
         self.export_csv_button.setEnabled(False)
@@ -4340,6 +6675,19 @@ class StatisticsDockWidget(QWidget):
         main_layout.addStretch()
 
         histogram_widget.dataChanged.connect(self._update_statistics)
+
+    def _on_split_labels_toggled(self, checked):
+        """Separate the mask labels in the histogram that drives the table."""
+        self.histogram_widget.split_by_mask_labels = checked
+
+    def _sync_split_labels_checkbox(self):
+        """Offer the split only while the analysed layers are masked."""
+        hw = self.histogram_widget
+        self.split_labels_checkbox.setVisible(hw.mask_label_split_available())
+        if self.split_labels_checkbox.isChecked() != hw.split_by_mask_labels:
+            self.split_labels_checkbox.blockSignals(True)
+            self.split_labels_checkbox.setChecked(hw.split_by_mask_labels)
+            self.split_labels_checkbox.blockSignals(False)
 
     def _shows_per_frame_rows(self):
         """True when the table should list one row per time-lapse frame."""
@@ -4356,7 +6704,7 @@ class StatisticsDockWidget(QWidget):
         hw = self.histogram_widget
         hist_range = hw.get_range() if hw._range_slider_enabled else None
         return pooled_histogram_bins(
-            hw._frame_source_datasets, hw.bins, hist_range
+            hw.frame_source_datasets(), hw.bins, hist_range
         )
 
     def _frame_statistics_rows(self):
@@ -4366,7 +6714,7 @@ class StatisticsDockWidget(QWidget):
         hw = self.histogram_widget
         bin_centers, bin_edges = self._pooled_bins()
         rows = build_frame_statistics_rows(
-            hw._frame_source_datasets,
+            hw.frame_source_datasets(),
             hw._frame_context,
             bin_edges,
             bin_centers,
@@ -4376,6 +6724,13 @@ class StatisticsDockWidget(QWidget):
     def _update_statistics(self):
         """Recompute the statistics tables from the histogram's data."""
         hw = self.histogram_widget
+        self._sync_split_labels_checkbox()
+
+        # Say what was measured in the column headers rather than leaving a
+        # bare "Mean" that could be a lifetime, a fraction or an efficiency.
+        quantity = hw.statistics_quantity_label()
+        self.layer_stats_table.set_quantity_label(quantity)
+        self.group_stats_table.set_quantity_label(quantity)
 
         if self._shows_per_frame_rows():
             rows, _centers, _edges = self._frame_statistics_rows()
@@ -4390,7 +6745,13 @@ class StatisticsDockWidget(QWidget):
                 self.export_csv_button.setEnabled(True)
                 return
 
-        self.layer_stats_section.set_title("Layer Statistics")
+        # With the mask labels separated the rows are regions of a layer,
+        # not the layers themselves.
+        self.layer_stats_section.set_title(
+            "Label Statistics"
+            if hw.mask_label_split_active()
+            else "Layer Statistics"
+        )
 
         has_multi = bool(hw._datasets)
         has_single = (
@@ -4398,19 +6759,38 @@ class StatisticsDockWidget(QWidget):
         )
 
         if has_multi:
-            self.layer_stats_table.update_statistics(
-                hw._datasets, hw.bin_centers, hw.bin_edges
-            )
+            # With several quantities on screen the table widens instead of
+            # repeating a row per quantity: one row per layer, one column
+            # block per quantity.
+            series_rows, series_names = hw.series_statistics_datasets()
+            if series_rows:
+                self.layer_stats_table.update_series_statistics(
+                    series_rows, series_names, hw.bin_centers, hw.bin_edges
+                )
+            else:
+                self.layer_stats_table.update_statistics(
+                    hw._datasets, hw.bin_centers, hw.bin_edges
+                )
             self.layer_stats_section.setVisible(True)
 
             if hw._display_mode == "Grouped" and hw._group_assignments:
-                self.group_stats_table.update_group_statistics(
-                    hw._datasets,
-                    hw._group_assignments,
-                    group_names=hw._group_names,
-                    bin_centers=hw.bin_centers,
-                    bin_edges=hw.bin_edges,
+                # Groups pool their layers, never two series into one number.
+                grouped_rows, series_names = (
+                    hw.grouped_series_statistics_datasets()
                 )
+                if grouped_rows:
+                    self.group_stats_table.update_series_statistics(
+                        grouped_rows,
+                        series_names,
+                        hw.bin_centers,
+                        hw.bin_edges,
+                    )
+                else:
+                    self.group_stats_table.update_statistics(
+                        hw.grouped_dataset_statistics(),
+                        hw.bin_centers,
+                        hw.bin_edges,
+                    )
                 self.group_stats_section.setVisible(True)
             else:
                 self.group_stats_section.setVisible(False)
@@ -4421,6 +6801,8 @@ class StatisticsDockWidget(QWidget):
             self.layer_stats_section.setVisible(True)
             self.group_stats_section.setVisible(False)
         else:
+            self.layer_stats_table.setRowCount(0)
+            self.group_stats_table.setRowCount(0)
             self.layer_stats_section.setVisible(False)
             self.group_stats_section.setVisible(False)
 
@@ -4488,7 +6870,7 @@ class StatisticsDockWidget(QWidget):
             or to emit one row per timepoint per layer.
         """
         hw = self.histogram_widget
-        datasets = hw._frame_source_datasets
+        datasets = hw.frame_source_datasets()
         # Bin over the whole acquisition so every frame's centre of mass is
         # computed on the same bins, matching the on-screen per-frame table.
         bin_centers, bin_edges = self._pooled_bins()
@@ -4505,6 +6887,21 @@ class StatisticsDockWidget(QWidget):
                     ),
                 }
                 for name, data in datasets.items()
+            ]
+
+        # Match the on-screen headers, which name the quantity measured.
+        quantity = hw.statistics_quantity_label()
+        if quantity:
+            rows = [
+                {
+                    (
+                        key
+                        if key in ("Frame", "Name")
+                        else f"{quantity} {key}"
+                    ): value
+                    for key, value in row.items()
+                }
+                for row in rows
             ]
 
         write_rows_to_csv(file_path, rows, float_format="{:.4f}")
@@ -4764,6 +7161,636 @@ class FileOrderDialog(QDialog):
         except ValueError:
             return 1.0
         return value if value > 0 else 1.0
+
+
+class TileLayoutDialog(QDialog):
+    """Dialog to describe how a set of files tiles a larger image.
+
+    The layout can come from three sources, offered in order of reliability:
+    stage positions recorded in the files, indices encoded in the file names,
+    or a manual specification. The manual mode is the one that covers
+    partially filled mosaics, where each row holds a different number of
+    tiles (``5, 7, 9, 9, 7, 5`` for a roughly circular sample, say); short
+    rows are positioned according to the chosen alignment.
+
+    A live map of the resulting arrangement is drawn so an incorrect
+    traversal order or start corner is caught before the tiles are read.
+
+    A mosaic may also be held entirely in one file, with its tiles stored
+    along a dedicated dimension such as the mosaic axis of a Zeiss CZI. Pass
+    the candidate axes as *tile_axes* and the dialog offers a choice of which
+    one holds the tiles.
+
+    Parameters
+    ----------
+    file_paths : list of str
+        Tile paths, in acquisition order.
+    parent : QWidget, optional
+        Parent widget.
+    tile_shape : tuple of int, optional
+        ``(height, width)`` of a single tile, if already known.
+    tile_axes : dict, optional
+        Maps each axis that could hold tiles inside a file to its size, as
+        returned by :func:`~napari_phasors._reader.probe_tile_axes`.
+    tile_positions : sequence of tuple, optional
+        Exact ``(y, x)`` pixel position of each tile, when the file records
+        them. Offered as a layout source and selected by default, since
+        measured positions beat any description of the arrangement.
+    """
+
+    def __init__(
+        self,
+        file_paths,
+        parent=None,
+        tile_shape=None,
+        tile_axes=None,
+        tile_positions=None,
+    ):
+        """Build the layout controls and the arrangement preview."""
+        super().__init__(parent)
+        self.setWindowTitle("Tile Layout")
+        self.setMinimumWidth(620)
+
+        self._paths = list(file_paths)
+        self._base_tile_shape = tuple(tile_shape) if tile_shape else (0, 0)
+        self._tile_shape = self._base_tile_shape
+        self._tile_axes = dict(tile_axes or {})
+        self._base_positions = (
+            [tuple(position) for position in tile_positions]
+            if tile_positions is not None
+            else None
+        )
+        self._positions = list(self._base_positions or [])
+        self._geometry = None
+
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(
+            make_experimental_warning(
+                "Tiled mosaic stitching is new. Check the arrangement in the "
+                "preview before stitching, and if a mosaic comes out "
+                "misaligned, blended wrongly or runs out of memory, report it."
+            )
+        )
+
+        info = QLabel(
+            f"{len(self._paths)} file(s) selected. Describe how they tile "
+            "the image. Rows may hold different numbers of tiles."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._add_tile_axis_row(layout)
+        self._add_binning_row(layout)
+
+        source_layout = QHBoxLayout()
+        source_layout.addWidget(QLabel("Layout from: "))
+        self.source_combo = QComboBox()
+        if self._base_positions is not None:
+            self.source_combo.addItem(
+                "Tile positions recorded in the file", "positions"
+            )
+        self.source_combo.addItem("Rows (manual)", "rows")
+        self.source_combo.addItem("File names", "names")
+        self.source_combo.addItem("Stage positions in files", "stage")
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        source_layout.addWidget(self.source_combo)
+        source_layout.addStretch()
+        layout.addLayout(source_layout)
+
+        # --- Manual rows -------------------------------------------------
+        self.rows_widget = QWidget()
+        rows_layout = QVBoxLayout(self.rows_widget)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+
+        spec_layout = QHBoxLayout()
+        spec_layout.addWidget(QLabel("Tiles per row: "))
+        self.rows_edit = QLineEdit()
+        self.rows_edit.setPlaceholderText("e.g. 5, 7, 9, 9, 7, 5  or  3x9")
+        self.rows_edit.setText(self._default_rows_spec())
+        self.rows_edit.setToolTip(
+            "Number of tiles in each row, separated by commas. "
+            "'3x9' is shorthand for three rows of nine."
+        )
+        self.rows_edit.editingFinished.connect(self._refresh)
+        spec_layout.addWidget(self.rows_edit)
+        rows_layout.addLayout(spec_layout)
+
+        options_layout = QHBoxLayout()
+        options_layout.addWidget(QLabel("Order: "))
+        self.traversal_combo = QComboBox()
+        self.traversal_combo.addItems(["Raster", "Snake"])
+        self.traversal_combo.setToolTip(
+            "Raster restarts each row on the same side. Snake alternates "
+            "direction, as most stage controllers do."
+        )
+        self.traversal_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.traversal_combo)
+
+        options_layout.addWidget(QLabel("Start: "))
+        self.corner_combo = QComboBox()
+        self.corner_combo.addItems(
+            ["Top-left", "Top-right", "Bottom-left", "Bottom-right"]
+        )
+        self.corner_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.corner_combo)
+
+        options_layout.addWidget(QLabel("Short rows: "))
+        self.alignment_combo = QComboBox()
+        self.alignment_combo.addItems(["Center", "Left", "Right"])
+        self.alignment_combo.setToolTip(
+            "Where rows with fewer tiles sit relative to the longest row."
+        )
+        self.alignment_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.alignment_combo)
+        options_layout.addStretch()
+        rows_layout.addLayout(options_layout)
+        layout.addWidget(self.rows_widget)
+
+        # --- File name pattern -------------------------------------------
+        self.pattern_widget = QWidget()
+        pattern_layout = QHBoxLayout(self.pattern_widget)
+        pattern_layout.setContentsMargins(0, 0, 0, 0)
+        pattern_layout.addWidget(QLabel("Pattern: "))
+        self.pattern_edit = QLineEdit()
+        self.pattern_edit.setText(r"(?P<row>\d+)\D+(?P<col>\d+)")
+        self.pattern_edit.setToolTip(
+            "Regular expression matched against each file name. Must define "
+            "'row' and 'col' groups, or a single 'index' group."
+        )
+        self.pattern_edit.editingFinished.connect(self._refresh)
+        pattern_layout.addWidget(self.pattern_edit)
+        layout.addWidget(self.pattern_widget)
+        self.pattern_widget.hide()
+
+        # --- Overlap ------------------------------------------------------
+        overlap_layout = QHBoxLayout()
+        overlap_layout.addWidget(QLabel("Overlap Y (%): "))
+        self.overlap_y_edit = QLineEdit("10")
+        self.overlap_y_edit.setFixedWidth(60)
+        self.overlap_y_edit.setValidator(QDoubleValidator(0.0, 90.0, 3))
+        self.overlap_y_edit.editingFinished.connect(self._refresh)
+        overlap_layout.addWidget(self.overlap_y_edit)
+
+        overlap_layout.addWidget(QLabel("Overlap X (%): "))
+        self.overlap_x_edit = QLineEdit("10")
+        self.overlap_x_edit.setFixedWidth(60)
+        self.overlap_x_edit.setValidator(QDoubleValidator(0.0, 90.0, 3))
+        self.overlap_x_edit.editingFinished.connect(self._refresh)
+        overlap_layout.addWidget(self.overlap_x_edit)
+
+        overlap_layout.addWidget(QLabel("Blending: "))
+        self.blend_combo = QComboBox()
+        self.blend_combo.addItems(["Feather", "Average", "Sum counts"])
+        self.blend_combo.setToolTip(
+            "How intensity is combined where tiles overlap. Feather "
+            "cross-fades for a seamless image; sum keeps the total photon "
+            "counts. Phasor coordinates are the same either way."
+        )
+        overlap_layout.addWidget(self.blend_combo)
+        overlap_layout.addStretch()
+        layout.addLayout(overlap_layout)
+
+        note = QLabel(
+            "The overlap can be re-tuned, or estimated from the data, after "
+            "the tiles have been read."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: grey;")
+        layout.addWidget(note)
+
+        # --- Preview ------------------------------------------------------
+        self.preview = TileLayoutPreview()
+        layout.addWidget(self.preview)
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.ok_btn)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self._refresh()
+
+    def _add_tile_axis_row(self, layout):
+        """Add the selector for the axis holding the tiles inside each file."""
+        self.tile_axis_combo = None
+        if not self._tile_axes:
+            return
+
+        from ._reader import describe_tile_axis
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Tiles inside each file: "))
+
+        self.tile_axis_combo = QComboBox()
+        self.tile_axis_combo.addItem("One tile per file", None)
+        for axis, size in self._tile_axes.items():
+            self.tile_axis_combo.addItem(
+                f"{describe_tile_axis(axis)} - {size} tiles", axis
+            )
+        # A file that carries a tile dimension almost always means the mosaic
+        # lives inside it, so start on the most likely axis rather than
+        # ignoring it.
+        self.tile_axis_combo.setCurrentIndex(1)
+        self.tile_axis_combo.setToolTip(
+            "Dimension along which a single file stores its tiles, for "
+            "example the mosaic axis of a CZI. Choose 'One tile per file' "
+            "when each selected file holds one tile."
+        )
+        self.tile_axis_combo.currentIndexChanged.connect(
+            self._on_tile_axis_changed
+        )
+        row.addWidget(self.tile_axis_combo)
+        row.addStretch()
+        layout.addLayout(row)
+
+    def _add_binning_row(self, layout):
+        """Add the spatial binning selector for large mosaics."""
+        self.binning_combo = None
+        if not self._base_tile_shape[0] or self._base_positions is None:
+            return
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Binning: "))
+        self.binning_combo = QComboBox()
+        for factor in (1, 2, 4, 8, 16):
+            self.binning_combo.addItem(
+                "None" if factor == 1 else f"{factor} x {factor}", factor
+            )
+        self.binning_combo.setToolTip(
+            "Sum square blocks of pixels while reading. Binning adds photons "
+            "together, so the phasor of a binned pixel is the "
+            "photon-weighted phasor of the pixels it covers, and it cuts the "
+            "memory a mosaic needs by the square of the factor."
+        )
+        row.addWidget(self.binning_combo)
+
+        self.memory_label = QLabel("")
+        self.memory_label.setStyleSheet("color: grey;")
+        row.addWidget(self.memory_label)
+        row.addStretch()
+        layout.addLayout(row)
+
+        # Start at a factor that keeps the stitched image manageable, rather
+        # than at a setting that would try to allocate tens of gigabytes.
+        # Set the value before connecting, since the rest of the dialog the
+        # refresh needs does not exist yet.
+        self.binning_combo.setCurrentIndex(
+            self.binning_combo.findData(self._suggested_binning())
+        )
+        self._apply_binning()
+        self.binning_combo.currentIndexChanged.connect(
+            self._on_binning_changed
+        )
+
+    def _suggested_binning(self, budget_bytes=512 * 1024 * 1024):
+        """Return the smallest binning whose canvas fits in *budget_bytes*.
+
+        Sized against one float32 plane of the stitched canvas; blending
+        needs several of those at once, so this stays conservative.
+        """
+        if self._base_positions is None or not self._base_tile_shape[0]:
+            return 1
+        for factor in (1, 2, 4, 8, 16):
+            height, width = self._canvas_for_binning(factor)
+            if height * width * 4 <= budget_bytes:
+                return factor
+        return 16
+
+    def _canvas_for_binning(self, factor):
+        """Return the stitched canvas size for a binning factor."""
+        height = self._base_tile_shape[0] // factor
+        width = self._base_tile_shape[1] // factor
+        return (
+            max(y // factor for y, _ in self._base_positions) + height,
+            max(x // factor for _, x in self._base_positions) + width,
+        )
+
+    def get_binning(self):
+        """Return the selected binning factor."""
+        if self.binning_combo is None:
+            return 1
+        return int(self.binning_combo.currentData() or 1)
+
+    def _apply_binning(self):
+        """Rescale the tile size and positions to the current binning."""
+        factor = self.get_binning()
+        if self._base_positions is None:
+            return
+        self._tile_shape = (
+            self._base_tile_shape[0] // factor,
+            self._base_tile_shape[1] // factor,
+        )
+        self._positions = [
+            (y // factor, x // factor) for y, x in self._base_positions
+        ]
+        if getattr(self, "memory_label", None) is not None:
+            height, width = self._canvas_for_binning(factor)
+            self.memory_label.setText(
+                f"{height} x {width} px, "
+                f"{height * width * 4 / (1024 ** 3):.2f} GB per plane"
+            )
+
+    def _on_binning_changed(self):
+        """Rescale the layout after the binning factor changed."""
+        self._apply_binning()
+        self._refresh()
+
+    def _on_tile_axis_changed(self):
+        """Re-derive the tile count and refresh the layout."""
+        self.rows_edit.setText(self._default_rows_spec())
+        self._refresh()
+
+    def get_tile_axis(self):
+        """Return the selected tile axis, or ``None`` for one tile per file."""
+        if self.tile_axis_combo is None:
+            return None
+        return self.tile_axis_combo.currentData()
+
+    def _sources(self):
+        """Return the tiles the current settings describe."""
+        from ._stitching import TileSource
+
+        axis = self.get_tile_axis()
+        if axis is None:
+            return [TileSource(path) for path in self._paths]
+
+        count = int(self._tile_axes.get(axis, 1))
+        return [
+            TileSource(path, index)
+            for path in self._paths
+            for index in range(count)
+        ]
+
+    def _default_rows_spec(self):
+        """Guess a square-ish arrangement to pre-fill the row specification."""
+        count = len(self._sources())
+        if count < 1:
+            return ""
+        side = int(round(count**0.5))
+        # ``candidate`` walks down to 1, which divides every count, so the
+        # loop always returns: a prime count simply becomes a single row.
+        for candidate in range(side, 0, -1):
+            if count % candidate == 0:
+                rows, columns = candidate, count // candidate
+                return f"{rows}x{columns}"
+
+    def _on_source_changed(self, index):
+        """Show the controls belonging to the selected layout source."""
+        source = self.source_combo.currentData()
+        self.rows_widget.setVisible(source == "rows")
+        self.pattern_widget.setVisible(source == "names")
+        self._refresh()
+
+    def _overlaps(self):
+        """Return the overlap fractions currently entered."""
+
+        def _fraction(edit):
+            try:
+                return min(max(float(edit.text()) / 100.0, 0.0), 0.9)
+            except ValueError:
+                return 0.0
+
+        return _fraction(self.overlap_y_edit), _fraction(self.overlap_x_edit)
+
+    def _blend_mode(self):
+        """Return the blend mode key for the current combobox selection."""
+        return ("feather", "average", "sum")[self.blend_combo.currentIndex()]
+
+    def _build_geometry(self):
+        """Build the geometry for the current settings, or raise ValueError."""
+        from ._stitching import (
+            layout_from_filenames,
+            layout_from_positions,
+            layout_from_rows,
+            layout_from_stage_positions,
+        )
+
+        overlap_y, overlap_x = self._overlaps()
+        blend_mode = self._blend_mode()
+        source = self.source_combo.currentData()
+        tiles = self._sources()
+
+        if source == "positions":
+            if len(self._positions) != len(tiles):
+                raise ValueError(
+                    f"The file records {len(self._positions)} position(s) "
+                    f"but {len(tiles)} tile(s) are selected. Choose the "
+                    "matching tile axis, or another layout source."
+                )
+            return layout_from_positions(
+                tiles,
+                self._positions,
+                tile_shape=self._tile_shape,
+                blend_mode=blend_mode,
+            )
+
+        if source == "stage":
+            geometry = layout_from_stage_positions(
+                tiles,
+                tile_shape=self._tile_shape,
+                blend_mode=blend_mode,
+            )
+            if geometry is None:
+                raise ValueError(
+                    "Stage positions could not be read. Only OME-TIFF files "
+                    "record them, one position per file; use another source."
+                )
+            return geometry
+
+        row_kwargs = {
+            "tiles_per_row": self.rows_edit.text(),
+            "traversal": ("raster", "snake")[
+                self.traversal_combo.currentIndex()
+            ],
+            "start_corner": (
+                "top-left",
+                "top-right",
+                "bottom-left",
+                "bottom-right",
+            )[self.corner_combo.currentIndex()],
+            "alignment": ("center", "left", "right")[
+                self.alignment_combo.currentIndex()
+            ],
+        }
+
+        if source == "names":
+            return layout_from_filenames(
+                tiles,
+                pattern=self.pattern_edit.text(),
+                tile_shape=self._tile_shape,
+                overlap_y=overlap_y,
+                overlap_x=overlap_x,
+                blend_mode=blend_mode,
+                **row_kwargs,
+            )
+
+        return layout_from_rows(
+            tiles,
+            tile_shape=self._tile_shape,
+            overlap_y=overlap_y,
+            overlap_x=overlap_x,
+            blend_mode=blend_mode,
+            **row_kwargs,
+        )
+
+    def _refresh(self):
+        """Rebuild the geometry and redraw the preview."""
+        try:
+            self._geometry = self._build_geometry()
+        except ValueError as error:
+            self._geometry = None
+            self.preview.set_geometry(None)
+            self.status_label.setText(str(error))
+            self.status_label.setStyleSheet("color: #d97b7b;")
+            self.ok_btn.setEnabled(False)
+            return
+
+        # A layout built from recorded positions determines the overlap, so
+        # show what was measured instead of leaving a stale typed value.
+        if self.source_combo.currentData() == "positions":
+            self.overlap_y_edit.setText(
+                f"{self._geometry.overlap_y * 100:.2f}"
+            )
+            self.overlap_x_edit.setText(
+                f"{self._geometry.overlap_x * 100:.2f}"
+            )
+        self.overlap_y_edit.setEnabled(
+            self.source_combo.currentData() != "positions"
+        )
+        self.overlap_x_edit.setEnabled(
+            self.source_combo.currentData() != "positions"
+        )
+
+        self.preview.set_geometry(self._geometry)
+        placements = self._geometry.placements
+        rows = len({placement.row for placement in placements})
+        columns = len({placement.col for placement in placements})
+        n_files = len({placement.path for placement in placements})
+        source = (
+            f"{len(placements)} tile(s)"
+            if n_files == len(placements)
+            else f"{len(placements)} tile(s) from {n_files} file(s)"
+        )
+        message = f"{source} in {rows} row(s), {columns} column position(s)."
+        if self._tile_shape[0] and self._tile_shape[1]:
+            canvas = self._geometry.canvas_shape()
+            message += f" Stitched size: {canvas[0]} x {canvas[1]} px."
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet("color: grey;")
+        self.ok_btn.setEnabled(True)
+
+    def get_geometry(self):
+        """Return the :class:`~napari_phasors._stitching.TileGeometry` built.
+
+        Returns
+        -------
+        TileGeometry or None
+            ``None`` if the current settings are invalid.
+        """
+        return self._geometry
+
+    def get_ordered_paths(self):
+        """Return the tile paths in placement order, with repeats."""
+        if self._geometry is None:
+            return list(self._paths)
+        return self._geometry.paths
+
+    def get_sources(self):
+        """Return the tiles in placement order.
+
+        Returns
+        -------
+        list of TileSource
+            One entry per tile. A single multi-tile file yields several
+            entries that share a path and differ by index.
+        """
+        if self._geometry is None:
+            return self._sources()
+        return self._geometry.sources
+
+
+class TileLayoutPreview(QWidget):
+    """Small map of a mosaic layout, drawn from a ``TileGeometry``.
+
+    Each tile is drawn as a rectangle at its computed position and labelled
+    with its position in the acquisition order, so an incorrect traversal or
+    start corner is obvious at a glance.
+    """
+
+    def __init__(self, parent=None):
+        """Create an empty preview."""
+        super().__init__(parent)
+        self._geometry = None
+        self.setMinimumHeight(200)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_geometry(self, geometry):
+        """Set the geometry to draw, or ``None`` to clear the preview."""
+        self._geometry = geometry
+        self.update()
+
+    def paintEvent(self, event):
+        """Draw the tile rectangles scaled to fit the widget."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        if self._geometry is None or not self._geometry.placements:
+            painter.setPen(QPen(QColor("#8a8a8a")))
+            painter.drawText(
+                self.rect(), Qt.AlignCenter, "No layout to preview"
+            )
+            painter.end()
+            return
+
+        geometry = self._geometry
+        # The tile size is unknown until the files are read, so preview with
+        # a nominal tile and let the overlap set the spacing.
+        height, width = geometry.tile_shape
+        if not height or not width:
+            height = width = 100
+            geometry = replace(geometry, tile_shape=(height, width))
+
+        origins = geometry.origins()
+        canvas_height, canvas_width = geometry.canvas_shape()
+        if not canvas_height or not canvas_width:
+            painter.end()
+            return
+
+        margin = 10
+        scale = min(
+            (self.width() - 2 * margin) / canvas_width,
+            (self.height() - 2 * margin) / canvas_height,
+        )
+        offset_x = (self.width() - canvas_width * scale) / 2
+        offset_y = (self.height() - canvas_height * scale) / 2
+
+        font = painter.font()
+        font.setPointSizeF(max(6.0, min(11.0, height * scale / 3.5)))
+        painter.setFont(font)
+
+        for index, (origin_y, origin_x) in enumerate(origins):
+            rect = QRect(
+                int(offset_x + origin_x * scale),
+                int(offset_y + origin_y * scale),
+                max(1, int(width * scale)),
+                max(1, int(height * scale)),
+            )
+            painter.setBrush(QColor(90, 140, 200, 60))
+            painter.setPen(QPen(QColor("#5a8cc8"), 1))
+            painter.drawRect(rect)
+            painter.setPen(QPen(QColor("#c7c7c7")))
+            painter.drawText(rect, Qt.AlignCenter, str(index + 1))
+
+        painter.end()
 
 
 def read_ome_tiff_settings(file_path):

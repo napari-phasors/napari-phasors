@@ -19,6 +19,7 @@ from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from napari.layers import Labels
 from phasorpy.io import phasor_to_ometiff
 
+from ._parallel import parallel_map, workers_for_memory
 from ._utils import show_activity_progress
 
 if TYPE_CHECKING:
@@ -104,6 +105,23 @@ def _extract_z_spacing_um(
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
+
+
+def _largest_layer_bytes(layers):
+    """Return the byte size of the largest layer's data, or ``0``.
+
+    Used to size export pools: exporting concurrently holds several layers'
+    arrays at once, so the worker count is capped against free memory.
+    Anything whose size cannot be determined contributes ``0``, which simply
+    leaves the memory cap off.
+    """
+    largest = 0
+    for layer in layers:
+        data = getattr(layer, "data", None)
+        if data is None and isinstance(layer, (list, tuple)) and layer:
+            data = layer[0]
+        largest = max(largest, int(getattr(data, "nbytes", 0) or 0))
+    return largest
 
 
 def _get_export_path(
@@ -211,8 +229,14 @@ def write_ome_tiff(
                 else f"layer_{idx}"
             )
 
-    saved_paths = []
-    for i, current_layer in enumerate(layers_to_export):
+    def _write_one(item):
+        """Export one layer and return the path written.
+
+        Each layer goes to its own file, so exports are independent
+        and run concurrently; the encoders release the GIL while
+        compressing.
+        """
+        i, current_layer = item
         if hasattr(current_layer, 'data') and hasattr(
             current_layer, 'metadata'
         ):
@@ -396,9 +420,18 @@ def write_ome_tiff(
                     metadata=metadata_dict if metadata_dict else None,
                     description=description,
                 )
-            saved_paths.append(current_path)
+            return current_path
         finally:
             pbr.close()
+
+    saved_paths = parallel_map(
+        _write_one,
+        list(enumerate(layers_to_export)),
+        workers=workers_for_memory(
+            _largest_layer_bytes(layers_to_export),
+            n_items=len(layers_to_export),
+        ),
+    )
     return saved_paths
 
 
@@ -668,9 +701,14 @@ def export_layer_as_csv(path: str, image_layer: Any) -> list[str]:
                 else f"layer_{idx}"
             )
 
-    saved_paths = []
+    def _write_one(item):
+        """Export one layer and return the path written.
 
-    for i, current_layer in enumerate(layers_to_export):
+        Each layer goes to its own file, so exports are independent
+        and run concurrently; the encoders release the GIL while
+        compressing.
+        """
+        i, current_layer = item
         if hasattr(current_layer, 'data'):
             data = current_layer.data
             metadata = getattr(current_layer, 'metadata', {})
@@ -706,8 +744,11 @@ def export_layer_as_csv(path: str, image_layer: Any) -> list[str]:
             # Create coordinate arrays
             coords = np.unravel_index(np.arange(n_pixels), spatial_shape)
 
-            # Build dataframe with phasor data
-            rows = []
+            # Build dataframe with phasor data. Selecting the kept pixels
+            # with a boolean mask rather than looping over them matters: a
+            # per-pixel Python loop costs one dict per pixel per harmonic,
+            # which on a large image runs into tens of millions of objects.
+            frames = []
             for h_idx, harmonic in enumerate(harmonics):
                 # Handle both 2D (single harmonic) and 3D (multiple harmonics) cases
                 if G.ndim == 3:
@@ -721,22 +762,27 @@ def export_layer_as_csv(path: str, image_layer: Any) -> list[str]:
                     g_orig_flat = G_original.ravel()
                     s_orig_flat = S_original.ravel()
 
-                for px_idx in range(n_pixels):
-                    if not (
-                        np.isnan(g_flat[px_idx]) and np.isnan(s_flat[px_idx])
-                    ):
-                        row = {
-                            'harmonic': harmonic,
-                            'G': g_flat[px_idx],
-                            'S': s_flat[px_idx],
-                            'G_original': g_orig_flat[px_idx],
-                            'S_original': s_orig_flat[px_idx],
-                        }
-                        for dim, coord in enumerate(coords):
-                            row[f'dim_{dim}'] = coord[px_idx]
-                        rows.append(row)
+                # A pixel is dropped only when both coordinates are NaN.
+                keep = ~(np.isnan(g_flat) & np.isnan(s_flat))
+                if not keep.any():
+                    continue
 
-            df = pd.DataFrame(rows)
+                columns = {
+                    'harmonic': np.full(int(keep.sum()), harmonic),
+                    'G': g_flat[keep],
+                    'S': s_flat[keep],
+                    'G_original': g_orig_flat[keep],
+                    'S_original': s_orig_flat[keep],
+                }
+                for dim, coord in enumerate(coords):
+                    columns[f'dim_{dim}'] = coord[keep]
+                frames.append(pd.DataFrame(columns))
+
+            df = (
+                pd.concat(frames, ignore_index=True)
+                if frames
+                else pd.DataFrame()
+            )
             df.to_csv(current_path, index=False)
         else:
             if data.ndim == 2:
@@ -760,5 +806,14 @@ def export_layer_as_csv(path: str, image_layer: Any) -> list[str]:
                 df = pd.DataFrame(df_dict)
 
             df.to_csv(current_path, index=False)
-        saved_paths.append(current_path)
+        return current_path
+
+    saved_paths = parallel_map(
+        _write_one,
+        list(enumerate(layers_to_export)),
+        workers=workers_for_memory(
+            _largest_layer_bytes(layers_to_export),
+            n_items=len(layers_to_export),
+        ),
+    )
     return saved_paths

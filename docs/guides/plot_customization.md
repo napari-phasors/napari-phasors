@@ -30,7 +30,7 @@ Customizable parameters include:
 
 - **Marker Size**: Adjust the size of the points.
 - **Color**: Select a color for the markers.
-- **Alpha**: Set the transparency level of the points.
+- **Transparency**: Set the transparency level of the points (0 = opaque).
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20plot%20scatter.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20plot%20scatter.mp4" type="video/mp4">
@@ -68,7 +68,7 @@ Customizable parameters include:
 - **Method**: Choose between **Mean** or **Median** to calculate the phasor center.
 - **Marker Size**: Adjust the size of the center markers.
 - **Color**: Select a color for the markers.
-- **Alpha**: Set the transparency level.
+- **Transparency**: Set the transparency level (0 = opaque).
 
 When multiple layers are selected, you can choose between **Merged**, **Individual**, or **Group** modes to visualize centers accordingly.
 

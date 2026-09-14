@@ -1,11 +1,19 @@
-REM Post-install script: create shortcuts. napari-phasors and its dependencies
-REM are bundled into the env by constructor (see specs in the build workflow),
-REM so nothing is downloaded here and the install needs no network.
+REM Post-install script: create shortcuts. napari-phasors and all of its
+REM dependencies are bundled into the environments by constructor (see
+REM make_construct.py), so nothing is downloaded here and the install needs
+REM no network.
+REM
+REM The launcher (napari-phasors.bat) and its environment setup
+REM (launcher-env.bat) ship as constructor extra_files.
 
-REM Create a launcher batch file
-echo @echo off > "%PREFIX%\napari-phasors.bat"
-echo set "PATH=%PREFIX%;%PREFIX%\Library\bin;%PREFIX%\Scripts;%%PATH%%" >> "%PREFIX%\napari-phasors.bat"
-echo start "" "%PREFIX%\Scripts\napari.exe" >> "%PREFIX%\napari-phasors.bat"
+if not exist "%PREFIX%\napari-phasors.bat" (
+    echo ERROR: missing bundled launcher: %PREFIX%\napari-phasors.bat
+    exit /b 1
+)
+if not exist "%PREFIX%\launcher-env.bat" (
+    echo ERROR: missing bundled launcher environment: %PREFIX%\launcher-env.bat
+    exit /b 1
+)
 
 REM Detect icon file (if shipped via constructor extra_files)
 set "ICON_PATH="

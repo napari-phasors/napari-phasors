@@ -9,20 +9,34 @@ import inspect
 import itertools
 import json
 import os
+import threading
+import warnings
 from collections.abc import Callable, Sequence
+from contextlib import suppress
+from dataclasses import replace
 from typing import Any, Union
 
 import numpy as np
 import phasorpy.io as io
 import tifffile
+import xarray as xr
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
-from phasorpy.phasor import phasor_from_signal
 
-from ._utils import show_activity_progress
-import xarray as xr
-
-_signal_from_brighteyes_mcs = io.signal_from_brighteyes_mcs
+from ._fbd import signal_from_fbd
+from ._parallel import (
+    parallel_map,
+    parallel_phasor_from_signal,
+    parallel_stream,
+    workers_for_memory,
+)
+from ._stitching import as_tile_sources, blend_phasor_tiles
+from ._utils import (
+    cast_phasor_storage,
+    extract_channel_label,
+    format_phasor_layer_name,
+    show_activity_progress,
+)
 
 _signal_from_brighteyes_mcs = io.signal_from_brighteyes_mcs
 
@@ -36,7 +50,7 @@ extension_mapping = {
         ),
         ".fbd": lambda path, reader_options: _parse_and_call_io_function(
             path,
-            io.signal_from_fbd,
+            signal_from_fbd,
             {
                 "frame": (-1, False),
                 "keepdims": (False, False),
@@ -302,6 +316,92 @@ def _clamp_harmonics(
     return res
 
 
+def _napari_main_window():
+    """Return napari's main Qt window, or ``None`` outside a running viewer.
+
+    Dialogs parented to it inherit napari's stylesheet, so they follow the
+    active theme instead of rendering with the platform default palette.
+    """
+    try:
+        import napari
+
+        viewer = napari.current_viewer()
+    except Exception:  # noqa: BLE001 - no viewer, or napari without Qt
+        return None
+    window = getattr(viewer, "window", None)
+    return getattr(window, "_qt_window", None)
+
+
+# Channel selection answered once per batch of files
+#
+# napari opens a multi-file selection (drag-and-drop, or File > Open Files) by
+# calling the reader once per path, so without this cache every file in the
+# batch would pop its own channel dialog. The answer is cached per batch and
+# per channel layout: files that expose the same channels reuse the first
+# answer, and a file with a different channel layout asks again.
+_CHANNEL_BATCH_PATHS: list | None = None
+_CHANNEL_BATCH_CHOICES: dict[tuple, tuple | None] = {}
+
+
+def _current_open_batch() -> list | None:
+    """Return the paths of the ``viewer.open()`` call in progress, if any.
+
+    Identified by duck-typing napari's ``ViewerModel.open`` frame rather than
+    its module path, so a napari that renames the local simply yields ``None``
+    and every file asks on its own, as before.
+    """
+    frame = inspect.currentframe()
+    try:
+        while frame is not None:
+            if frame.f_code.co_name == "open":
+                paths = frame.f_locals.get("paths_")
+                viewer = frame.f_locals.get("self")
+                if isinstance(paths, list) and hasattr(
+                    viewer, "_add_layers_with_plugins"
+                ):
+                    return paths
+            frame = frame.f_back
+    finally:
+        del frame
+    return None
+
+
+def _channel_batch_signature(channel_labels: list) -> tuple:
+    """Return a hashable key identifying a file's channel layout."""
+    return tuple(str(label) for label in channel_labels)
+
+
+def _get_batch_channel_choice(batch: list | None, signature: tuple):
+    """Return ``(found, choice)`` for this batch and channel layout.
+
+    ``choice`` is ``None`` when the user cancelled the dialog for these
+    channels, so the rest of the batch skips those files silently.
+    """
+    global _CHANNEL_BATCH_PATHS, _CHANNEL_BATCH_CHOICES
+
+    if batch is None or len(batch) < 2:
+        return False, None
+    # Compared by identity: the batch list lives for the whole ``open`` call,
+    # and holding a reference to it keeps its ``id`` from being reused.
+    if _CHANNEL_BATCH_PATHS is not batch:
+        _CHANNEL_BATCH_PATHS = batch
+        _CHANNEL_BATCH_CHOICES = {}
+        return False, None
+    if signature not in _CHANNEL_BATCH_CHOICES:
+        return False, None
+    return True, _CHANNEL_BATCH_CHOICES[signature]
+
+
+def _store_batch_channel_choice(
+    batch: list | None, signature: tuple, choice: tuple | None
+):
+    """Remember the answer given for this channel layout within the batch."""
+    if batch is None or len(batch) < 2:
+        return
+    if _CHANNEL_BATCH_PATHS is batch:
+        _CHANNEL_BATCH_CHOICES[signature] = choice
+
+
 def ambiguous_file_reader(
     path: str,
     reader_options: dict | None = None,
@@ -361,6 +461,28 @@ def raw_file_reader(
     if harmonics is None:
         harmonics = [1, 2]
 
+    axis_override, keep_signal, filtered_reader_options = (
+        _split_widget_reader_options(reader_options)
+    )
+    filename, file_extension = _get_filename_extension(path)
+    raw_data = load_raw_signal(path, filtered_reader_options)
+
+    return _phasor_layers_from_signal(
+        raw_data,
+        filename=filename,
+        file_extension=file_extension,
+        harmonics=harmonics,
+        axis_override=axis_override,
+        keep_signal=keep_signal,
+        reader_options=reader_options,
+    )
+
+
+def _split_widget_reader_options(reader_options):
+    """Separate widget-only options from those meant for the IO functions.
+
+    Returns ``(axis_override, keep_signal, io_options)``.
+    """
     # Extract phasor_axis from reader_options (widget-level parameter)
     # This should not be passed to IO functions
     axis_override = None
@@ -377,7 +499,47 @@ def raw_file_reader(
     # over a masked region. This is memory-heavy, so it is off by default.
     keep_signal = bool(filtered_reader_options.pop('_keep_signal', False))
 
-    filename, file_extension = _get_filename_extension(path)
+    # Spatial binning is applied by the mosaic reader, never by the IO
+    # functions, so drop it here whichever path the file takes.
+    filtered_reader_options.pop('binning', None)
+    filtered_reader_options.pop('from_custom_import', None)
+    filtered_reader_options.pop('interactive', None)
+    filtered_reader_options.pop('channels', None)
+    filtered_reader_options.pop('single_layer', None)
+    return axis_override, keep_signal, filtered_reader_options
+
+
+def load_raw_signal(path, io_options=None):
+    """Read the raw signal of a file without computing phasor coordinates.
+
+    Parameters
+    ----------
+    path : str
+        Path to a file in one of the supported raw formats.
+    io_options : dict, optional
+        Arguments forwarded to the format's ``phasorpy.io`` function. Must
+        contain only IO arguments; see :func:`_split_widget_reader_options`.
+
+    Returns
+    -------
+    xarray.DataArray or numpy.ndarray
+        The signal as returned by the format's reader.
+    """
+    _, file_extension = _get_filename_extension(path)
+    io_options = io_options or {}
+
+    # A CZI mosaic's nominal extent covers the whole scanned area, so reading
+    # it as one image means allocating an array far larger than the file --
+    # terabytes for a slide scan. Refuse it here so every caller gets a clear
+    # error instead of exhausting memory.
+    mosaic = czi_mosaic_info(path)
+    if mosaic is not None:
+        height, width = mosaic["canvas_shape"]
+        raise ValueError(
+            f"{os.path.basename(path)} is a mosaic of {mosaic['n_tiles']} "
+            f"tiles spanning {height} x {width} pixels, which cannot be read "
+            "as a single image. Import it with 'Open tiled mosaic'."
+        )
 
     # Read SDT multi-file special case
     if file_extension == ".sdt":
@@ -394,12 +556,49 @@ def raw_file_reader(
             assert (
                 _d.shape == raw_list[0].shape
             ), "Shapes from files in .sdt do not match!"
-        raw_data = xr.concat(raw_list, dim="C")
-    else:
-        raw_data = extension_mapping["raw"][file_extension](
-            path, filtered_reader_options
-        )
+        return xr.concat(raw_list, dim="C")
 
+    return extension_mapping["raw"][file_extension](path, io_options)
+
+
+def _phasor_layers_from_signal(
+    raw_data,
+    *,
+    filename,
+    file_extension,
+    harmonics,
+    axis_override=None,
+    keep_signal=False,
+    progress_description=None,
+    reader_options=None,
+):
+    """Compute phasor coordinates for an already-loaded signal.
+
+    Split out of :func:`raw_file_reader` so that a file holding several tiles
+    can be read once and then transformed one tile at a time.
+
+    Parameters
+    ----------
+    raw_data : xarray.DataArray or numpy.ndarray
+        Signal returned by :func:`load_raw_signal`, or one slice of it.
+    filename : str
+        Name used for the resulting layers.
+    file_extension : str
+        Extension the signal was read from, which selects the channel axis.
+    harmonics : int or sequence of int
+        Harmonics to compute.
+    axis_override : int, optional
+        Index of the histogram or spectral axis. Detected when ``None``.
+    keep_signal : bool, optional
+        Keep the full signal in the layer metadata.
+    progress_description : str, optional
+        Text shown on the progress bar. Defaults to the file name.
+
+    Returns
+    -------
+    list of tuple
+        Napari layer-data tuples, one per channel.
+    """
     settings = {}
     if (
         file_extension != '.fbd'
@@ -433,7 +632,8 @@ def raw_file_reader(
         n_steps = len(harmonics) if isinstance(harmonics, (list, tuple)) else 1
 
     pbr = show_activity_progress(
-        desc=f"Reading {filename}...", total=n_steps + 1
+        desc=progress_description or f"Reading {filename}...",
+        total=n_steps + 1,
     )
 
     try:
@@ -486,50 +686,20 @@ def raw_file_reader(
                 return []
 
             pbr.set_description("Computing phasor transform...")
-            mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=axis, harmonic=harmonics_to_use
+            mean_intensity_image, G_image, S_image = (
+                parallel_phasor_from_signal(
+                    raw_data, axis=axis, harmonic=harmonics_to_use
+                )
+            )
+            # Downcast once, here, so every array the layer goes on to hold
+            # -- and every copy a filter makes of them -- is at the chosen
+            # storage precision.
+            mean_intensity_image, G_image, S_image = cast_phasor_storage(
+                mean_intensity_image, G_image, S_image
             )
             pbr.update(n_steps)
-            if file_extension == ".h5" and settings.get("dataset") in {
-                "reference",
-                "irf",
-            }:
-                calibration_name = (
-                    "IRF" if settings.get("dataset") == "irf" else "Reference"
-                )
-                channel = settings.get("channel")
-                channel_suffix = (
-                    f" {calibration_name}"
-                    if channel is None
-                    else (
-                        f" {calibration_name}: "
-                        f"{_format_channel_label(channel)}"
-                    )
-                )
-            elif file_extension == ".h5" and {
-                "time",
-                "depth",
-            }.issubset(settings):
-                dataset_label = _format_h5_dataset_label(
-                    settings.get("dataset")
-                )
-                channel = settings.get("channel")
-                channel_text = (
-                    ""
-                    if channel is None
-                    else f", {_format_channel_label(channel)}"
-                )
-                channel_suffix = (
-                    " Intensity Image: "
-                    f"{dataset_label}, "
-                    f"Time {settings['time']}, "
-                    f"Z {settings['depth']}"
-                    f"{channel_text}"
-                )
-            else:
-                channel_suffix = " Intensity Image"
             add_kwargs = {
-                "name": f"{filename}{channel_suffix}",
+                "name": format_phasor_layer_name(filename),
                 "metadata": {
                     "original_mean": mean_intensity_image,
                     "settings": settings,
@@ -562,7 +732,83 @@ def raw_file_reader(
                 channel_labels = list(range(raw_data.shape[iter_axis_index]))
 
             n_channels = len(channel_labels)
-            for channel_pos, channel_label in enumerate(channel_labels):
+            selected_positions = list(range(n_channels))
+            selected_channel_labels = channel_labels
+            single_layer = False
+
+            if n_channels > 1:
+                interactive = None
+                if reader_options is not None:
+                    interactive = reader_options.get("interactive", None)
+                    if interactive is None and reader_options.get(
+                        "from_custom_import", False
+                    ):
+                        interactive = False
+
+                if interactive is None:
+                    from qtpy.QtWidgets import QApplication
+
+                    app = QApplication.instance()
+                    in_pytest = "PYTEST_CURRENT_TEST" in os.environ
+                    interactive = (app is not None) and not in_pytest
+
+                if interactive:
+                    from qtpy.QtWidgets import QDialog
+
+                    from ._channel_dialog import ChannelSelectionDialog
+
+                    batch = _current_open_batch()
+                    signature = _channel_batch_signature(channel_labels)
+                    answered, choice = _get_batch_channel_choice(
+                        batch, signature
+                    )
+                    if not answered:
+                        dialog = ChannelSelectionDialog(
+                            channel_labels,
+                            filename=filename,
+                            batch_size=len(batch) if batch else 1,
+                            parent=_napari_main_window(),
+                        )
+                        exec_func = (
+                            getattr(dialog, "exec", None) or dialog.exec_
+                        )
+                        if exec_func() == QDialog.Accepted:
+                            choice = (
+                                dialog.get_selected_channel_positions(),
+                                dialog.get_selected_channel_labels(),
+                                dialog.is_single_layer(),
+                            )
+                        else:
+                            choice = None
+                        _store_batch_channel_choice(batch, signature, choice)
+                    if choice is None:
+                        return []
+                    (
+                        selected_positions,
+                        selected_channel_labels,
+                        single_layer,
+                    ) = choice
+                else:
+                    if reader_options and "channels" in reader_options:
+                        req = reader_options["channels"]
+                        selected_positions = [
+                            i
+                            for i, lbl in enumerate(channel_labels)
+                            if i in req or lbl in req or str(lbl) in req
+                        ]
+                        selected_channel_labels = [
+                            channel_labels[i] for i in selected_positions
+                        ]
+                    if reader_options and "single_layer" in reader_options:
+                        single_layer = bool(reader_options["single_layer"])
+
+            if not selected_positions:
+                return []
+
+            channel_layers = []
+            for channel_pos, channel_label in zip(
+                selected_positions, selected_channel_labels, strict=False
+            ):
                 pbr.set_description(f"Channel {channel_pos + 1}/{n_channels}")
                 pbr.update(1)
                 channel_data = raw_data.isel({iter_axis: channel_pos})
@@ -614,13 +860,20 @@ def raw_file_reader(
                     show_error(str(e))
                     return []
 
-                mean_intensity_image, G_image, S_image = phasor_from_signal(
-                    channel_data,
-                    axis=histogram_axis,
-                    harmonic=harmonics_to_use,
+                mean_intensity_image, G_image, S_image = (
+                    parallel_phasor_from_signal(
+                        channel_data,
+                        axis=histogram_axis,
+                        harmonic=harmonics_to_use,
+                    )
+                )
+                mean_intensity_image, G_image, S_image = cast_phasor_storage(
+                    mean_intensity_image, G_image, S_image
                 )
                 add_kwargs = {
-                    "name": f"{filename} Intensity Image: Channel {channel_label}",
+                    "name": format_phasor_layer_name(
+                        filename, channel_label=channel_label
+                    ),
                     "metadata": {
                         "original_mean": mean_intensity_image,
                         "settings": channel_settings,
@@ -641,7 +894,82 @@ def raw_file_reader(
                         channel_data
                     )
                     add_kwargs["metadata"]["signal_axis"] = int(histogram_axis)
-                layers.append((mean_intensity_image, add_kwargs))
+                channel_layers.append((mean_intensity_image, add_kwargs))
+
+            if single_layer and len(channel_layers) > 1:
+                means = [layer[0] for layer in channel_layers]
+                stacked_mean = np.stack(means, axis=0)
+                stacked_orig_mean = np.stack(
+                    [
+                        layer[1]["metadata"]["original_mean"]
+                        for layer in channel_layers
+                    ],
+                    axis=0,
+                )
+                g_list = [
+                    layer[1]["metadata"]["G"] for layer in channel_layers
+                ]
+                s_list = [
+                    layer[1]["metadata"]["S"] for layer in channel_layers
+                ]
+                if g_list[0].ndim >= 3:
+                    # (harmonics, Y, X) -> (harmonics, C, Y, X)
+                    stacked_G = np.stack(g_list, axis=1)
+                    stacked_S = np.stack(s_list, axis=1)
+                else:
+                    # (Y, X) -> (C, Y, X)
+                    stacked_G = np.stack(g_list, axis=0)
+                    stacked_S = np.stack(s_list, axis=0)
+
+                stacked_G_orig = stacked_G.copy()
+                stacked_S_orig = stacked_S.copy()
+
+                first_layer_kw = channel_layers[0][1]
+                first_meta = first_layer_kw["metadata"]
+                summed_signals = [
+                    layer[1]["metadata"].get("summed_signal")
+                    for layer in channel_layers
+                ]
+
+                single_meta = {
+                    "original_mean": stacked_orig_mean,
+                    "settings": {
+                        **settings,
+                        "channels": selected_channel_labels,
+                    },
+                    "summed_signal": (
+                        summed_signals
+                        if any(s is not None for s in summed_signals)
+                        else None
+                    ),
+                    "G": stacked_G,
+                    "S": stacked_S,
+                    "G_original": stacked_G_orig,
+                    "S_original": stacked_S_orig,
+                    "harmonics": first_meta["harmonics"],
+                    "channel_labels": selected_channel_labels,
+                }
+                single_add_kwargs = {
+                    "name": format_phasor_layer_name(filename),
+                    "metadata": single_meta,
+                }
+                if keep_signal:
+                    sig_list = [
+                        layer[1]["metadata"]["signal_full"]
+                        for layer in channel_layers
+                        if "signal_full" in layer[1]["metadata"]
+                    ]
+                    if len(sig_list) == len(channel_layers):
+                        single_add_kwargs["metadata"]["signal_full"] = (
+                            np.stack(sig_list, axis=0)
+                        )
+                    if "signal_axis" in first_meta:
+                        single_add_kwargs["metadata"]["signal_axis"] = (
+                            first_meta["signal_axis"]
+                        )
+                layers.append((stacked_mean, single_add_kwargs))
+            else:
+                layers.extend(channel_layers)
     finally:
         pbr.close()
 
@@ -694,6 +1022,107 @@ def _format_h5_dataset_label(path):
     return path
 
 
+def _new_stack_channel(layer_data, n_files):
+    """Allocate the stacked arrays for one channel of a file stack.
+
+    Shapes and dtypes come from the first file read; every later file is
+    written into a slice of these arrays rather than being kept until the
+    end. ``G``/``S`` may be ``(harmonics, Y, X)`` or ``(Y, X)``, and the
+    files axis is inserted so the harmonic axis stays leading either way.
+
+    Parameters
+    ----------
+    layer_data : tuple
+        ``(mean, kwargs)`` for this channel of the first file.
+    n_files : int
+        Number of files in the stack, the length of the new axis.
+
+    Returns
+    -------
+    dict
+        The preallocated arrays plus the first file's kwargs, which supply
+        the stack layer's name, settings and colormap.
+    """
+    mean, kwargs = layer_data
+    meta = kwargs["metadata"]
+    mean = np.asarray(mean)
+
+    def stacked(array):
+        array = np.asarray(array)
+        if array.ndim >= 3:
+            # (harmonics, Y, X) -> (harmonics, files, Y, X)
+            shape = (array.shape[0], n_files) + array.shape[1:]
+        else:
+            shape = (n_files,) + array.shape
+        return np.empty(shape, dtype=array.dtype)
+
+    return {
+        "kwargs": kwargs,
+        "mean": np.empty((n_files,) + mean.shape, dtype=mean.dtype),
+        # ``original_mean`` is filled alongside ``mean`` rather than copied
+        # from it afterwards, which keeps one fewer full-size array alive.
+        "original_mean": np.empty((n_files,) + mean.shape, dtype=mean.dtype),
+        "G": stacked(meta["G"]),
+        "S": stacked(meta["S"]),
+        "G_original": stacked(meta["G_original"]),
+        "S_original": stacked(meta["S_original"]),
+        "summed_signals": [],
+    }
+
+
+def _fill_stack_channel(channel, index, layer_data, path):
+    """Write one file's channel into its slice of the stacked arrays.
+
+    Returns
+    -------
+    str or None
+        An error message when this file does not match the first one, or
+        ``None`` on success. Mismatched dtypes are reported rather than
+        silently cast, since a downcast would quietly lose precision on
+        every file after the first.
+    """
+    mean, kwargs = layer_data
+    mean = np.asarray(mean)
+    meta = kwargs["metadata"]
+
+    if mean.shape != channel["mean"].shape[1:]:
+        return (
+            f"Spatial shape mismatch: file {path} has shape {mean.shape} "
+            f"but expected {channel['mean'].shape[1:]}."
+        )
+
+    for key in ("G", "S", "G_original", "S_original"):
+        array = np.asarray(meta[key])
+        out = channel[key]
+        expected = (
+            out.shape[:1] + out.shape[2:] if out.ndim >= 4 else out.shape[1:]
+        )
+        if array.shape != expected:
+            return (
+                f"Phasor shape mismatch: file {path} has {key} of shape "
+                f"{array.shape} but expected {expected}."
+            )
+        if array.dtype != out.dtype:
+            return (
+                f"Data type mismatch: file {path} has {key} of type "
+                f"{array.dtype} but the first file has {out.dtype}."
+            )
+        if out.ndim >= 4:
+            out[:, index] = array
+        else:
+            out[index] = array
+
+    channel["mean"][index] = mean
+    channel["original_mean"][index] = mean
+
+    sig = meta.get("summed_signal")
+    if sig is not None:
+        channel["summed_signals"].append(
+            sig if isinstance(sig, np.ndarray) else np.asarray(sig)
+        )
+    return None
+
+
 def raw_file_stack_reader(
     paths: list[str],
     reader_options: dict | None = None,
@@ -739,93 +1168,91 @@ def raw_file_stack_reader(
         )
         return []
 
-    # Read each file individually
-    per_file_layers: list[list[tuple]] = []
+    # Read the files concurrently and write each one straight into its slice
+    # of the stack. Collecting every file first and calling ``np.stack``
+    # afterwards needs the whole stack twice over -- once as N separate
+    # per-file arrays, once as the stacked copy -- which is what makes a
+    # large stack run out of memory. Filling preallocated arrays holds the
+    # stack once, plus however many files are in flight.
+    largest = 0
     for p in paths:
-        layers = raw_file_reader(
-            p, reader_options=reader_options, harmonics=harmonics
-        )
-        per_file_layers.append(layers)
+        with suppress(OSError):
+            largest = max(largest, os.path.getsize(p))
+    stack_workers = workers_for_memory(largest, n_items=len(paths))
 
-    # Determine how many channels the first file produced
-    n_channels = len(per_file_layers[0])
+    channels = None
+    n_channels = 0
+    failure = None
 
-    # Verify every file produced the same number of channels
-    for idx, file_layers in enumerate(per_file_layers):
-        if len(file_layers) != n_channels:
-            show_error(
-                f"File {paths[idx]} produced {len(file_layers)} channel(s) "
-                f"but the first file produced {n_channels}. "
-                "All files must have the same number of channels."
-            )
-            return []
+    pbr = show_activity_progress(
+        desc=f"Reading {len(paths)} file(s)...", total=len(paths)
+    )
+    stack_reader_options = dict(reader_options) if reader_options else {}
+    stack_reader_options["interactive"] = False
+    try:
+        for index, path, file_layers in parallel_stream(
+            lambda p: raw_file_reader(
+                p, reader_options=stack_reader_options, harmonics=harmonics
+            ),
+            paths,
+            workers=stack_workers,
+            # Writing a file into its slice is a memcpy, far faster than
+            # decoding the next one, so there is nothing to gain from
+            # queueing results ahead: one per worker keeps the pool busy and
+            # is the smallest number of decoded files held at once.
+            max_in_flight=stack_workers,
+        ):
+            pbr.update(1)
 
-    # Stack per-channel across files
-    stacked_layers = []
-    for ch in range(n_channels):
-        # Collect arrays for this channel across all files
-        means = []
-        g_arrays = []
-        s_arrays = []
-        g_orig_arrays = []
-        s_orig_arrays = []
-        summed_signals = []
-
-        ref_shape = per_file_layers[0][ch][0].shape
-        for file_idx, file_layers in enumerate(per_file_layers):
-            data, kwargs = file_layers[ch]
-            if data.shape != ref_shape:
-                show_error(
-                    f"Spatial shape mismatch: file {paths[file_idx]} has "
-                    f"shape {data.shape} but expected {ref_shape}."
+            if channels is None:
+                n_channels = len(file_layers)
+                channels = [
+                    _new_stack_channel(file_layers[ch], len(paths))
+                    for ch in range(n_channels)
+                ]
+            elif len(file_layers) != n_channels:
+                failure = (
+                    f"File {path} produced {len(file_layers)} channel(s) "
+                    f"but the first file produced {n_channels}. "
+                    "All files must have the same number of channels."
                 )
-                return []
+                break
 
-            means.append(data)
+            for ch in range(n_channels):
+                failure = _fill_stack_channel(
+                    channels[ch], index, file_layers[ch], path
+                )
+                if failure is not None:
+                    break
+            if failure is not None:
+                break
 
-            meta = kwargs["metadata"]
-            g_arrays.append(meta["G"])
-            s_arrays.append(meta["S"])
-            g_orig_arrays.append(meta["G_original"])
-            s_orig_arrays.append(meta["S_original"])
+            # Drop this file's arrays before waiting on the next result, so
+            # the stack plus a bounded number of files is all that is held.
+            del file_layers
+    finally:
+        pbr.close()
 
-            sig = meta.get("summed_signal")
-            if sig is not None:
-                if isinstance(sig, list):
-                    sig = np.array(sig)
-                summed_signals.append(sig)
+    if failure is not None:
+        show_error(failure)
+        return []
+    if not channels:
+        return []
 
-        # Stack along new axis 0 → (n_files, Y, X)
-        stacked_mean = np.stack(means, axis=0)
+    # Build the layers from the filled arrays
+    common_dir = os.path.dirname(paths[0])
+    dir_name = os.path.basename(common_dir) or "stack"
+    stack_files = [os.path.basename(p) for p in paths]
 
-        # G and S may have shape (n_harmonics, Y, X) or (Y, X)
-        # We stack along a new axis: if 3D → (n_harmonics, n_files, Y, X)
-        #                            if 2D → (n_files, Y, X)
-        g_sample = g_arrays[0]
-        if g_sample.ndim >= 3:
-            # (n_harmonics, Y, X) → stack each harmonic's slices
-            stacked_g = np.stack(g_arrays, axis=1)
-            stacked_s = np.stack(s_arrays, axis=1)
-            stacked_g_orig = np.stack(g_orig_arrays, axis=1)
-            stacked_s_orig = np.stack(s_orig_arrays, axis=1)
-        else:
-            stacked_g = np.stack(g_arrays, axis=0)
-            stacked_s = np.stack(s_arrays, axis=0)
-            stacked_g_orig = np.stack(g_orig_arrays, axis=0)
-            stacked_s_orig = np.stack(s_orig_arrays, axis=0)
+    stacked_layers = []
+    for channel in channels:
+        first_kwargs = channel["kwargs"]
+        first_meta = first_kwargs["metadata"]
+        channel_label = extract_channel_label(first_kwargs["name"], first_meta)
 
-        # Build metadata from the first file's channel metadata
-        first_meta = per_file_layers[0][ch][1]["metadata"]
-        first_kwargs = per_file_layers[0][ch][1]
-
-        # Use a descriptive stack name
-        common_dir = os.path.dirname(paths[0])
-        dir_name = os.path.basename(common_dir) or "stack"
-        channel_suffix = first_kwargs["name"].split("Intensity Image")[-1]
-        stack_name = f"{dir_name} Stack Intensity Image{channel_suffix}"
-
+        summed_signals = channel["summed_signals"]
         stack_meta = {
-            "original_mean": stacked_mean.copy(),
+            "original_mean": channel["original_mean"],
             "settings": first_meta.get("settings", {}),
             "summed_signal": (
                 [
@@ -835,15 +1262,20 @@ def raw_file_stack_reader(
                 if summed_signals
                 else None
             ),
-            "G": stacked_g,
-            "S": stacked_s,
-            "G_original": stacked_g_orig,
-            "S_original": stacked_s_orig,
+            "G": channel["G"],
+            "S": channel["S"],
+            "G_original": channel["G_original"],
+            "S_original": channel["S_original"],
             "harmonics": first_meta.get("harmonics"),
-            "stack_files": [os.path.basename(p) for p in paths],
+            "stack_files": stack_files,
         }
 
-        add_kwargs = {"name": stack_name, "metadata": stack_meta}
+        add_kwargs = {
+            "name": format_phasor_layer_name(
+                dir_name, channel_label=channel_label, is_stack=True
+            ),
+            "metadata": stack_meta,
+        }
 
         # Preserve colormap / blending if set
         if "colormap" in first_kwargs:
@@ -851,9 +1283,1184 @@ def raw_file_stack_reader(
         if "blending" in first_kwargs:
             add_kwargs["blending"] = first_kwargs["blending"]
 
-        stacked_layers.append((stacked_mean, add_kwargs))
+        stacked_layers.append((channel["mean"], add_kwargs))
 
     return stacked_layers
+
+
+#: Key under which this plugin stores its settings in the OME-TIF description.
+SETTINGS_DESCRIPTION_KEY = "napari_phasors_settings"
+
+#: Largest description string (in characters) that will be parsed. Descriptions
+#: are hand-sized JSON blobs; anything larger is treated as foreign content and
+#: ignored rather than parsed into memory.
+MAX_DESCRIPTION_CHARS = 512 * 512  # 256 KB
+
+
+def _parse_description_settings(description: Any) -> dict:
+    """Return this plugin's settings from an OME-TIF description field.
+
+    The ``description`` field of a TIFF is free-form text that any other tool
+    may legitimately write to, so it is treated as untrusted input: anything
+    that is not a well-formed napari-phasors settings payload is ignored with a
+    warning instead of raising, leaving the image data itself readable.
+
+    Parameters
+    ----------
+    description : Any
+        Raw value of the ``description`` entry of the file attributes. Normally
+        a string, but not guaranteed to be.
+
+    Returns
+    -------
+    settings : dict
+        The stored settings, or an empty dict if the description is missing,
+        oversized, malformed, or written by another application.
+    """
+    if description is None:
+        # No description entry at all: the common case for files written by
+        # other software. Nothing to warn about.
+        return {}
+
+    if not isinstance(description, str):
+        warnings.warn(
+            "Ignoring OME-TIF description: expected a string, got "
+            f"{type(description).__name__}.",
+            stacklevel=2,
+        )
+        return {}
+
+    # Guard on the raw string before parsing, so an oversized payload is never
+    # materialised as Python objects.
+    if len(description) > MAX_DESCRIPTION_CHARS:
+        warnings.warn(
+            "Ignoring OME-TIF description: it is larger than the "
+            f"{MAX_DESCRIPTION_CHARS} character limit.",
+            stacklevel=2,
+        )
+        return {}
+
+    try:
+        # tifffile may HTML-encode the description when writing it.
+        parsed = json.loads(html.unescape(description))
+    except (ValueError, TypeError):
+        # Not JSON at all: written by Fiji, Bio-Formats, or any other tool.
+        return {}
+
+    if not isinstance(parsed, dict) or SETTINGS_DESCRIPTION_KEY not in parsed:
+        # Valid JSON, but not ours. Nothing to recover, and nothing is wrong.
+        return {}
+
+    raw_settings = parsed[SETTINGS_DESCRIPTION_KEY]
+    try:
+        settings = json.loads(raw_settings)
+    except (ValueError, TypeError):
+        warnings.warn(
+            f"Ignoring corrupted '{SETTINGS_DESCRIPTION_KEY}' entry in the "
+            "OME-TIF description: it is not valid JSON.",
+            stacklevel=2,
+        )
+        return {}
+
+    if not isinstance(settings, dict):
+        warnings.warn(
+            f"Ignoring '{SETTINGS_DESCRIPTION_KEY}' entry in the OME-TIF "
+            f"description: expected an object, got {type(settings).__name__}.",
+            stacklevel=2,
+        )
+        return {}
+
+    if "calibrated" in settings:
+        settings["calibrated"] = bool(settings["calibrated"])
+    return settings
+
+
+#: Dimensions that hold mosaic tiles, in the order they are preferred when
+#: detecting a file's tile axis. ``M`` is the CZI mosaic axis, ``V`` a view,
+#: ``B`` an acquisition block and ``S`` a scene.
+TILE_AXIS_CANDIDATES = ("M", "V", "B", "S")
+
+#: Dimensions that never hold tiles: the two spatial axes, plus ``C``/``H``/
+#: ``Q``, which carry the channel or the histogram the phasor is computed
+#: from.
+NON_TILE_AXES = frozenset({"Y", "X", "C", "H", "Q"})
+
+
+def probe_tile_axes(path, reader_options=None):
+    """Report which dimensions of a file could hold mosaic tiles.
+
+    A mosaic is often stored as a single file with its tiles along one
+    dimension, such as the ``M`` axis of a Zeiss CZI. This inspects a file
+    and reports the candidates, so the caller can offer a choice rather than
+    guessing.
+
+    For CZI the dimension sizes are taken from the file's sub-block
+    directory, which is what the pixel reader builds its axes from, so no
+    pixel data has to be read. Other formats fall back to reading the signal.
+
+    Parameters
+    ----------
+    path : str
+        Path to the file to inspect.
+    reader_options : dict, optional
+        Reader options, used only by the fallback path.
+
+    Returns
+    -------
+    dict
+        Maps axis to size, for every axis larger than one that could hold
+        tiles. Keys are dimension names, or integer positions for formats
+        such as TIFF whose axes are unnamed. Empty if the file holds a single
+        tile or could not be inspected. Ordered with the recognized mosaic
+        dimensions first.
+    """
+    # A CZI mosaic keeps its tiles in positioned sub-blocks rather than along
+    # a dimension, so it has to be recognized before looking at the axes.
+    mosaic = czi_mosaic_info(path)
+    if mosaic is not None:
+        return {CZI_MOSAIC_AXIS: mosaic["n_tiles"]}
+
+    sizes = file_axis_sizes(path, reader_options)
+    if not sizes:
+        return {}
+
+    # An unnamed format's last three axes are the histogram and the two
+    # spatial axes, so only the ones before them can hold tiles.
+    positional = [name for name in sizes if isinstance(name, int)]
+    leading = set(positional[:-3]) if positional else set()
+
+    candidates = {
+        name: size
+        for name, size in sizes.items()
+        if size > 1
+        and (
+            name in leading
+            if isinstance(name, int)
+            else name not in NON_TILE_AXES
+        )
+    }
+    ordered = {
+        name: candidates.pop(name)
+        for name in TILE_AXIS_CANDIDATES
+        if name in candidates
+    }
+    ordered.update(candidates)
+    return ordered
+
+
+def file_axis_sizes(path, reader_options=None):
+    """Return every axis of a file and its size, or an empty dict.
+
+    Used both to find a file's tile axis and to explain, when none is found,
+    what the file actually contains.
+    """
+    _, extension = _get_filename_extension(path)
+
+    sizes = None
+    if extension == ".czi":
+        sizes = _czi_dimension_sizes(path)
+    if sizes is None:
+        sizes = _signal_dimension_sizes(path, reader_options)
+    return sizes or {}
+
+
+def describe_file_axes(path, reader_options=None):
+    """Return a readable summary of a file's axes, for error messages."""
+    sizes = file_axis_sizes(path, reader_options)
+    if not sizes:
+        return "unknown"
+    return ", ".join(
+        f"{describe_tile_axis(axis)}={size}" for axis, size in sizes.items()
+    )
+
+
+def describe_tile_axis(axis):
+    """Return a human-readable name for a tile axis key."""
+    labels = {
+        CZI_MOSAIC_AXIS: "Mosaic tiles",
+        "M": "M (mosaic)",
+        "V": "V (view)",
+        "B": "B (block)",
+        "S": "S (scene)",
+        "T": "T (time)",
+        "Z": "Z (depth)",
+    }
+    if isinstance(axis, (int, np.integer)):
+        return f"Axis {int(axis)}"
+    return labels.get(axis, str(axis))
+
+
+#: Key used to denote a CZI mosaic, whose tiles are stored as positioned
+#: sub-blocks rather than along a named dimension.
+CZI_MOSAIC_AXIS = "mosaic"
+
+
+class CziMosaic:
+    """Access the tiles of a Zeiss CZI mosaic one at a time.
+
+    A CZI mosaic does not store its tiles along a dimension. Each tile is a
+    group of sub-blocks carrying their own position in the mosaic, and the
+    file's nominal ``Y``/``X`` extent spans the whole scanned area. Reading
+    such a file whole is usually impossible: a slide scan of a few hundred
+    tiles easily implies an array of many terabytes, nearly all of it empty.
+
+    This reads the sub-block directory, which only touches the file's index,
+    and then decodes one tile at a time.
+
+    Parameters
+    ----------
+    path : str
+        Path to the CZI file.
+
+    Attributes
+    ----------
+    positions : list of tuple
+        ``(y, x)`` pixel position of each tile, relative to the top-left of
+        the mosaic.
+    tile_shape : tuple of int
+        ``(height, width)`` of one tile, in pixels.
+    """
+
+    def __init__(self, path):
+        import czifile
+
+        self.path = path
+        self._czi = czifile.CziFile(path)
+        entries = self._czi.filtered_subblock_directory
+        if not entries:
+            raise ValueError(f"{os.path.basename(path)} has no image data.")
+
+        dims = entries[0].dims
+        self._y = dims.index("Y")
+        self._x = dims.index("X")
+        self._channel = dims.index("C") if "C" in dims else None
+
+        grouped: dict[int, list] = {}
+        for entry in entries:
+            grouped.setdefault(int(entry.mosaic_index), []).append(entry)
+        self._tiles = [grouped[key] for key in sorted(grouped)]
+
+        first = entries[0]
+        self.tile_shape = (
+            int(first.shape[self._y]),
+            int(first.shape[self._x]),
+        )
+
+        raw = [
+            (int(tile[0].start[self._y]), int(tile[0].start[self._x]))
+            for tile in self._tiles
+        ]
+        min_y = min(position[0] for position in raw)
+        min_x = min(position[1] for position in raw)
+        self.positions = [(y - min_y, x - min_x) for y, x in raw]
+
+    @property
+    def n_tiles(self):
+        """Number of tiles in the mosaic."""
+        return len(self._tiles)
+
+    @property
+    def n_channels(self):
+        """Number of channel planes each tile holds."""
+        return len(self._tiles[0]) if self._tiles else 0
+
+    def read_tile(self, index, binning=1):
+        """Return one tile as a ``(C, Y, X)`` array.
+
+        Parameters
+        ----------
+        index : int
+            Tile position in the mosaic.
+        binning : int, optional
+            Bin the tile spatially by this factor. Binning sums the photons
+            of each block, so the phasor coordinates of a binned tile are the
+            photon-weighted average of the pixels that went into it, exactly
+            as if the detector had had larger pixels.
+
+        Returns
+        -------
+        xarray.DataArray
+            Dimensions ``('C', 'Y', 'X')``.
+        """
+        if not 0 <= index < self.n_tiles:
+            raise ValueError(
+                f"{os.path.basename(self.path)} has {self.n_tiles} tile(s); "
+                f"cannot read tile {index}."
+            )
+
+        entries = self._tiles[index]
+        if self._channel is not None:
+            entries = sorted(entries, key=lambda e: e.start[self._channel])
+
+        planes = [
+            np.asarray(entry.read_segment_data(self._czi).data()).reshape(
+                self.tile_shape
+            )
+            for entry in entries
+        ]
+        cube = np.stack(planes)
+        cube = _bin_spatial(cube, binning)
+        return xr.DataArray(cube, dims=("C", "Y", "X"))
+
+    def binned_positions(self, binning=1):
+        """Return the tile positions in the binned pixel grid."""
+        binning = max(1, int(binning))
+        if binning == 1:
+            return list(self.positions)
+        return [(y // binning, x // binning) for y, x in self.positions]
+
+    def binned_tile_shape(self, binning=1):
+        """Return the tile size after binning."""
+        binning = max(1, int(binning))
+        return (
+            self.tile_shape[0] // binning,
+            self.tile_shape[1] // binning,
+        )
+
+    def canvas_shape(self, binning=1):
+        """Return the stitched canvas size for a binning factor."""
+        height, width = self.binned_tile_shape(binning)
+        positions = self.binned_positions(binning)
+        return (
+            max(y for y, _ in positions) + height,
+            max(x for _, x in positions) + width,
+        )
+
+    def close(self):
+        """Close the underlying file."""
+        with suppress(Exception):
+            self._czi.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+
+def _bin_spatial(cube, factor):
+    """Sum ``(C, Y, X)`` *cube* over ``factor`` x ``factor`` spatial blocks."""
+    factor = max(1, int(factor))
+    if factor == 1:
+        return cube
+
+    channels, height, width = cube.shape
+    height -= height % factor
+    width -= width % factor
+    if height <= 0 or width <= 0:
+        raise ValueError(
+            f"Binning by {factor} leaves nothing of a "
+            f"{cube.shape[1]}x{cube.shape[2]} tile."
+        )
+    trimmed = cube[:, :height, :width]
+    # Photon counts are summed rather than averaged, so the phasor of the
+    # binned tile stays the photon-weighted phasor of its pixels.
+    return trimmed.reshape(
+        channels, height // factor, factor, width // factor, factor
+    ).sum(axis=(2, 4), dtype=np.uint32)
+
+
+def czi_mosaic_info(path):
+    """Describe a CZI mosaic without reading any pixels, or return ``None``.
+
+    Returns
+    -------
+    dict or None
+        ``{'n_tiles', 'tile_shape', 'canvas_shape', 'n_channels'}``, or
+        ``None`` when the file is not a CZI mosaic of several tiles.
+    """
+    _, extension = _get_filename_extension(path)
+    if extension != ".czi":
+        return None
+    try:
+        with CziMosaic(path) as mosaic:
+            if mosaic.n_tiles < 2:
+                return None
+            return {
+                "n_tiles": mosaic.n_tiles,
+                "tile_shape": mosaic.tile_shape,
+                "canvas_shape": mosaic.canvas_shape(),
+                "n_channels": mosaic.n_channels,
+            }
+    except Exception:  # noqa: BLE001 - probing is best effort
+        return None
+
+
+def _czi_dimension_sizes(path):
+    """Return CZI dimension sizes from the sub-block directory, or ``None``.
+
+    Reading the directory only touches the file's index, not its pixels.
+    """
+    try:
+        import czifile
+
+        sizes: dict[str, int] = {}
+        with czifile.CziFile(path) as czi:
+            for block in czi.filtered_subblock_directory:
+                for name, start, size in zip(
+                    block.dims, block.start, block.shape, strict=False
+                ):
+                    sizes[name] = max(
+                        sizes.get(name, 0), int(start) + int(size)
+                    )
+        # phasorpy renames the CZI phase axis to avoid clashing with the
+        # lifetime histogram axis; mirror that so names match the signal.
+        if "H" in sizes:
+            sizes["Q"] = sizes.pop("H")
+        return sizes
+    except Exception:  # noqa: BLE001 - probing is best effort
+        return None
+
+
+def _signal_dimension_sizes(path, reader_options=None):
+    """Return every axis of a raw signal and its size, or ``None``.
+
+    Named dimensions are keyed by name; formats that return a plain array are
+    keyed by integer position instead.
+    """
+    try:
+        _, _, io_options = _split_widget_reader_options(reader_options)
+        signal = load_raw_signal(path, io_options)
+        shape = np.shape(signal)
+        if hasattr(signal, "dims"):
+            return {
+                str(name): int(size)
+                for name, size in zip(signal.dims, shape, strict=True)
+            }
+        return {index: int(size) for index, size in enumerate(shape)}
+    except Exception:  # noqa: BLE001 - probing is best effort
+        return None
+
+
+def _read_file_tiles(
+    path,
+    indices,
+    reader_options=None,
+    harmonics=None,
+    tile_axis=None,
+    progress=None,
+):
+    """Read the requested tiles out of one file.
+
+    Files contributing a single tile go through the normal reader, so mosaics
+    of already-transformed files keep working. Files contributing several
+    tiles are read once and sliced along their tile axis.
+
+    Parameters
+    ----------
+    path : str
+        File to read.
+    indices : sequence of int
+        Tile positions wanted from this file, possibly with repeats.
+    reader_options : dict, optional
+        Reader options.
+    harmonics : int or sequence of int, optional
+        Harmonics to compute.
+    tile_axis : str, optional
+        Dimension holding the tiles. Detected when ``None``.
+    progress : optional
+        Progress bar updated once per tile.
+
+    Returns
+    -------
+    dict
+        Maps tile index to that tile's list of per-channel layer tuples.
+
+    Raises
+    ------
+    ValueError
+        If no reader is available, if a multi-tile read finds no usable tile
+        axis, or if an index is out of range.
+    """
+    name = os.path.basename(path)
+    wanted = sorted({int(index) for index in indices})
+
+    # Read the file whole only when nothing asks for it to be split: no tile
+    # axis was chosen and only tile 0 is wanted. This keeps mosaics of
+    # already-transformed files working, while an explicit tile axis always
+    # slices, even when just one tile is read from the file.
+    if tile_axis is None and wanted == [0]:
+        if progress is not None:
+            progress.set_description(f"Reading {name}")
+        # Dispatch through napari_get_reader so mosaics of already-transformed
+        # files (OME-TIFF, SimFCS, ISS) stitch as well as raw acquisitions.
+        reader = napari_get_reader(
+            path, reader_options=reader_options, harmonics=harmonics
+        )
+        if reader is None:
+            raise ValueError(f"No reader available for {path}.")
+        result = {0: reader(path)}
+        if progress is not None:
+            progress.update(1)
+        return result
+
+    binning = int((reader_options or {}).get("binning", 1) or 1)
+    axis_override, keep_signal, io_options = _split_widget_reader_options(
+        reader_options
+    )
+    _, extension = _get_filename_extension(path)
+
+    if tile_axis == CZI_MOSAIC_AXIS or (
+        tile_axis is None and czi_mosaic_info(path) is not None
+    ):
+        return _read_czi_mosaic_tiles(
+            path,
+            wanted,
+            harmonics=harmonics,
+            binning=binning,
+            keep_signal=keep_signal,
+            progress=progress,
+        )
+
+    if extension not in extension_mapping["raw"]:
+        raise ValueError(
+            f"{name} holds processed data, which cannot be split into tiles. "
+            "Select one file per tile instead."
+        )
+
+    if progress is not None:
+        progress.set_description(f"Reading {name}")
+    signal = load_raw_signal(path, io_options)
+
+    axis_position = _resolve_tile_axis(signal, tile_axis, name)
+    n_available = int(np.shape(signal)[axis_position])
+    out_of_range = [index for index in wanted if not 0 <= index < n_available]
+    if out_of_range:
+        raise ValueError(
+            f"{name} has {n_available} tile(s) along the tile axis; "
+            f"cannot read tile(s) {out_of_range}."
+        )
+
+    # Slicing removes the tile axis, so a phasor axis given by position and
+    # sitting after it shifts down by one.
+    if axis_override is not None and axis_override > axis_position:
+        axis_override -= 1
+
+    filename = _get_filename_extension(path)[0]
+    layers_by_index = {}
+    try:
+        # The signal is already in memory, so slicing a tile out of it and
+        # transforming it is independent per tile and parallelizes cleanly.
+        # Each tile only allocates its own (small) phasor output.
+        def transform(item):
+            position, index = item
+            return _phasor_layers_from_signal(
+                _take_tile(signal, axis_position, index),
+                filename=f"{filename} [{index}]",
+                file_extension=extension,
+                harmonics=harmonics if harmonics is not None else [1, 2],
+                axis_override=axis_override,
+                keep_signal=keep_signal,
+                progress_description=f"{name}: tile {position + 1}",
+            )
+
+        def report(position):
+            if progress is not None:
+                progress.set_description(
+                    f"{name}: tile {position + 1}/{len(wanted)}"
+                )
+                progress.update(1)
+
+        results = parallel_map(
+            transform, list(enumerate(wanted)), progress=report
+        )
+        layers_by_index = dict(zip(wanted, results, strict=True))
+    finally:
+        # Release the file's signal as soon as its tiles are transformed while
+        # keeping the name in scope for the nested tile-transform closure.
+        signal = None
+
+    return layers_by_index
+
+
+def _read_czi_mosaic_tiles(
+    path,
+    wanted,
+    harmonics=None,
+    binning=1,
+    keep_signal=False,
+    progress=None,
+):
+    """Phasor-transform the requested tiles of a CZI mosaic.
+
+    Tiles are decoded one at a time straight from their sub-blocks, so only
+    one tile's spectral stack is ever held in memory.
+    """
+    name = os.path.basename(path)
+    filename = _get_filename_extension(path)[0]
+    layers_by_index = {}
+
+    with CziMosaic(path) as mosaic:
+        out_of_range = [
+            index for index in wanted if not 0 <= index < mosaic.n_tiles
+        ]
+        if out_of_range:
+            raise ValueError(
+                f"{name} has {mosaic.n_tiles} tile(s); cannot read tile(s) "
+                f"{out_of_range}."
+            )
+
+        # Decoding pulls sub-blocks through one shared file handle, which is
+        # not thread-safe, so decodes are serialized behind a lock while the
+        # phasor transforms -- the expensive half -- overlap freely.
+        decode_lock = threading.Lock()
+
+        def transform(item):
+            position, index = item
+            with decode_lock:
+                tile = mosaic.read_tile(index, binning=binning)
+            return _phasor_layers_from_signal(
+                tile,
+                filename=f"{filename} [{index}]",
+                file_extension=".czi",
+                harmonics=harmonics if harmonics is not None else [1, 2],
+                keep_signal=keep_signal,
+                progress_description=f"{name}: tile {position + 1}",
+            )
+
+        def report(position):
+            if progress is not None:
+                progress.set_description(
+                    f"{name}: tile {position + 1}/{len(wanted)}"
+                )
+                progress.update(1)
+
+        results = parallel_map(
+            transform, list(enumerate(wanted)), progress=report
+        )
+        layers_by_index = dict(zip(wanted, results, strict=True))
+
+    return layers_by_index
+
+
+def _resolve_tile_axis(signal, tile_axis, name):
+    """Return the positional index of a signal's tile axis.
+
+    *tile_axis* may be a dimension name, a positional index, or ``None`` to
+    detect one. Formats such as TIFF return plain arrays with no dimension
+    names, so a positional index is the only way to address their axes.
+
+    Raises
+    ------
+    ValueError
+        If the axis cannot be found or does not exist in the signal.
+    """
+    dims = tuple(str(dim) for dim in getattr(signal, "dims", ()))
+    shape = np.shape(signal)
+
+    if isinstance(tile_axis, (int, np.integer)) and not isinstance(
+        tile_axis, bool
+    ):
+        axis = int(tile_axis)
+        if not -len(shape) <= axis < len(shape):
+            raise ValueError(
+                f"{name} has {len(shape)} dimension(s); axis {tile_axis} is "
+                "out of range."
+            )
+        return axis % len(shape)
+
+    if tile_axis is not None:
+        if tile_axis not in dims:
+            raise ValueError(
+                f"{name} has no dimension named {tile_axis!r}. Available "
+                f"dimensions: {', '.join(dims) or 'none (unnamed axes)'}."
+            )
+        return dims.index(tile_axis)
+
+    candidates = {
+        dim: index
+        for index, dim in enumerate(dims)
+        if shape[index] > 1 and dim not in NON_TILE_AXES
+    }
+    for candidate in TILE_AXIS_CANDIDATES + tuple(candidates):
+        if candidate in candidates:
+            return candidates[candidate]
+
+    raise ValueError(
+        f"{name} has no dimension holding tiles. Available dimensions: "
+        f"{', '.join(dims) or 'none (unnamed axes)'}. Choose the tile axis "
+        "explicitly, or select one file per tile."
+    )
+
+
+def _take_tile(signal, axis_position, index):
+    """Return one tile of *signal*, dropping the tile axis."""
+    if hasattr(signal, "isel"):
+        return signal.isel({str(signal.dims[axis_position]): index})
+    return np.take(signal, index, axis=axis_position)
+
+
+class TileSet:
+    """Per-tile phasor coordinates of a mosaic, cached for re-stitching.
+
+    Reading and phasor-transforming the tiles is the expensive part of
+    importing a mosaic; placing and blending them is comparatively cheap.
+    Holding the transformed tiles in a :class:`TileSet` lets the overlap be
+    re-tuned interactively, since :meth:`stitch` can be called any number of
+    times without touching the files again.
+
+    Memory is ``n_tiles * (1 + 2 * n_harmonics)`` single precision planes,
+    which for FLIM data is typically one to two orders of magnitude less than
+    the raw signal the tiles were computed from.
+
+    Parameters
+    ----------
+    sources : list of TileSource
+        Where each tile came from, in placement order.
+    tile_shape : tuple of int
+        ``(height, width)`` shared by every tile.
+    tiles : list of list of tuple
+        ``tiles[channel][index]`` is the ``(mean, G, S)`` triple of one tile.
+    templates : list of dict
+        Per-channel ``add_kwargs`` taken from the first tile, used as the
+        basis for the stitched layer's metadata.
+    """
+
+    def __init__(
+        self, sources, tile_shape, tiles, templates, summed_signals=None
+    ):
+        self.sources = as_tile_sources(sources)
+        self.tile_shape = tuple(tile_shape)
+        self.tiles = tiles
+        self.templates = templates
+        self.summed_signals = summed_signals or [None] * len(tiles)
+
+    @property
+    def paths(self):
+        """Paths the tiles came from, in placement order, with repeats."""
+        return [source.path for source in self.sources]
+
+    @property
+    def n_channels(self):
+        """Number of channels each tile produced."""
+        return len(self.tiles)
+
+    @property
+    def n_tiles(self):
+        """Number of tiles in the mosaic."""
+        return len(self.sources)
+
+    @property
+    def n_files(self):
+        """Number of distinct files the tiles came from."""
+        return len(set(self.paths))
+
+    def means(self, channel=0):
+        """Return the mean intensity image of every tile for *channel*."""
+        return [tile[0] for tile in self.tiles[channel]]
+
+    def nbytes(self):
+        """Return the total size of the cached arrays, in bytes."""
+        return sum(
+            array.nbytes
+            for channel in self.tiles
+            for tile in channel
+            for array in tile
+        )
+
+    def stitch(self, geometry, progress=None):
+        """Blend the cached tiles into napari layer-data tuples.
+
+        Parameters
+        ----------
+        geometry : TileGeometry
+            Mosaic layout. Its ``tile_shape`` is taken from this tile set, so
+            only the placements, overlap and blend mode need to be set.
+        progress : callable, optional
+            Called with ``(channel, tile_index)`` as blending proceeds.
+
+        Returns
+        -------
+        list of tuple
+            One ``(data, add_kwargs)`` tuple per channel.
+        """
+        geometry = replace(geometry, tile_shape=self.tile_shape)
+
+        layers = []
+        for channel in range(self.n_channels):
+            mean, real, imag, coverage = blend_phasor_tiles(
+                self.tiles[channel],
+                geometry,
+                progress=(
+                    None
+                    if progress is None
+                    else lambda index, ch=channel: progress(ch, index)
+                ),
+            )
+
+            template = self.templates[channel]
+            template_meta = template.get("metadata", {})
+
+            summed_signal = self.summed_signals[channel]
+            metadata = {
+                "original_mean": mean.copy(),
+                "settings": template_meta.get("settings", {}),
+                "summed_signal": (
+                    summed_signal.tolist()
+                    if summed_signal is not None
+                    else template_meta.get("summed_signal")
+                ),
+                "G": real,
+                "S": imag,
+                "G_original": real.copy(),
+                "S_original": imag.copy(),
+                "harmonics": template_meta.get("harmonics"),
+                "tile_files": [source.label for source in self.sources],
+                "tile_geometry": geometry.to_dict(),
+                "tile_coverage": coverage,
+            }
+
+            # A mosaic spread over many files is named after their folder; one
+            # held inside a single file is named after that file.
+            if self.n_files == 1:
+                stem = _get_filename_extension(self.paths[0])[0]
+            else:
+                stem = os.path.basename(os.path.dirname(self.paths[0]))
+            channel_label = extract_channel_label(
+                template["name"], template.get("metadata")
+            )
+            name = format_phasor_layer_name(
+                stem or "mosaic", channel_label=channel_label, is_mosaic=True
+            )
+
+            add_kwargs = {"name": name, "metadata": metadata}
+            for key in ("colormap", "blending"):
+                if key in template:
+                    add_kwargs[key] = template[key]
+            layers.append((mean, add_kwargs))
+
+        return layers
+
+
+def read_tile_phasors(
+    tiles: list,
+    reader_options: dict | None = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+    tile_axis: str | None = None,
+) -> "TileSet":
+    """Read every tile of a mosaic and phasor-transform it.
+
+    Handles both ways a mosaic is stored: one file per tile, and a single
+    file holding all its tiles along a dedicated dimension (see
+    :func:`probe_tile_axes`). Mixtures of the two work as well.
+
+    Each file is read exactly once and its raw signal released as soon as
+    every tile in it has been transformed, so peak memory stays at one file's
+    signal rather than the whole mosaic.
+
+    Parameters
+    ----------
+    tiles : list
+        Tiles in placement order, as paths, ``(path, index)`` pairs, or
+        :class:`~napari_phasors._stitching.TileSource` objects.
+    reader_options : dict, optional
+        Reader options forwarded to each file reader call.
+    harmonics : int or sequence of int, optional
+        Harmonics to compute.
+    tile_axis : str, optional
+        Name of the dimension holding the tiles inside a multi-tile file, for
+        example ``'M'`` for a CZI mosaic. Detected automatically when
+        ``None``. Ignored for files contributing a single tile.
+
+    Returns
+    -------
+    TileSet
+        Cached phasor coordinates, ready to be stitched.
+
+    Raises
+    ------
+    ValueError
+        If no tiles are given, if the files do not share one extension, if a
+        tile fails to produce layers, or if the tiles disagree on shape or
+        channel count.
+    """
+    sources = as_tile_sources(tiles)
+    if not sources:
+        raise ValueError("No files provided for stitching.")
+
+    extensions = {_get_filename_extension(s.path)[1] for s in sources}
+    if len(extensions) > 1:
+        raise ValueError(
+            f"All tiles must share the same extension, got: {extensions}"
+        )
+
+    # Group by file, keeping first-appearance order, so each file is opened
+    # once no matter how its tiles are ordered in the layout.
+    per_file: dict[str, list[int]] = {}
+    for source in sources:
+        per_file.setdefault(source.path, []).append(source.index)
+
+    tile_arrays: list[list[tuple]] = []
+    templates: list[dict] = []
+    summed_signals: list = []
+    tile_shape = None
+    n_channels = None
+    frequencies = set()
+    by_source: dict = {}
+
+    items = list(per_file.items())
+
+    # Files are read and transformed concurrently. The pool is sized against
+    # free memory as well as core count, because N workers hold N files'
+    # decoded signals at once where a sequential read held exactly one; the
+    # on-disk size is a usable lower bound for that footprint.
+    largest = 0
+    for path, _ in items:
+        with suppress(OSError):
+            largest = max(largest, os.path.getsize(path))
+    workers = workers_for_memory(largest, n_items=len(items))
+
+    pbr = show_activity_progress(
+        desc=f"Reading {len(sources)} tile(s)...", total=len(sources)
+    )
+    try:
+
+        def read_file(item):
+            path, indices = item
+            # The napari progress bar is a Qt object belonging to this
+            # thread, so workers never touch it; progress is reported below
+            # as each file's results are collected.
+            return _read_file_tiles(
+                path,
+                indices,
+                reader_options=reader_options,
+                harmonics=harmonics,
+                tile_axis=tile_axis,
+                progress=None,
+            )
+
+        def report(position):
+            path, indices = items[position]
+            pbr.set_description(f"Read {os.path.basename(path)}")
+            pbr.update(len(indices))
+
+        results = parallel_map(
+            read_file, items, workers=workers, progress=report
+        )
+
+        for (path, _indices), layers_by_index in zip(
+            items, results, strict=True
+        ):
+            name = os.path.basename(path)
+
+            for index, layers in layers_by_index.items():
+                if not layers:
+                    raise ValueError(f"No data could be read from {path}.")
+
+                if n_channels is None:
+                    n_channels = len(layers)
+                    tile_arrays = [[] for _ in range(n_channels)]
+                    templates = [dict(layer[1]) for layer in layers]
+                    summed_signals = [None] * n_channels
+                elif len(layers) != n_channels:
+                    raise ValueError(
+                        f"{name} produced {len(layers)} channel(s) but the "
+                        f"first tile produced {n_channels}. All tiles must "
+                        "have the same number of channels."
+                    )
+
+                per_channel = []
+                for channel, (mean, add_kwargs) in enumerate(layers):
+                    mean = np.asarray(mean, dtype=np.float32)
+                    if mean.ndim != 2:
+                        raise ValueError(
+                            f"Tile {name} is {mean.ndim}D; stitching expects "
+                            "2D tiles. Pick the axis holding the tiles, or "
+                            "select a single channel or slice."
+                        )
+                    if tile_shape is None:
+                        tile_shape = mean.shape
+                    elif mean.shape != tile_shape:
+                        raise ValueError(
+                            f"Shape mismatch: {name} has shape {mean.shape} "
+                            f"but expected {tile_shape}."
+                        )
+
+                    metadata = add_kwargs["metadata"]
+                    real = np.asarray(metadata["G"], dtype=np.float32)
+                    imag = np.asarray(metadata["S"], dtype=np.float32)
+                    if real.ndim == 2:
+                        real = real[np.newaxis]
+                        imag = imag[np.newaxis]
+                    per_channel.append((mean, real, imag))
+
+                    frequency = metadata.get("settings", {}).get("frequency")
+                    if frequency is not None:
+                        frequencies.add(round(float(frequency), 6))
+
+                    # The mosaic's signal profile is the sum of its tiles',
+                    # which keeps the signal preview and the harmonic limits
+                    # meaningful.
+                    signal = metadata.get("summed_signal")
+                    if signal is not None:
+                        signal = np.asarray(signal, dtype=np.float64)
+                        accumulated = summed_signals[channel]
+                        if accumulated is None:
+                            summed_signals[channel] = signal
+                        elif accumulated.shape == signal.shape:
+                            summed_signals[channel] = accumulated + signal
+
+                by_source[(path, index)] = per_channel
+    finally:
+        pbr.close()
+
+    # Emit in placement order, which may differ from the order the files were
+    # read in, and may repeat a tile.
+    for source in sources:
+        for channel, arrays in enumerate(
+            by_source[(source.path, source.index)]
+        ):
+            tile_arrays[channel].append(arrays)
+
+    if len(frequencies) > 1:
+        show_error(
+            "Tiles were acquired at different laser frequencies "
+            f"({sorted(frequencies)}); the stitched phasor is not "
+            "meaningful. Import them separately."
+        )
+
+    return TileSet(sources, tile_shape, tile_arrays, templates, summed_signals)
+
+
+def raw_file_tile_reader(
+    tiles: list,
+    geometry,
+    reader_options: dict | None = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+    tile_axis: str | None = None,
+) -> list[tuple]:
+    """Read a set of tiles and stitch them into a single phasor image.
+
+    Stitching happens in phasor space: the mean intensity and the G and S
+    coordinates of each tile are blended with photon weighting, which gives
+    exactly the result that summing the raw signals before the phasor
+    transform would have produced, at a fraction of the memory.
+
+    Parameters
+    ----------
+    tiles : list
+        Tiles in the order matching ``geometry.placements``, as paths,
+        ``(path, index)`` pairs, or
+        :class:`~napari_phasors._stitching.TileSource` objects.
+    geometry : TileGeometry
+        Mosaic layout. ``tile_shape`` is filled in from the data.
+    reader_options : dict, optional
+        Reader options forwarded to each file reader call.
+    harmonics : int or sequence of int, optional
+        Harmonics to compute.
+    tile_axis : str, optional
+        Dimension holding the tiles inside a multi-tile file. Detected
+        automatically when ``None``.
+
+    Returns
+    -------
+    layer_data : list of tuple
+        Napari layer-data tuples, one per channel. Returns an empty list and
+        shows an error notification if the tiles could not be read.
+    """
+    try:
+        tile_set = read_tile_phasors(
+            tiles,
+            reader_options=reader_options,
+            harmonics=harmonics,
+            tile_axis=tile_axis,
+        )
+    except ValueError as error:
+        show_error(str(error))
+        return []
+
+    try:
+        return tile_set.stitch(geometry)
+    except ValueError as error:
+        show_error(str(error))
+        return []
+
+
+def _infer_harmonics(
+    requested: Union[int, Sequence[int], str, None],
+    real: np.ndarray,
+    mean: np.ndarray,
+) -> Union[int, list[int]]:
+    """Infer the harmonic numbers of already-computed phasor coordinates.
+
+    Not every ``phasorpy.io`` reader for processed files reports which
+    harmonics it returned: ``phasor_from_simfcs_referenced`` (R64/REF) and
+    ``phasor_from_lif`` return no ``'harmonic'`` metadata. Leaving
+    ``harmonics`` as None in the layer metadata makes downstream analyses
+    treat the leading harmonic axis of G/S as image data -- e.g. component
+    analysis then returns one fraction image per harmonic instead of one for
+    the selected harmonic.
+
+    Parameters
+    ----------
+    requested : int, sequence of int, 'all', or None
+        The ``harmonic`` argument that was passed to the IO function.
+    real : np.ndarray
+        Real component of the phasor coordinates as returned by the reader.
+    mean : np.ndarray
+        Mean intensity image as returned by the reader.
+
+    Returns
+    -------
+    int or list of int
+        A single harmonic number when ``real`` has no harmonic axis,
+        otherwise one number per plane of that axis.
+    """
+    if real.ndim == mean.ndim:
+        # No harmonic axis: the reader was asked for a single harmonic.
+        if isinstance(requested, (int, np.integer)) and not isinstance(
+            requested, bool
+        ):
+            return int(requested)
+        return 1
+
+    n_harmonics = real.shape[0]
+    if isinstance(requested, Sequence) and not isinstance(requested, str):
+        with suppress(TypeError, ValueError):
+            harmonics = [int(h) for h in requested]
+            if len(harmonics) == n_harmonics:
+                return harmonics
+    # 'all', None, or a request that does not match what was read: the
+    # readers return the file's harmonics in order, starting at the first.
+    return list(range(1, n_harmonics + 1))
+
+
+def _keep_first_harmonics(
+    real: np.ndarray,
+    imag: np.ndarray,
+    harmonics: Union[int, Sequence[int]],
+    mean_ndim: int,
+    limit: int = 2,
+) -> tuple[np.ndarray, np.ndarray, Union[int, list[int]]]:
+    """Trim phasor coordinates to the first ``limit`` harmonics they hold.
+
+    Used only when the caller requested no particular harmonic, so that
+    processed files default to the same first-two-harmonics behaviour as raw
+    files without a second read of the file.
+
+    Parameters
+    ----------
+    real, imag : np.ndarray
+        Phasor coordinates as returned by the reader. A leading axis of
+        length > 1 is the harmonic axis.
+    harmonics : int or sequence of int
+        Harmonic number(s) the arrays hold, in the same order.
+    mean_ndim : int
+        Number of dimensions of the mean intensity image, used to tell a
+        harmonic axis apart from an image axis.
+    limit : int, optional
+        Maximum number of harmonics to keep. Default is 2.
+
+    Returns
+    -------
+    tuple
+        ``(real, imag, harmonics)``, trimmed if there was anything to trim.
+    """
+    if real.ndim != mean_ndim + 1 or real.shape[0] <= limit:
+        return real, imag, harmonics
+    if not isinstance(harmonics, Sequence) or isinstance(harmonics, str):
+        harmonics = np.atleast_1d(harmonics).tolist()
+    return real[:limit], imag[:limit], list(harmonics)[:limit]
 
 
 def processed_file_reader(
@@ -872,8 +2479,9 @@ def processed_file_reader(
         Dictionary containing the arguments to pass to the function.
     harmonics : Union[int, Sequence[int], None], optional
         Harmonic(s) to be processed. Can be a single integer, a sequence of
-        integers, or None. Default is None, which sets all harmonics present
-        in the file to be processed.
+        integers, or None. Default is None, which reads the first two
+        harmonics present in the file, or the first one if that is all it
+        holds. Pass ``'all'`` to read every harmonic in the file.
 
     Returns
     -------
@@ -887,16 +2495,20 @@ def processed_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    # No explicit request: read everything the file holds, then keep only the
+    # first two harmonics below. This matches the raw reader, whose default is
+    # also the first two harmonics (see ``_clamp_harmonics``), and keeps files
+    # that store many harmonics (IFLI, RE<n>, FLIM LABS JSON) from loading a
+    # stack of them by default.
+    default_harmonics = harmonics is None
     if harmonics is None:
         harmonics = 'all'
     filename, file_extension = _get_filename_extension(path)
 
     # Prepare reader options: remove widget-only keys and ensure harmonic present
-    filtered_reader_options = reader_options.copy() if reader_options else {}
-    filtered_reader_options.pop('phasor_axis', None)
-    # Widget-level flag understood only by the raw reader; drop it so it is
-    # never forwarded to the processed IO functions (which would reject it).
-    filtered_reader_options.pop('_keep_signal', None)
+    _, _, filtered_reader_options = _split_widget_reader_options(
+        reader_options
+    )
     if 'harmonic' not in filtered_reader_options:
         filtered_reader_options['harmonic'] = harmonics
 
@@ -906,21 +2518,21 @@ def processed_file_reader(
             "processed"
         ][file_extension](path, filtered_reader_options)
         pbr.update(1)
-        if "description" in attrs:
-            # HTML-unescape the description to handle tifffile HTML encoding
-            description_str = html.unescape(attrs["description"])
-            description = json.loads(description_str)
-            if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
-                raise ValueError("Description dictionary is too large.")
-            if "napari_phasors_settings" in description:
-                settings = json.loads(description["napari_phasors_settings"])
-                if "calibrated" in settings:
-                    settings["calibrated"] = bool(settings["calibrated"])
-        else:
-            settings = {}
+        settings = _parse_description_settings(attrs.get("description"))
         if "frequency" in attrs:
             settings["frequency"] = attrs["frequency"]
         harmonics_read = attrs.get("harmonic", None)
+        if harmonics_read is None:
+            harmonics_read = _infer_harmonics(
+                filtered_reader_options.get("harmonic"),
+                real,
+                mean_intensity_image,
+            )
+
+        if default_harmonics:
+            real, imag, harmonics_read = _keep_first_harmonics(
+                real, imag, harmonics_read, mean_intensity_image.ndim
+            )
 
         original_mean_intensity_image = mean_intensity_image.copy()
         g_original = real.copy()
@@ -986,8 +2598,24 @@ def processed_file_reader(
 
         layers = []
 
+        (
+            mean_intensity_image,
+            original_mean_intensity_image,
+            real,
+            imag,
+            g_original,
+            s_original,
+        ) = cast_phasor_storage(
+            mean_intensity_image,
+            original_mean_intensity_image,
+            real,
+            imag,
+            g_original,
+            s_original,
+        )
+
         add_kwargs = {
-            "name": filename + " Intensity Image",
+            "name": format_phasor_layer_name(filename),
             "metadata": {
                 "original_mean": original_mean_intensity_image,
                 "settings": settings,

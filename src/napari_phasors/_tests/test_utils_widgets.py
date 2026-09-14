@@ -1,17 +1,26 @@
 import csv
+from dataclasses import replace
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
+from qtpy.QtWidgets import QDialog, QHeaderView, QPushButton, QWidget
 
 from napari_phasors._utils import (
+    WARNING_ICON_SIZE,
+    AutoUpdateMixin,
     CurrentPageStackedWidget,
     HistogramDockWidget,
+    HistogramSettingsDialog,
     HistogramWidget,
     StatisticsDockWidget,
     StatisticsTableWidget,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
+    make_experimental_warning,
     save_groups_to_layer_metadata,
+    split_items_by_group,
+    warning_pixmap,
 )
 
 
@@ -57,6 +66,35 @@ def test_histogram_widget_update_data_and_clear(qtbot):
     assert widget._raw_valid_data is None
     assert not widget._settings_button.isEnabled()
     assert not widget.save_button.isEnabled()
+
+
+def test_histogram_empty_updates_reset_previous_data(qtbot):
+    """Empty single- and multi-data updates cannot retain stale bins."""
+    widget = HistogramWidget(bins=8)
+    qtbot.addWidget(widget)
+    widget.update_multi_data(
+        {
+            "Layer A": np.array([1.0, 2.0]),
+            "Layer B": np.array([2.0, 3.0]),
+        }
+    )
+
+    widget.update_data(np.array([np.nan, np.inf]))
+
+    assert widget.counts is None
+    assert widget.bin_edges is None
+    assert widget._datasets == {}
+    assert widget._counts_per_dataset == {}
+    assert widget._raw_valid_data is None
+
+    widget.update_data(np.array([1.0, 2.0]))
+    widget.update_multi_data({"Empty": np.array([np.nan])})
+
+    assert widget.counts is None
+    assert widget.bin_edges is None
+    assert widget._datasets == {}
+    assert widget._counts_per_dataset == {}
+    assert widget._raw_valid_data is None
 
 
 def test_histogram_widget_save_csv(qtbot, tmp_path, monkeypatch):
@@ -116,6 +154,99 @@ def test_histogram_widget_save_csv(qtbot, tmp_path, monkeypatch):
     assert len(rows) == 3
 
 
+def test_histogram_widget_normalize_scales_each_curve_to_its_max(qtbot):
+    """Normalize to maximum brings curves of very different sizes onto one scale."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    rng = np.random.default_rng(0)
+    datasets = {
+        "small": rng.normal(0.5, 0.1, 200),
+        "large": rng.normal(0.5, 0.1, 20000),
+    }
+    widget.display_mode = "Individual layers"
+    widget.update_multi_data(datasets)
+
+    raw_peaks = sorted(
+        float(np.max(line.get_ydata())) for line in widget.ax.lines
+    )
+    # Without normalisation the small distribution is dwarfed by the large one.
+    assert raw_peaks[1] > 10 * raw_peaks[0]
+
+    widget.normalize = True
+
+    peaks = [float(np.max(line.get_ydata())) for line in widget.ax.lines]
+    assert len(peaks) == 2
+    assert all(abs(peak - 1.0) < 1e-9 for peak in peaks)
+
+    widget.normalize = False
+    peaks = sorted(float(np.max(line.get_ydata())) for line in widget.ax.lines)
+    assert peaks == raw_peaks
+
+
+def test_histogram_widget_normalize_keeps_sd_band_relative(qtbot):
+    """The SD band is scaled by the same factor as the mean curve it wraps."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    rng = np.random.default_rng(1)
+    datasets = {
+        "G::a": rng.normal(0.3, 0.05, 500),
+        "G::b": rng.normal(0.32, 0.05, 5000),
+    }
+    widget._group_assignments = {"G::a": 1, "G::b": 1}
+    widget._group_names = {1: "Group 1"}
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(datasets)
+    widget.show_sd = True
+
+    def band_extent():
+        from matplotlib.collections import PolyCollection
+
+        band = next(
+            c for c in widget.ax.collections if isinstance(c, PolyCollection)
+        )
+        vertices = band.get_paths()[0].vertices[:, 1]
+        return float(np.max(vertices))
+
+    mean_peak = float(np.max(widget.ax.lines[0].get_ydata()))
+    ratio = band_extent() / mean_peak
+
+    widget.normalize = True
+    assert abs(float(np.max(widget.ax.lines[0].get_ydata())) - 1.0) < 1e-9
+    assert abs(band_extent() / 1.0 - ratio) < 1e-6
+
+
+def test_histogram_widget_normalize_labels_axis_and_csv(
+    qtbot, tmp_path, monkeypatch
+):
+    """A normalised histogram says so on the y axis and in its CSV export."""
+    from qtpy.QtWidgets import QFileDialog
+
+    widget = HistogramWidget(bins=2)
+    qtbot.addWidget(widget)
+    widget.update_data(np.array([1.0, 1.0, 1.0, 2.0]), label="Layer 1")
+
+    assert widget.ax.get_ylabel() == "Pixel count"
+    widget.normalize = True
+    assert widget.ax.get_ylabel() == "Pixel count (normalized)"
+
+    csv_file = tmp_path / "normalized.csv"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(csv_file), ""),
+    )
+    widget._save_histogram_csv()
+
+    with open(csv_file, newline='') as f:
+        rows = list(csv.reader(f))
+
+    assert rows[0] == ['Bin Center', 'Normalized Counts']
+    values = [float(row[1]) for row in rows[1:]]
+    assert max(values) == 1.0
+
+
 def test_histogram_widget_default_filter_keeps_zero(qtbot):
     """Default filtering should keep zero values (drop only NaN/Inf)."""
     widget = HistogramWidget(bins=5)
@@ -151,6 +282,83 @@ def test_histogram_widget_update_multi_data_autosd(qtbot):
     assert set(widget._datasets.keys()) == {"Layer A", "Layer B"}
     assert set(widget._counts_per_dataset.keys()) == {"Layer A", "Layer B"}
     assert widget._show_sd is True
+
+
+def test_histogram_widget_merged_pools_layers_not_series(qtbot):
+    """Merged mode averages the layers of a series, never two series."""
+    widget = HistogramWidget(bins=40)
+    qtbot.addWidget(widget)
+    widget._smooth_curves = False
+
+    rng = np.random.default_rng(3)
+    datasets = {
+        "A::img1": rng.normal(0.3, 0.05, 500),
+        "A::img2": rng.normal(0.3, 0.05, 500),
+        "B::img1": rng.normal(0.7, 0.05, 500),
+        "B::img2": rng.normal(0.7, 0.05, 500),
+    }
+    widget.set_dataset_series(
+        {
+            "A::img1": "A",
+            "A::img2": "A",
+            "B::img1": "B",
+            "B::img2": "B",
+        },
+        colors={"A": (1.0, 0.0, 0.0), "B": (0.0, 0.0, 1.0)},
+    )
+    widget._show_legend = True
+    widget.update_multi_data(datasets)
+
+    assert widget.display_mode == "Merged"
+    lines = widget.ax.lines
+    assert len(lines) == 2
+    assert [line.get_label() for line in lines] == ["A", "B"]
+
+    # Each curve peaks over its own series, not between the two.
+    peaks = [
+        float(line.get_xdata()[np.argmax(line.get_ydata())]) for line in lines
+    ]
+    assert 0.2 < peaks[0] < 0.4
+    assert 0.6 < peaks[1] < 0.8
+
+    # Without series information the datasets merge into one curve again.
+    widget.set_dataset_series({})
+    widget._render()
+    assert len(widget.ax.lines) == 0  # gradient fill, not a plain line
+
+
+def test_histogram_widget_merged_series_csv_has_one_column_pair_each(
+    qtbot, tmp_path, monkeypatch
+):
+    """The merged CSV keeps the series apart just like the plot does."""
+    from qtpy.QtWidgets import QFileDialog
+
+    widget = HistogramWidget(bins=2)
+    qtbot.addWidget(widget)
+    widget.set_dataset_series(
+        {"A::1": "A", "A::2": "A", "B::1": "B"},
+    )
+    widget.update_multi_data(
+        {
+            "A::1": np.array([1.0, 1.0, 2.0]),
+            "A::2": np.array([1.0, 2.0, 2.0]),
+            "B::1": np.array([1.0, 2.0, 2.0]),
+        }
+    )
+
+    csv_file = tmp_path / "series.csv"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(csv_file), ""),
+    )
+    widget._save_histogram_csv()
+
+    with open(csv_file, newline='') as f:
+        rows = list(csv.reader(f))
+
+    # Series A has two layers, so it also gets an SD column; B has one.
+    assert rows[0] == ['Bin Center', 'A Mean', 'A Std', 'B Mean']
 
 
 def test_histogram_widget_gamma_uses_power_norm(qtbot):
@@ -256,6 +464,96 @@ def test_statistics_table_widget_handles_empty_histogram_bins(qtbot):
     assert table.item(0, 1).text() == "nan"
 
 
+def test_statistics_table_widget_columns_resizable(qtbot):
+    """StatisticsTableWidget should allow changing the width of columns."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    header = table.horizontalHeader()
+    # The last section keeps stretching so the table still fills its dock.
+    assert header.stretchLastSection()
+
+    for col in range(table.columnCount()):
+        assert header.sectionResizeMode(col) == QHeaderView.Interactive
+
+    # Columns start at content-appropriate widths, not Qt's uniform default.
+    assert table.columnWidth(0) == StatisticsTableWidget.COLUMN_WIDTHS["Name"]
+    assert table.columnWidth(1) == StatisticsTableWidget.DEFAULT_COLUMN_WIDTH
+
+    # Can change column width programmatically and via header resizeSection
+    table.setColumnWidth(0, 150)
+    assert table.columnWidth(0) == 150
+
+    header.resizeSection(1, 130)
+    assert table.columnWidth(1) == 130
+
+    table.setColumnWidth(3, 180)
+    assert table.columnWidth(3) == 180
+
+    # Updating statistics preserves interactive resize mode and column widths can still change
+    datasets = {
+        "Layer A": np.array([1.0, 2.0, 3.0]),
+        "Layer B": np.array([2.0, 4.0, 6.0]),
+    }
+    table.update_statistics(datasets)
+    for col in range(table.columnCount()):
+        assert header.sectionResizeMode(col) == QHeaderView.Interactive
+    assert table.columnWidth(0) == 150
+
+    table.setColumnWidth(2, 140)
+    assert table.columnWidth(2) == 140
+
+
+def test_statistics_table_widget_column_widths_follow_column_names(qtbot):
+    """User widths are keyed by column name, not by position."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+    header = table.horizontalHeader()
+
+    # A drag on the "Name" column is remembered ...
+    header.resizeSection(0, 210)
+    assert table._user_column_widths == {"Name": 210}
+
+    # ... and survives the switch to the time-lapse layout, where "Name"
+    # has moved to index 1 and "Frame" takes over index 0.
+    table.update_frame_statistics(
+        [
+            {
+                "Frame": 0,
+                "Name": "Layer A",
+                "Center of Mass": 1.0,
+                "Mean": 1.0,
+                "Median": 1.0,
+                "Std Dev": 0.0,
+            }
+        ],
+        current_frame=0,
+    )
+    assert table.horizontalHeaderItem(0).text() == "Frame"
+    assert table.columnWidth(0) == StatisticsTableWidget.COLUMN_WIDTHS["Frame"]
+    assert table.columnWidth(1) == 210
+
+    # Switching back restores the same width for "Name" at index 0.
+    table.update_statistics({"Layer A": np.array([1.0, 2.0, 3.0])})
+    assert table.horizontalHeaderItem(0).text() == "Name"
+    assert table.columnWidth(0) == 210
+
+
+def test_statistics_table_widget_ignores_non_user_section_resizes(qtbot):
+    """Stretch-driven and programmatic resizes are not recorded as user widths."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+    last = table.columnCount() - 1
+
+    # The stretching last section resizes itself whenever the table does.
+    table._on_section_resized(last, 80, 400)
+    assert table._user_column_widths == {}
+
+    # Widths applied by the widget itself are not user choices either.
+    table._apply_column_widths()
+    assert table._user_column_widths == {}
+
+
 def test_statistics_dock_widget_updates_for_single_and_grouped_data(qtbot):
     """StatisticsDockWidget should toggle sections by histogram mode/data."""
     histogram_widget = HistogramWidget(bins=12)
@@ -283,6 +581,200 @@ def test_statistics_dock_widget_updates_for_single_and_grouped_data(qtbot):
     assert not stats_dock.group_stats_section.isHidden()
     assert stats_dock.group_stats_table.rowCount() == 2
 
+    histogram_widget.clear()
+
+    assert stats_dock.layer_stats_table.rowCount() == 0
+    assert stats_dock.group_stats_table.rowCount() == 0
+    assert stats_dock.layer_stats_section.isHidden()
+    assert stats_dock.group_stats_section.isHidden()
+    assert not stats_dock.export_csv_button.isEnabled()
+
+
+def test_histogram_widget_series_style_solid_uses_series_colors(qtbot):
+    """Solid style draws flat curves; colormap style draws gradients."""
+    from matplotlib.collections import LineCollection
+
+    widget = HistogramWidget(bins=20)
+    qtbot.addWidget(widget)
+    widget._smooth_curves = False
+
+    rng = np.random.default_rng(7)
+    datasets = {
+        "A": rng.normal(0.3, 0.05, 300),
+        "B": rng.normal(0.7, 0.05, 300),
+    }
+    colormap = np.array([[0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0]])
+    widget.set_dataset_series(
+        {"A": "A", "B": "B"},
+        colors={"A": (1.0, 0.0, 0.0), "B": (0.0, 0.0, 1.0)},
+        colormaps={
+            "A": (colormap, [0.0, 1.0], 1.0),
+            "B": (colormap[::-1], [0.0, 1.0], 1.0),
+        },
+    )
+    widget.update_multi_data(datasets)
+
+    gradients = [
+        artist
+        for artist in widget.ax.collections
+        if isinstance(artist, LineCollection)
+    ]
+    assert len(gradients) == 2
+    assert len(widget.ax.lines) == 0
+
+    # A tab can propose solid colours for mirrored colormaps.
+    widget.set_default_series_style("solid")
+
+    assert len(widget.ax.lines) == 2
+    colors = [line.get_color() for line in widget.ax.lines]
+    assert colors == [(1.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+
+    # An explicit choice in the dialog is not overridden by the tab.
+    widget._series_style_explicit = True
+    widget.set_default_series_style("colormap")
+    assert len(widget.ax.lines) == 2
+
+
+def test_histogram_settings_dialog_edits_series_colors(qtbot, monkeypatch):
+    """The dialog offers a colour per series and a colouring choice."""
+    from qtpy.QtWidgets import QDialog
+
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+    widget.set_dataset_series({"A": "A", "B": "B"})
+    widget.update_multi_data(
+        {"A": np.array([1.0, 2.0]), "B": np.array([3.0, 4.0])}
+    )
+
+    captured = {}
+
+    def fake_exec(self):
+        captured['series'] = list(self._series_color_buttons)
+        self.series_style_combo.setCurrentIndex(
+            self.series_style_combo.findData("solid")
+        )
+        self._set_btn_color(self._series_color_buttons["A"], (0.0, 1.0, 0.0))
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    widget._open_settings_dialog()
+
+    assert captured['series'] == ["A", "B"]
+    assert widget._series_style == "solid"
+    assert widget._series_color_overrides["A"] == (0.0, 1.0, 0.0)
+    assert widget._series_style_explicit is True
+
+
+def test_statistics_columns_name_the_quantity(qtbot):
+    """Statistic columns say what was measured, unless quantities are mixed."""
+    histogram_widget = HistogramWidget(bins=12, xlabel="FRET efficiency")
+    qtbot.addWidget(histogram_widget)
+    stats_dock = StatisticsDockWidget(histogram_widget)
+    qtbot.addWidget(stats_dock)
+
+    histogram_widget.update_data(np.array([0.1, 0.2, 0.3]), label="img0")
+
+    table = stats_dock.layer_stats_table
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert headers == [
+        "Name",
+        "FRET efficiency Center of Mass",
+        "FRET efficiency Mean",
+        "FRET efficiency Median",
+        "FRET efficiency Std Dev",
+    ]
+
+    # A single series names itself rather than the axis.
+    histogram_widget.set_dataset_series({"C1: img0": "Component 1"})
+    histogram_widget.update_multi_data({"C1: img0": np.array([0.1, 0.2])})
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert headers[1] == "Component 1 Center of Mass"
+
+    # Several quantities widen the table instead of repeating rows: one row
+    # per analysed layer, one column block per quantity.
+    histogram_widget.set_dataset_sources(
+        {"C1: img0": "img0", "C2: img0": "img0"}
+    )
+    histogram_widget.set_dataset_series(
+        {"C1: img0": "Component 1", "C2: img0": "Component 2"}
+    )
+    histogram_widget.update_multi_data(
+        {
+            "C1: img0": np.array([0.1, 0.2]),
+            "C2: img0": np.array([0.8, 0.9]),
+        }
+    )
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert headers == [
+        "Name",
+        "Component 1 Center of Mass",
+        "Component 1 Mean",
+        "Component 1 Median",
+        "Component 1 Std Dev",
+        "Component 2 Center of Mass",
+        "Component 2 Mean",
+        "Component 2 Median",
+        "Component 2 Std Dev",
+    ]
+    assert table.rowCount() == 1
+    assert table.item(0, 0).text() == "img0"
+
+
+def test_statistics_dock_lists_one_row_per_group_and_series(qtbot):
+    """Grouped statistics never pool two series into a single row."""
+    histogram_widget = HistogramWidget(bins=12)
+    qtbot.addWidget(histogram_widget)
+    stats_dock = StatisticsDockWidget(histogram_widget)
+    qtbot.addWidget(stats_dock)
+
+    datasets = {
+        f"{comp}: {img}": np.array([1.0, 2.0, 3.0])
+        for comp in ("C1", "C2", "C3")
+        for img in ("img0", "img1", "img2", "img3")
+    }
+    histogram_widget.set_dataset_sources(
+        {label: label.split(": ")[1] for label in datasets}
+    )
+    histogram_widget.set_dataset_series(
+        {label: label.split(": ")[0] for label in datasets}
+    )
+    histogram_widget._group_assignments = {
+        "img0": 1,
+        "img1": 1,
+        "img2": 2,
+        "img3": 2,
+    }
+    histogram_widget._group_names = {1: "Control", 2: "Treated"}
+    histogram_widget.display_mode = "Grouped"
+    histogram_widget.update_multi_data(datasets)
+
+    # Three components and two groups: six curves, whatever the number of
+    # layers in each group. The table lays the same six out as two rows of
+    # three column blocks.
+    assert len(histogram_widget.ax.lines) == 6
+
+    table = stats_dock.group_stats_table
+    assert table.rowCount() == 2
+    names = [table.item(row, 0).text() for row in range(table.rowCount())]
+    assert names == ["Control", "Treated"]
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert headers[0] == "Name"
+    assert len(headers) == 1 + 3 * 4
+    assert headers[1] == "C1 Center of Mass"
+    assert headers[5] == "C2 Center of Mass"
+
 
 def test_histogram_dock_widget_links_statistics_dock(qtbot):
     """HistogramDockWidget should store a linked statistics dock."""
@@ -296,6 +788,27 @@ def test_histogram_dock_widget_links_statistics_dock(qtbot):
     hist_dock.link_statistics_dock(stats_dock)
 
     assert hist_dock._stats_dock is stats_dock
+
+
+def test_histogram_clear_resets_frame_sources_and_rename_migrates_them(qtbot):
+    """Explicit clear removes stale frame data; rename keeps frame keys synced."""
+    widget = HistogramWidget()
+    qtbot.addWidget(widget)
+    source = np.arange(8, dtype=float).reshape(2, 2, 2)
+    widget.set_frame_source(None, {"Old name": source})
+    widget.update_data(source, label="Old name")
+
+    widget.rename_dataset("Old name", "New name")
+
+    assert "Old name" not in widget._frame_source_datasets
+    assert widget._frame_source_datasets["New name"] is source
+
+    widget.clear()
+
+    assert widget._frame_source_datasets == {}
+    assert widget._frame_context is None
+    assert widget.counts is None
+    assert widget._datasets == {}
 
 
 def test_phasor_center_statistics_widget_update(qtbot):
@@ -804,6 +1317,338 @@ def test_histogram_widget_saves_groups_to_layer_metadata(qtbot, monkeypatch):
     assert grp_a['name'] == 'GroupX'
     assert grp_b['name'] == 'GroupY'
     assert grp_a['color'] == [1.0, 0.0, 0.0]
+
+
+def test_histogram_widget_groups_persist_on_source_layers(qtbot, monkeypatch):
+    """Groups are written to the analysed image layer, not the derived one."""
+    from qtpy.QtWidgets import QDialog
+
+    layers = {
+        'Image A': _FakeLayer({}),
+        'Image B': _FakeLayer({}),
+        'Fractions: A': _FakeLayer({}),
+        'Fractions: B': _FakeLayer({}),
+    }
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources(
+        {'Fractions: A': 'Image A', 'Fractions: B': 'Image B'}
+    )
+    widget.update_multi_data(
+        {
+            'Fractions: A': np.array([1.0, 2.0]),
+            'Fractions: B': np.array([3.0, 4.0]),
+        }
+    )
+
+    def fake_exec(self):
+        self.mode_combo.setCurrentText('Grouped')
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+
+    # Groups are keyed by the analysed layer, not by the curve drawn from it.
+    widget._group_assignments = {'Image A': 1, 'Image B': 2}
+    widget._group_names = {1: 'Ctrl', 2: 'Trt'}
+    widget._group_colors = {1: (1.0, 0.0, 0.0), 2: (0.0, 1.0, 0.0)}
+    widget._open_settings_dialog()
+
+    # The grouping lands on the source images, so the Plot Settings tab and
+    # the other analysis tabs see it.
+    assert layers['Image A'].metadata['settings']['group']['name'] == 'Ctrl'
+    assert layers['Image B'].metadata['settings']['group']['name'] == 'Trt'
+    assert 'group' not in layers['Fractions: A'].metadata.get('settings', {})
+
+
+def test_histogram_widget_reads_groups_of_source_layers(qtbot, monkeypatch):
+    """Grouping set elsewhere on the source image pre-populates the dialog."""
+    from qtpy.QtWidgets import QDialog
+
+    layers = {
+        'Image A': _FakeLayer(
+            {'settings': {'group': {'name': 'Ctrl', 'color': [1.0, 0.0, 0.0]}}}
+        ),
+        'Image B': _FakeLayer(
+            {'settings': {'group': {'name': 'Trt', 'color': [0.0, 0.0, 1.0]}}}
+        ),
+        'FRET efficiency: A': _FakeLayer({}),
+        'FRET efficiency: B': _FakeLayer({}),
+    }
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources(
+        {'FRET efficiency: A': 'Image A', 'FRET efficiency: B': 'Image B'}
+    )
+    widget.update_multi_data(
+        {
+            'FRET efficiency: A': np.array([1.0, 2.0]),
+            'FRET efficiency: B': np.array([3.0, 4.0]),
+        }
+    )
+
+    captured = {}
+
+    def fake_exec(self):
+        captured['assignments'] = {
+            row['name_edit'].text(): row['layer_combo'].checkedItems()
+            for row in self._group_row_data
+        }
+        return QDialog.Rejected
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    widget._open_settings_dialog()
+
+    # The group rows offer the analysed layers, not the derived datasets.
+    assert captured['assignments']['Ctrl'] == ['Image A']
+    assert captured['assignments']['Trt'] == ['Image B']
+
+
+def test_histogram_widget_groups_list_each_source_once(qtbot, monkeypatch):
+    """Several curves of one layer contribute a single group entry.
+
+    With two components plotted per image the dialog must still offer the
+    images, not one row entry per component curve.
+    """
+    from qtpy.QtWidgets import QDialog
+
+    layers = {'img0': _FakeLayer({}), 'img1': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources(
+        {
+            'C1: img0': 'img0',
+            'C2: img0': 'img0',
+            'C1: img1': 'img1',
+            'C2: img1': 'img1',
+        }
+    )
+    widget.update_multi_data(
+        {
+            'C1: img0': np.array([1.0, 2.0]),
+            'C2: img0': np.array([2.0, 3.0]),
+            'C1: img1': np.array([3.0, 4.0]),
+            'C2: img1': np.array([4.0, 5.0]),
+        }
+    )
+
+    captured = {}
+
+    def fake_exec(self):
+        captured['offered'] = self._group_labels
+        captured['colour_rows'] = list(self._layer_color_buttons)
+        return QDialog.Rejected
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    widget._open_settings_dialog()
+
+    assert captured['offered'] == ['img0', 'img1']
+    # Per-curve colours still list every dataset.
+    assert len(captured['colour_rows']) == 4
+
+
+def test_histogram_widget_group_applies_to_every_curve_of_a_layer(qtbot):
+    """A layer's group covers all its curves, and series stay apart."""
+    widget = HistogramWidget(bins=20)
+    qtbot.addWidget(widget)
+    widget._smooth_curves = False
+
+    rng = np.random.default_rng(5)
+    datasets = {
+        'C1: img0': rng.normal(0.3, 0.05, 300),
+        'C2: img0': rng.normal(0.7, 0.05, 300),
+        'C1: img1': rng.normal(0.3, 0.05, 300),
+        'C2: img1': rng.normal(0.7, 0.05, 300),
+    }
+    widget.set_dataset_sources(
+        {
+            'C1: img0': 'img0',
+            'C2: img0': 'img0',
+            'C1: img1': 'img1',
+            'C2: img1': 'img1',
+        }
+    )
+    widget.set_dataset_series(
+        {
+            'C1: img0': 'C1',
+            'C2: img0': 'C2',
+            'C1: img1': 'C1',
+            'C2: img1': 'C2',
+        }
+    )
+    # One group holding both images, assigned by layer.
+    widget._group_assignments = {'img0': 1, 'img1': 1}
+    widget._group_names = {1: 'Ctrl'}
+    widget._show_legend = True
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(datasets)
+
+    labels = [line.get_label() for line in widget.ax.lines]
+    # The group pools its two images but never the two components.
+    assert labels == ['Ctrl \u2013 C1', 'Ctrl \u2013 C2']
+    styles = {line.get_linestyle() for line in widget.ax.lines}
+    assert len(styles) == 2
+
+
+def test_histogram_widget_metadata_groups_win_over_local_state(
+    qtbot, monkeypatch
+):
+    """Metadata is the shared truth; datasets it omits keep their local group."""
+
+    layers = {
+        'A': _FakeLayer(
+            {'settings': {'group': {'name': 'Ctrl', 'color': [1.0, 0.0, 0.0]}}}
+        ),
+        'B': _FakeLayer({}),
+    }
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.update_multi_data(
+        {'A': np.array([1.0, 2.0]), 'B': np.array([3.0, 4.0])}
+    )
+
+    # A stale local grouping that disagrees with the metadata for 'A'.
+    widget._group_assignments = {'A': 1, 'B': 1}
+    widget._group_names = {1: 'Everything'}
+
+    assignments, names, _colors = widget._group_state_for_dialog(['A', 'B'])
+
+    assert names[assignments['A']] == 'Ctrl'
+    assert names[assignments['B']] == 'Everything'
+
+
+def test_colormap_group_is_shown_in_matching_solid_color():
+    """A group given a colormap reads back as its colormap's top colour.
+
+    Dialogs that only offer solid colours — the histogram and phasor centers —
+    then show the group in the colour it is actually drawn with.
+    """
+    from napari_phasors._utils import colormap_max_color
+
+    layers = {'A': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(
+        viewer,
+        ['A'],
+        {'A': 1},
+        {1: 'Ctrl'},
+        {1: (1.0, 1.0, 1.0)},
+        group_styles={1: {'mode': 'colormap', 'colormap': 'viridis'}},
+    )
+
+    stored = layers['A'].metadata['settings']['group']
+    assert stored['colormap'] == 'viridis'
+    np.testing.assert_allclose(
+        stored['color'], colormap_max_color('viridis'), atol=1e-6
+    )
+
+    _assignments, _names, colors = build_groups_from_layer_metadata(
+        viewer, ['A']
+    )
+    np.testing.assert_allclose(
+        colors[1], colormap_max_color('viridis'), atol=1e-6
+    )
+
+
+def test_solid_group_reaches_the_contour_dialog_as_its_own_colour():
+    """A group created solid keeps its colour for the contour to ramp from.
+
+    The contour renderer builds a colormap out of a solid group's colour, so
+    carrying the colour through is all that is needed.
+    """
+    layers = {'A': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(
+        viewer, ['A'], {'A': 1}, {1: 'Ctrl'}, {1: (0.0, 0.5, 1.0)}
+    )
+
+    _a, _n, colors, styles = build_group_styles_from_layer_metadata(
+        viewer, ['A']
+    )
+    assert styles[1]['mode'] == 'solid'
+    assert styles[1]['style'] == 'solid'
+    np.testing.assert_allclose(styles[1]['color'], (0.0, 0.5, 1.0))
+    np.testing.assert_allclose(colors[1], (0.0, 0.5, 1.0))
+
+
+def test_contour_group_mode_survives_the_metadata_round_trip():
+    """The contour dialog's ``mode`` key is what comes back out."""
+    layers = {'A': _FakeLayer({}), 'B': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(
+        viewer,
+        ['A', 'B'],
+        {'A': 1, 'B': 2},
+        {1: 'Ctrl', 2: 'Trt'},
+        {1: (1.0, 0.0, 0.0), 2: (0.0, 0.0, 1.0)},
+        group_styles={
+            1: {'mode': 'colormap', 'colormap': 'magma'},
+            2: {'mode': 'solid', 'color': (0.0, 0.0, 1.0)},
+        },
+    )
+
+    _a, _n, _c, styles = build_group_styles_from_layer_metadata(
+        viewer, ['A', 'B']
+    )
+    assert styles[1]['mode'] == 'colormap'
+    assert styles[1]['colormap'] == 'magma'
+    assert styles[2]['mode'] == 'solid'
+
+
+def test_save_groups_preserves_contour_style_of_same_group(qtbot):
+    """A histogram group edit keeps the contour style it did not touch."""
+    from napari_phasors._utils import colormap_max_color
+
+    viridis_max = list(colormap_max_color('viridis'))
+    layers = {
+        'A': _FakeLayer(
+            {
+                'settings': {
+                    'group': {
+                        'name': 'Ctrl',
+                        'color': viridis_max,
+                        'style': 'colormap',
+                        'colormap': 'viridis',
+                    }
+                }
+            }
+        ),
+    }
+    viewer = _FakeViewer(layers)
+
+    # Re-saved with the colour the colormap gave it: the styling stands.
+    save_groups_to_layer_metadata(
+        viewer, ['A'], {'A': 1}, {1: 'Ctrl'}, {1: tuple(viridis_max)}
+    )
+
+    group = layers['A'].metadata['settings']['group']
+    assert group['style'] == 'colormap'
+    assert group['colormap'] == 'viridis'
+
+    # A different colour means the user picked one: the contour should be
+    # regenerated from it rather than keeping the stale colormap.
+    save_groups_to_layer_metadata(
+        viewer, ['A'], {'A': 1}, {1: 'Ctrl'}, {1: (0.0, 1.0, 0.0)}
+    )
+    group = layers['A'].metadata['settings']['group']
+    assert group['color'] == [0.0, 1.0, 0.0]
+    assert 'colormap' not in group
+
+    # Moving the layer to a different group drops the old group's style.
+    save_groups_to_layer_metadata(
+        viewer, ['A'], {'A': 1}, {1: 'Other'}, {1: (0.0, 0.0, 1.0)}
+    )
+    assert 'style' not in layers['A'].metadata['settings']['group']
 
 
 def test_histogram_widget_no_viewer_does_not_crash(qtbot, monkeypatch):
@@ -2028,3 +2873,1264 @@ def test_update_data_label_parameter(qtbot):
     widget.update_data(data, label="Lifetime: my image")
     assert list(widget._datasets.keys()) == ["Lifetime: my image"]
     assert list(widget._counts_per_dataset.keys()) == ["Lifetime: my image"]
+
+
+# --- TileLayoutDialog -------------------------------------------------------
+
+
+def _positions_dialog(qtbot, n_rows=3, n_cols=3, tile=(64, 64), step=None):
+    """Build a TileLayoutDialog that was handed recorded tile positions."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    step_y, step_x = step or tile
+    paths = [f"tile_{index:02d}.czi" for index in range(n_rows * n_cols)]
+    positions = [
+        (row * step_y, col * step_x)
+        for row in range(n_rows)
+        for col in range(n_cols)
+    ]
+    dialog = TileLayoutDialog(paths, tile_shape=tile, tile_positions=positions)
+    qtbot.addWidget(dialog)
+    return dialog, positions
+
+
+def test_tile_layout_dialog_marks_stitching_experimental(qtbot):
+    """The dialog carries the same experimental marker as the plot settings.
+
+    Stitching is unproven enough that the warning has to be on the dialog
+    itself, not only in the docs -- and it must be napari's own triangle, so
+    it reads as an experimental control rather than as decoration.
+    """
+    from qtpy.QtWidgets import QLabel
+
+    dialog, _ = _positions_dialog(qtbot)
+
+    icons = [
+        label
+        for label in dialog.findChildren(QLabel)
+        if label.objectName() == "error_label"
+    ]
+    assert len(icons) == 1
+    icon = icons[0]
+
+    texts = [
+        label.text()
+        for label in dialog.findChildren(QLabel)
+        if label.text() == "Experimental"
+    ]
+    assert texts == ["Experimental"]
+
+    assert "report it" in icon.toolTip()
+
+    # A modal dialog of our own is never reached by napari's stylesheet, so
+    # the triangle has to be rendered directly rather than left to the
+    # ``error_label`` object name.
+    pixmap = icon.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+
+
+def test_tile_layout_dialog_uses_recorded_positions(qtbot):
+    """Recorded positions are offered first and drive the built geometry."""
+    dialog, positions = _positions_dialog(qtbot)
+
+    assert dialog.source_combo.itemData(0) == "positions"
+    assert dialog.source_combo.currentData() == "positions"
+
+    geometry = dialog.get_geometry()
+    assert geometry is not None
+    assert len(geometry.placements) == len(positions)
+
+    # Measured positions define the overlap, so the typed fields mirror them
+    # and are locked while this source is selected.
+    assert not dialog.overlap_y_edit.isEnabled()
+    assert not dialog.overlap_x_edit.isEnabled()
+    assert float(dialog.overlap_y_edit.text()) == pytest.approx(
+        geometry.overlap_y * 100, abs=0.01
+    )
+
+    assert dialog.get_ordered_paths() == geometry.paths
+    assert dialog.get_sources() == geometry.sources
+
+
+def test_tile_layout_dialog_binning_rescales_the_canvas(qtbot):
+    """Choosing a binning factor shrinks the tiles, positions and canvas."""
+    dialog, _ = _positions_dialog(qtbot, tile=(64, 64))
+
+    assert dialog.binning_combo is not None
+    assert dialog.get_binning() == 1
+    unbinned = dialog.get_geometry().canvas_shape()
+
+    dialog.binning_combo.setCurrentIndex(dialog.binning_combo.findData(4))
+
+    assert dialog.get_binning() == 4
+    assert dialog._tile_shape == (16, 16)
+    binned = dialog.get_geometry().canvas_shape()
+    assert binned[0] == unbinned[0] // 4
+    assert binned[1] == unbinned[1] // 4
+    # The label reports the binned canvas, not the original one.
+    assert f"{binned[0]} x {binned[1]} px" in dialog.memory_label.text()
+    assert "GB per plane" in dialog.memory_label.text()
+
+
+def test_tile_layout_dialog_suggests_binning_that_fits_the_budget(qtbot):
+    """The initial binning is the smallest factor fitting the memory budget."""
+    dialog, _ = _positions_dialog(qtbot, tile=(64, 64))
+
+    # A generous budget needs no binning at all.
+    assert dialog._suggested_binning(budget_bytes=1 << 30) == 1
+
+    # A budget smaller than any offered factor falls back to the largest.
+    assert dialog._suggested_binning(budget_bytes=1) == 16
+
+    # In between, the chosen factor is the first one that fits.
+    height, width = dialog._canvas_for_binning(2)
+    assert dialog._suggested_binning(budget_bytes=height * width * 4) == 2
+
+
+def test_tile_layout_dialog_without_positions_has_no_binning(qtbot):
+    """Binning needs recorded positions, so it is absent otherwise."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(["a.tif", "b.tif"], tile_shape=(32, 32))
+    qtbot.addWidget(dialog)
+
+    assert dialog.binning_combo is None
+    assert dialog.get_binning() == 1
+    # _apply_binning is a no-op rather than an error when there is nothing
+    # to rescale.
+    dialog._apply_binning()
+    assert dialog._tile_shape == (32, 32)
+
+
+def test_tile_layout_dialog_position_count_mismatch_is_reported(qtbot):
+    """Selecting a tile axis that contradicts the positions shows an error."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(
+        ["mosaic.czi"],
+        tile_shape=(32, 32),
+        tile_axes={0: 4},
+        tile_positions=[(0, 0), (0, 32), (32, 0), (32, 32)],
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.get_geometry() is not None
+
+    # One tile per file leaves a single tile against four positions.
+    dialog.tile_axis_combo.setCurrentIndex(0)
+
+    assert dialog.get_geometry() is None
+    assert "1 tile(s) are selected" in dialog.status_label.text()
+    assert not dialog.ok_btn.isEnabled()
+    # With no geometry the accessors fall back to the raw selection.
+    assert dialog.get_ordered_paths() == ["mosaic.czi"]
+    assert len(dialog.get_sources()) == 1
+
+
+def test_tile_layout_dialog_switching_source_shows_matching_controls(qtbot):
+    """Each layout source reveals only its own controls."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(
+        [f"tile_r{r}_c{c}.tif" for r in range(2) for c in range(2)],
+        tile_shape=(16, 16),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    def select(key):
+        dialog.source_combo.setCurrentIndex(dialog.source_combo.findData(key))
+
+    select("rows")
+    assert dialog.rows_widget.isVisible()
+    assert not dialog.pattern_widget.isVisible()
+
+    select("names")
+    assert not dialog.rows_widget.isVisible()
+    assert dialog.pattern_widget.isVisible()
+
+    # Plain TIFFs record no stage positions, so that source reports why.
+    select("stage")
+    assert dialog.get_geometry() is None
+    assert "Stage positions could not be read" in dialog.status_label.text()
+
+
+def test_tile_layout_dialog_overlap_parsing_and_blend_mode(qtbot):
+    """Overlap text is clamped to a fraction and blend modes map in order."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(["a.tif", "b.tif"], tile_shape=(16, 16))
+    qtbot.addWidget(dialog)
+
+    dialog.overlap_y_edit.setText("25")
+    dialog.overlap_x_edit.setText("not a number")
+    assert dialog._overlaps() == (0.25, 0.0)
+
+    # Above 90% and below zero are clamped rather than rejected.
+    dialog.overlap_y_edit.setText("400")
+    dialog.overlap_x_edit.setText("-10")
+    assert dialog._overlaps() == (0.9, 0.0)
+
+    for index, mode in enumerate(("feather", "average", "sum")):
+        dialog.blend_combo.setCurrentIndex(index)
+        assert dialog._blend_mode() == mode
+
+
+def test_tile_layout_dialog_default_rows_spec_prefers_square(qtbot):
+    """The pre-filled row specification is the squarest factorization."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    def spec(n_tiles):
+        dialog = TileLayoutDialog(
+            [f"t{i}.tif" for i in range(n_tiles)], tile_shape=(8, 8)
+        )
+        qtbot.addWidget(dialog)
+        return dialog._default_rows_spec()
+
+    assert spec(9) == "3x3"
+    assert spec(6) == "2x3"
+    # A prime count has no square-ish split, so it becomes a single row.
+    assert spec(7) == "1x7"
+    assert spec(0) == ""
+
+
+def test_tile_layout_preview_draws_and_clears(qtbot):
+    """The preview paints a rectangle per tile and a message when empty."""
+    from napari_phasors._stitching import TileGeometry, TilePlacement
+    from napari_phasors._utils import TileLayoutPreview
+
+    preview = TileLayoutPreview()
+    qtbot.addWidget(preview)
+    preview.resize(240, 200)
+
+    # ``grab()`` forces a real paint even though the widget is never shown;
+    # ``repaint()`` on a hidden widget does nothing.
+    def painted():
+        return preview.grab()
+
+    # Empty preview: paints the placeholder text without raising.
+    preview.set_geometry(None)
+    assert not painted().isNull()
+    assert preview._geometry is None
+
+    geometry = TileGeometry(
+        placements=[
+            TilePlacement(row=r, col=c, path=f"t{r}{c}.tif")
+            for r in range(2)
+            for c in range(3)
+        ],
+        tile_shape=(32, 48),
+        overlap_y=0.1,
+        overlap_x=0.1,
+    )
+    preview.set_geometry(geometry)
+    assert not painted().isNull()
+    assert preview._geometry is geometry
+
+    # A geometry whose tile size is not known yet falls back to a nominal
+    # tile rather than dividing by zero.
+    preview.set_geometry(replace(geometry, tile_shape=(0, 0)))
+    assert not painted().isNull()
+
+    # A geometry with placements but an empty canvas bails out mid-paint.
+    preview.set_geometry(TileGeometry(placements=[], tile_shape=(32, 48)))
+    assert not painted().isNull()
+
+
+def test_tile_layout_preview_handles_a_zero_sized_canvas(qtbot):
+    """Placements that collapse to no canvas stop the paint cleanly."""
+    from napari_phasors._stitching import TileGeometry, TilePlacement
+    from napari_phasors._utils import TileLayoutPreview
+
+    preview = TileLayoutPreview()
+    qtbot.addWidget(preview)
+    preview.resize(120, 100)
+
+    # A tile of nominal size zero in one axis leaves the canvas degenerate
+    # even though there is a placement to draw.
+    geometry = TileGeometry(
+        placements=[TilePlacement(row=0, col=0, path="only.tif")],
+        tile_shape=(0, 40),
+    )
+    preview.set_geometry(geometry)
+    assert not preview.grab().isNull()
+
+
+def test_tile_layout_preview_stops_on_an_empty_canvas(qtbot):
+    """Placements that describe no canvas end the paint without drawing."""
+    from napari_phasors._utils import TileLayoutPreview
+
+    class _EmptyCanvasGeometry:
+        placements = ["one"]
+        tile_shape = (32, 32)
+
+        def origins(self):
+            return [(0, 0)]
+
+        def canvas_shape(self):
+            return (0, 0)
+
+    preview = TileLayoutPreview()
+    qtbot.addWidget(preview)
+    preview.resize(120, 100)
+    preview.set_geometry(_EmptyCanvasGeometry())
+
+    assert not preview.grab().isNull()
+
+
+def test_suggested_binning_is_one_without_positions(qtbot):
+    """With nothing to rescale, the suggestion is 'no binning'."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(["a.tif", "b.tif"], tile_shape=(32, 32))
+    qtbot.addWidget(dialog)
+
+    assert dialog._suggested_binning() == 1
+    assert dialog._canvas_for_binning is not None
+
+
+def test_tile_layout_dialog_builds_a_stage_position_layout(qtbot, monkeypatch):
+    """A successful stage-position read becomes the geometry directly."""
+    import napari_phasors._stitching as stitching
+    from napari_phasors._utils import TileLayoutDialog
+
+    paths = ["tile_a.ome.tif", "tile_b.ome.tif"]
+
+    def fake_stage_position(path):
+        # Two tiles side by side, 16 um apart, at 1 um per pixel.
+        return (0.0, 16.0 if path.endswith("b.ome.tif") else 0.0, 1.0, 1.0)
+
+    monkeypatch.setattr(stitching, "_read_stage_position", fake_stage_position)
+
+    dialog = TileLayoutDialog(paths, tile_shape=(16, 16))
+    qtbot.addWidget(dialog)
+    dialog.source_combo.setCurrentIndex(dialog.source_combo.findData("stage"))
+
+    geometry = dialog.get_geometry()
+    assert geometry is not None
+    assert len(geometry.placements) == 2
+    assert "2 tile(s)" in dialog.status_label.text()
+
+
+def test_unassigned_layer_is_excluded_from_groups(qtbot):
+    """A layer left out of every group must not be folded into group 1."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    rng = np.random.default_rng(1)
+    datasets = {
+        "G1::a": rng.normal(0.3, 0.05, 500),
+        "G1::b": rng.normal(0.32, 0.05, 500),
+        "orphan": rng.normal(5.0, 0.05, 500),
+    }
+    # "orphan" is deliberately missing from the assignments.
+    widget._group_assignments = {"G1::a": 1, "G1::b": 1}
+    widget._group_names = {1: "Group 1"}
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(datasets)
+
+    groups, unassigned = split_items_by_group(
+        widget._counts_per_dataset, widget._group_assignments
+    )
+    assert unassigned == ["orphan"]
+    assert sorted(label for label, _ in groups[1]) == ["G1::a", "G1::b"]
+
+    # Only the single grouped curve is drawn.
+    assert len(widget.ax.lines) == 1
+
+
+def test_unassigned_layer_excluded_from_grouped_csv(
+    qtbot, tmp_path, monkeypatch
+):
+    """Grouped CSV export ignores layers with no group assignment."""
+    from qtpy.QtWidgets import QFileDialog
+
+    widget = HistogramWidget(bins=2)
+    qtbot.addWidget(widget)
+
+    csv_file = tmp_path / "grouped.csv"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(csv_file), ""),
+    )
+
+    widget.update_multi_data(
+        {
+            "Layer 1": np.array([1.0, 1.0, 2.0]),
+            "Layer 2": np.array([1.0, 2.0, 2.0]),
+            "orphan": np.array([1.0, 1.0, 1.0]),
+        }
+    )
+    widget._display_mode = "Grouped"
+    widget._group_assignments = {"Layer 1": 1, "Layer 2": 1}
+    widget._group_names = {1: "MyGroup"}
+    widget._save_histogram_csv()
+
+    with open(csv_file, newline='') as f:
+        rows = list(csv.reader(f))
+
+    assert rows[0] == ['Bin Center', 'MyGroup Mean', 'MyGroup Std']
+    # Mean of the two grouped layers only; the orphan would have skewed it.
+    assert [float(r[1]) for r in rows[1:]] == [1.5, 1.5]
+
+
+def test_group_statistics_skip_unassigned_layers(qtbot):
+    """Pooled group statistics exclude layers without a group."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    datasets = {
+        "A": np.array([1.0, 1.0, 1.0]),
+        "orphan": np.array([100.0, 100.0, 100.0]),
+    }
+    bin_edges = np.linspace(0, 200, 5)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    table.update_group_statistics(
+        datasets,
+        {"A": 1},
+        group_names={1: "Only"},
+        bin_centers=bin_centers,
+        bin_edges=bin_edges,
+    )
+
+    assert table.rowCount() == 1
+    assert table.item(0, 0).text() == "Only"
+    # The mean is 1.0, not 50.5: the orphan never joined the group.
+    means = [
+        float(table.item(0, c).text())
+        for c in range(table.columnCount())
+        if table.horizontalHeaderItem(c).text().lower().startswith("mean")
+    ]
+    assert means and abs(means[0] - 1.0) < 1e-6
+
+
+def test_settings_dialog_warns_about_unassigned_layers(qtbot, monkeypatch):
+    """Accepting Grouped mode with unticked layers prompts before closing."""
+    from qtpy.QtWidgets import QMessageBox
+
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1},
+        group_names={1: "Group 1"},
+    )
+    qtbot.addWidget(dlg)
+
+    assert dlg.get_unassigned_layers() == ["B"]
+
+    calls = []
+
+    def fake_exec(self):
+        calls.append(self)
+        # Simulate clicking the default "Go back" button.
+        self._clicked = self.defaultButton()
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+    monkeypatch.setattr(
+        QMessageBox, "clickedButton", lambda self: self._clicked
+    )
+
+    dlg.accept()
+    assert len(calls) == 1
+    assert dlg.result() != QDialog.Accepted  # stayed open
+
+    # Choosing "Exclude them" (an AcceptRole button) closes the dialog.
+    def fake_exec_accept(self):
+        calls.append(self)
+        for btn in self.buttons():
+            if self.buttonRole(btn) == QMessageBox.AcceptRole:
+                self._clicked = btn
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec_accept)
+    dlg.accept()
+    assert dlg.result() == QDialog.Accepted
+
+
+def test_settings_dialog_no_warning_when_all_assigned(qtbot, monkeypatch):
+    """No prompt appears when every layer belongs to a group."""
+    from qtpy.QtWidgets import QMessageBox
+
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1, "B": 2},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dlg)
+
+    def fail_exec(self):
+        raise AssertionError("no warning expected")
+
+    monkeypatch.setattr(QMessageBox, "exec", fail_exec)
+    dlg.accept()
+    assert dlg.result() == QDialog.Accepted
+
+
+def test_group_rows_are_mutually_exclusive(qtbot):
+    """Checking a layer in one group removes it from the other dropdowns."""
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B", "C"],
+        group_assignments={"A": 1, "B": 2},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dlg)
+
+    row1, row2 = dlg._group_row_data
+    combo1 = row1["layer_combo"]
+    combo2 = row2["layer_combo"]
+
+    # Each row offers only the free layers plus the ones it owns.
+    assert combo1.visibleItems() == ["A", "C"]
+    assert combo2.visibleItems() == ["B", "C"]
+    # Hiding never removes an item from the model.
+    assert combo1.allItems() == ["A", "B", "C"]
+
+    # Claiming the free layer for group 2 takes it out of group 1's list.
+    combo2.setCheckedItems(["B", "C"])
+    assert combo1.visibleItems() == ["A"]
+    assert combo2.visibleItems() == ["B", "C"]
+    assert dlg.get_group_assignments() == {"A": 1, "B": 2, "C": 2}
+
+    # Releasing it offers it to both rows again.
+    combo2.setCheckedItems(["B"])
+    assert combo1.visibleItems() == ["A", "C"]
+    assert combo2.visibleItems() == ["B", "C"]
+    assert dlg.get_unassigned_layers() == ["C"]
+
+
+def test_removing_a_group_frees_its_layers(qtbot):
+    """Layers of a removed group become selectable again."""
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1, "B": 2},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dlg)
+
+    row1, row2 = dlg._group_row_data
+    assert row1["layer_combo"].visibleItems() == ["A"]
+
+    dlg._on_remove_group(row2["container"])
+
+    assert len(dlg._group_row_data) == 1
+    assert row1["layer_combo"].visibleItems() == ["A", "B"]
+    assert dlg.get_group_assignments() == {"A": 1}
+
+
+def test_new_group_row_hides_claimed_layers(qtbot):
+    """A group added later only offers the layers nobody claimed."""
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B", "C"],
+        group_assignments={"A": 1, "B": 1},
+        group_names={1: "G1"},
+    )
+    qtbot.addWidget(dlg)
+
+    dlg._on_add_group()
+
+    assert len(dlg._group_row_data) == 2
+    assert dlg._group_row_data[1]["layer_combo"].visibleItems() == ["C"]
+
+
+def test_duplicate_assignment_is_resolved_to_one_group(qtbot):
+    """A layer ticked in two rows ends up owned by the first one only."""
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dlg)
+
+    row1, row2 = dlg._group_row_data
+    # Force the state the UI now prevents: "A" claimed by both rows.
+    row2["layer_combo"].setCheckedItems(["A"])
+
+    assert dlg.get_group_assignments() == {"A": 1}
+    assert row2["layer_combo"].checkedItems() == []
+    assert row2["layer_combo"].visibleItems() == ["B"]
+
+
+def test_checkable_combobox_hidden_items_roundtrip(qtbot):
+    """setHiddenItems hides rows without touching the model or check state."""
+    from napari_phasors._utils import CheckableComboBox
+
+    combo = CheckableComboBox(enable_primary_layer=False)
+    qtbot.addWidget(combo)
+    combo.addItems(["A", "B", "C"])
+    combo.setCheckedItems(["B"])
+
+    combo.setHiddenItems(["A", "C"])
+    assert combo.hiddenItems() == {"A", "C"}
+    assert combo.visibleItems() == ["B"]
+    assert combo.allItems() == ["A", "B", "C"]
+    assert combo.checkedItems() == ["B"]
+    assert combo.view().isRowHidden(0)
+    assert not combo.view().isRowHidden(1)
+
+    combo.setHiddenItems([])
+    assert combo.visibleItems() == ["A", "B", "C"]
+    assert not combo.view().isRowHidden(0)
+
+
+def test_checkable_combobox_clear_drops_hidden_rows(qtbot):
+    """Refilling a combobox after clear() must not inherit hidden rows."""
+    from napari_phasors._utils import CheckableComboBox
+
+    combo = CheckableComboBox(enable_primary_layer=False)
+    qtbot.addWidget(combo)
+    combo.addItems(["A", "B"])
+    combo.setHiddenItems(["A"])
+
+    combo.clear()
+    combo.addItems(["X", "Y"])
+
+    assert combo.hiddenItems() == set()
+    assert combo.visibleItems() == ["X", "Y"]
+    assert not combo.view().isRowHidden(0)
+
+
+def _masked_setup(viewer, mask=None, labels=None, invert=False, data=None):
+    """Add a labels mask plus a masked image layer and return their data.
+
+    Mirrors what the mask controls of the Phasor Plot widget leave behind:
+    the mask array, its invert flag and the selected labels stored on the
+    analysed image layer's metadata.
+    """
+    if mask is None:
+        mask = np.zeros((6, 6), dtype=int)
+        mask[:3, :] = 1
+        mask[3:, :3] = 2
+    viewer.add_labels(mask, name="mask")
+    if data is None:
+        data = np.arange(mask.size, dtype=float).reshape(mask.shape)
+    image = viewer.add_image(data, name="img")
+    image.metadata['mask'] = mask
+    image.metadata['mask_invert'] = invert
+    if labels is not None:
+        image.metadata['mask_labels'] = labels
+    return mask, data
+
+
+def test_mask_label_values_reads_the_layer_metadata(make_viewer_model):
+    """The labels a masked layer is analysed with come from its metadata."""
+    from napari_phasors._utils import mask_label_values
+
+    viewer = make_viewer_model()
+    mask, _data = _masked_setup(viewer)
+    image = viewer.layers["img"]
+
+    # No explicit selection means every label of the mask.
+    assert mask_label_values(image.metadata) == [1, 2]
+
+    image.metadata['mask_labels'] = [2]
+    assert mask_label_values(image.metadata) == [2]
+
+    # No label selected is treated as no masking at all.
+    image.metadata['mask_labels'] = []
+    assert mask_label_values(image.metadata) == []
+
+    # An inverted mask analyses the complement of the labels, which is one
+    # region however many labels it was built from.
+    image.metadata['mask_labels'] = None
+    image.metadata['mask_invert'] = True
+    assert mask_label_values(image.metadata) == []
+
+    assert mask_label_values({}) == []
+
+
+def test_split_data_by_mask_labels_extracts_each_region():
+    """Splitting keeps every label's pixels and drops the rest."""
+    from napari_phasors._utils import split_data_by_mask_labels
+
+    mask = np.array([[0, 1], [2, 2]])
+    data = np.array([[10.0, 11.0], [12.0, 13.0]])
+
+    parts = split_data_by_mask_labels(data, mask, [1, 2])
+    assert set(parts) == {1, 2}
+    np.testing.assert_array_equal(parts[1], [11.0])
+    np.testing.assert_array_equal(parts[2], [12.0, 13.0])
+
+    # Labels with no pixel are left out entirely.
+    assert split_data_by_mask_labels(data, mask, [3]) == {}
+
+    # keep_shape keeps the layer's geometry for callers that slice frames.
+    shaped = split_data_by_mask_labels(data, mask, [1], keep_shape=True)
+    assert shaped[1].shape == data.shape
+    assert np.isnan(shaped[1]).sum() == 3
+
+    # A mask that does not line up with the data cannot split it.
+    assert split_data_by_mask_labels(data, mask[:1], [1]) == {}
+
+
+def test_histogram_widget_splits_one_layer_per_mask_label(
+    make_viewer_model, qtbot
+):
+    """Separating mask labels turns one layer into one dataset per label."""
+    viewer = make_viewer_model()
+    mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    assert widget.mask_label_split_available()
+    assert not widget.mask_label_split_active()
+    assert list(widget._datasets) == ["Lifetime: img"]
+
+    widget.split_by_mask_labels = True
+
+    assert widget.mask_label_split_active()
+    assert list(widget._datasets) == [
+        "Lifetime: img – label 1",
+        "Lifetime: img – label 2",
+    ]
+    # Every masked pixel is accounted for exactly once.
+    assert sum(len(v) for v in widget._datasets.values()) == int(
+        (mask > 0).sum()
+    )
+    np.testing.assert_array_equal(
+        widget._datasets["Lifetime: img – label 2"],
+        np.sort(data[mask == 2]),
+    )
+    # Grouping still sees the analysed layer behind both curves.
+    assert widget._group_source_names() == ["img"]
+    # The curves take the colours napari paints the labels with.
+    assert set(widget._mask_label_colors) == set(widget._datasets)
+
+    widget.split_by_mask_labels = False
+    assert list(widget._datasets) == ["Lifetime: img"]
+    assert not widget.mask_label_split_active()
+
+
+def test_histogram_widget_split_needs_several_selected_labels(
+    make_viewer_model, qtbot
+):
+    """One selected label, an inverted mask or no mask offer no split."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer, labels=[2])
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    assert not widget.mask_label_split_available()
+
+    widget.split_by_mask_labels = True
+    assert list(widget._datasets) == ["Lifetime: img"]
+    assert not widget.mask_label_split_active()
+
+    # Selecting both labels makes it available without re-feeding the data.
+    viewer.layers["img"].metadata['mask_labels'] = [1, 2]
+    assert widget.mask_label_split_available()
+
+
+def test_histogram_widget_split_leaves_unmasked_layers_whole(
+    make_viewer_model, qtbot
+):
+    """A selection mixing masked and unmasked layers keeps them all."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    plain = np.linspace(0.0, 1.0, 36).reshape(6, 6)
+    viewer.add_image(plain, name="plain")
+
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"A": "img", "B": "plain"})
+    widget.split_by_mask_labels = True
+    widget.update_multi_data({"A": data, "B": plain})
+
+    assert list(widget._datasets) == [
+        "A – label 1",
+        "A – label 2",
+        "B",
+    ]
+
+
+def test_histogram_widget_split_survives_a_rename(make_viewer_model, qtbot):
+    """Renaming the analysed dataset renames its per-label curves too."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+    widget.split_by_mask_labels = True
+    widget._layer_colors["Lifetime: img – label 1"] = (1.0, 0.0, 0.0)
+
+    widget.rename_dataset("Lifetime: img", "Phase: img")
+
+    assert list(widget._datasets) == [
+        "Phase: img – label 1",
+        "Phase: img – label 2",
+    ]
+    assert widget._layer_colors["Phase: img – label 1"] == (1.0, 0.0, 0.0)
+    assert widget._dataset_sources["Phase: img – label 2"] == "img"
+
+
+def test_histogram_settings_dialog_offers_the_split(qtbot):
+    """The checkbox only shows when it applies, and picks a useful mode."""
+    dlg = HistogramSettingsDialog(layer_labels=["A"])
+    qtbot.addWidget(dlg)
+    assert not dlg.split_labels_checkbox.isVisible()
+
+    dlg = HistogramSettingsDialog(
+        layer_labels=["A"], split_mask_labels_available=True
+    )
+    qtbot.addWidget(dlg)
+    dlg.show()
+    assert dlg.split_labels_checkbox.isVisible()
+    assert dlg.mode_combo.currentText() == "Merged"
+
+    # Merged cannot tell the labels apart, so enabling the split moves to
+    # the mode that draws one outline each.
+    dlg.split_labels_checkbox.setChecked(True)
+    assert dlg.mode_combo.currentText() == "Individual layers"
+
+    # An explicit mode choice is never overridden.
+    dlg.mode_combo.setCurrentText("Grouped")
+    dlg.split_labels_checkbox.setChecked(False)
+    dlg.split_labels_checkbox.setChecked(True)
+    assert dlg.mode_combo.currentText() == "Grouped"
+
+
+def test_histogram_settings_dialog_applies_the_split(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """Accepting the dialog with the box ticked re-splits the datasets."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    def _accept(self):
+        self.split_labels_checkbox.setChecked(True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, "exec", _accept)
+    widget._open_settings_dialog()
+
+    assert widget.split_by_mask_labels
+    assert widget.display_mode == "Individual layers"
+    assert list(widget._datasets) == [
+        "Lifetime: img – label 1",
+        "Lifetime: img – label 2",
+    ]
+
+
+def test_statistics_table_shows_a_row_per_mask_label(make_viewer_model, qtbot):
+    """The statistics dock follows the histogram into per-label rows."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    assert dock.layer_stats_table.rowCount() == 1
+
+    widget.split_by_mask_labels = True
+
+    table = dock.layer_stats_table
+    assert table.rowCount() == 2
+    assert [table.item(row, 0).text() for row in range(2)] == [
+        "Lifetime: img – label 1",
+        "Lifetime: img – label 2",
+    ]
+    assert dock.layer_stats_section._title == "Label Statistics"
+    # Each row summarises only its own label.
+    assert float(table.item(0, 2).text()) == np.mean(data[_mask == 1])
+
+
+def test_statistics_rows_per_mask_label_with_several_quantities(
+    make_viewer_model, qtbot
+):
+    """Two quantities of one layer keep one row per label, not per curve."""
+    viewer = make_viewer_model()
+    mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"C1: img": "img", "C2: img": "img"})
+    widget.set_dataset_series({"C1: img": "C1", "C2: img": "C2"})
+    widget.split_by_mask_labels = True
+    widget.update_multi_data({"C1: img": data, "C2: img": data * 2})
+
+    rows, names = widget.series_statistics_datasets()
+
+    assert names == ["C1", "C2"]
+    assert list(rows) == ["img – label 1", "img – label 2"]
+    assert set(rows["img – label 1"]) == {"C1", "C2"}
+    np.testing.assert_array_equal(
+        np.sort(rows["img – label 2"]["C2"]),
+        np.sort(data[mask == 2] * 2),
+    )
+
+
+def test_statistics_dock_offers_the_split(make_viewer_model, qtbot):
+    """The table's own checkbox drives (and follows) the histogram."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+    dock.show()
+
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+    assert dock.split_labels_checkbox.isVisible()
+
+    dock.split_labels_checkbox.setChecked(True)
+    assert widget.split_by_mask_labels
+    assert dock.layer_stats_table.rowCount() == 2
+
+    # Switching it off in the histogram is reflected back in the table.
+    widget.split_by_mask_labels = False
+    assert not dock.split_labels_checkbox.isChecked()
+    assert dock.layer_stats_table.rowCount() == 1
+
+    # An unmasked layer has nothing to separate, so nothing is offered.
+    plain = np.linspace(0.0, 1.0, 36).reshape(6, 6)
+    viewer.add_image(plain, name="plain")
+    widget.set_dataset_sources({"Lifetime: plain": "plain"})
+    widget.update_data(plain, label="Lifetime: plain")
+    assert not dock.split_labels_checkbox.isVisible()
+
+
+def test_checkable_combobox_popup_width_independent_of_widget_width(qtbot):
+    """Test that the popup list is wide enough to display items fully,
+    even when the combobox widget itself is extremely narrow (e.g. in a dock).
+    """
+    from qtpy.QtCore import QPointF, Qt
+    from qtpy.QtGui import QMouseEvent
+    from qtpy.QtWidgets import QVBoxLayout, QWidget
+
+    from napari_phasors._utils import CheckableComboBox
+
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    layout = QVBoxLayout(parent)
+    combo = CheckableComboBox(enable_primary_layer=False, unit="labels")
+    combo.addItems([str(i) for i in range(1, 15)])
+    layout.addWidget(combo)
+
+    # Force combobox to be very narrow, simulating narrow dock widget
+    combo.setFixedWidth(35)
+    parent.show()
+
+    combo.showPopup()
+    try:
+        # The popup view width must not be restricted to the 35px combobox width
+        view_width = combo.view().width()
+        assert view_width >= 150
+
+        # Checkboxes are visible and interactive
+        view = combo.view()
+        rect0 = view.visualRect(combo.model().index(0, 0))
+        pt = QPointF(rect0.center())
+        from qtpy.QtCore import QEvent
+
+        press_evt = QMouseEvent(
+            QEvent.MouseButtonPress,
+            pt,
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        release_evt = QMouseEvent(
+            QEvent.MouseButtonRelease,
+            pt,
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        combo.eventFilter(view.viewport(), press_evt)
+        combo.eventFilter(view.viewport(), release_evt)
+        assert combo.checkedItems() == ["1"]
+    finally:
+        combo.hidePopup()
+
+    # Test with long label items
+    combo2 = CheckableComboBox(enable_primary_layer=False, unit="labels")
+    qtbot.addWidget(combo2)
+    long_text = "Label 1 - Very Long Label Description That Needs Wide Popup"
+    combo2.addItems([long_text, "2"])
+    combo2.setFixedWidth(30)
+    combo2.show()
+
+    combo2.showPopup()
+    try:
+        assert combo2.view().width() >= 200
+    finally:
+        combo2.hidePopup()
+
+
+class _AutoUpdateTab(AutoUpdateMixin, QWidget):
+    """Minimal tab exercising the shared Autoupdate behaviour."""
+
+    def __init__(self, reason=None):
+        super().__init__()
+        self.reason = reason
+        self.runs = 0
+        self.button = QPushButton("Run")
+        self._build_autoupdate_toggle(
+            self.button, self._validate, self._run, "tooltip"
+        )
+
+    def _validate(self):
+        return self.reason
+
+    def _run(self):
+        self.runs += 1
+        # An analysis writes layers and metadata, which fires the very
+        # signals that asked for it; the mixin must not recurse.
+        self.request_autoupdate()
+
+
+def test_autoupdate_is_off_until_the_toggle_is_flipped(qtbot):
+    """No automatic run happens while the toggle is off."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    assert not tab.autoupdate_enabled()
+    assert tab.request_autoupdate() is False
+    assert tab.runs == 0
+    assert tab.button.isEnabled()
+    assert tab.autoupdate_check.toolTip() == "tooltip"
+
+
+def test_autoupdate_runs_on_enable_and_disables_the_run_button(qtbot):
+    """Turning the switch on runs once and hands the button over."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+
+    assert tab.autoupdate_enabled()
+    assert tab.runs == 1
+    assert not tab.button.isEnabled()
+
+    assert tab.request_autoupdate() is True
+    assert tab.runs == 2
+
+
+def test_autoupdate_re_enables_the_run_button_when_switched_off(qtbot):
+    """Switching back off restores manual operation without running."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+    tab.autoupdate_check.setChecked(False)
+
+    assert not tab.autoupdate_enabled()
+    assert tab.button.isEnabled()
+    assert tab.runs == 1
+
+
+def test_autoupdate_skips_incomplete_inputs(qtbot):
+    """A validator complaint blocks the automatic run, unlike a click."""
+    tab = _AutoUpdateTab(reason="Enter a frequency.")
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+
+    assert tab.autoupdate_enabled()
+    assert tab.runs == 0
+
+    tab.reason = None
+    assert tab.request_autoupdate() is True
+    assert tab.runs == 1
+
+
+def test_autoupdate_does_not_recurse(qtbot):
+    """A run that requests another autoupdate is ignored while it runs."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+
+    # ``_run`` calls ``request_autoupdate`` itself; only one run happened.
+    assert tab.runs == 1
+
+
+def test_autoupdate_is_inert_before_the_toggle_is_built(qtbot):
+    """A tab that never built the toggle can still be asked to update."""
+
+    class _Bare(AutoUpdateMixin, QWidget):
+        pass
+
+    tab = _Bare()
+    qtbot.addWidget(tab)
+
+    assert tab.request_autoupdate() is False
+    tab._autoupdate_enabled = True
+    assert tab.request_autoupdate() is False
+
+
+def test_warning_pixmap_keeps_its_logical_size_on_hidpi():
+    """The helper never pre-scales: the ratio stays the icon engine's own.
+
+    ``QIcon.pixmap`` takes a *logical* size and tags what it returns with the
+    ratio of the denser pixels it rendered. Pre-scaling the request and then
+    re-stamping the ratio doubles the triangle, which then overflows the
+    content rect napari's stylesheet gives ``#error_label`` and is clipped
+    into an unrecognisable wedge.
+    """
+    pixmap = warning_pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert (pixmap.height() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert pixmap.width() == pytest.approx(WARNING_ICON_SIZE * dpr)
+
+    smaller = warning_pixmap(size=8)
+    smaller_dpr = smaller.devicePixelRatio() or 1.0
+    assert (smaller.width() / smaller_dpr) == pytest.approx(8)
+
+
+def test_experimental_banner_icon_fits_its_label(qtbot):
+    """Every banner the factory builds keeps the triangle inside its box."""
+    banner = make_experimental_warning("Unproven; switch it off and report.")
+    qtbot.addWidget(banner)
+
+    assert banner.icon_label.objectName() == "error_label"
+    assert banner.text_label.text() == "Experimental"
+    assert "report" in banner.icon_label.toolTip()
+    assert "image: none" in banner.icon_label.styleSheet()
+
+    pixmap = banner.icon_label.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+
+
+def test_histogram_settings_dialog_log_scale_and_bins_controls(qtbot):
+    """The dialog starts from the given log-scale and bin settings."""
+    dlg = HistogramSettingsDialog(log_scale=True, bins=42)
+    qtbot.addWidget(dlg)
+    assert dlg.log_scale_checkbox.isChecked()
+    assert dlg.bins_spinbox.value() == 42
+
+    # Out-of-range values are clamped to what the spinbox offers.
+    dlg = HistogramSettingsDialog(bins=1)
+    qtbot.addWidget(dlg)
+    assert not dlg.log_scale_checkbox.isChecked()
+    assert dlg.bins_spinbox.value() == HistogramSettingsDialog.MIN_BINS
+
+
+def test_histogram_widget_log_scale_keeps_empty_bins_on_baseline(qtbot):
+    """On the log axis an empty bin sits on zero instead of dropping out."""
+    widget = HistogramWidget(bins=20)
+    qtbot.addWidget(widget)
+    # Two clusters with empty bins between them.
+    data = np.concatenate([np.full(1000, 1.0), np.full(3, 9.0)])
+    widget.update_data(data)
+    assert widget.ax.get_yscale() == "linear"
+    assert np.any(widget.counts == 0)
+
+    widget.log_scale = True
+
+    assert widget.ax.get_yscale() == "symlog"
+    assert widget.ax.get_ylim()[0] == 0
+    # Linear below one pixel, so zero maps to the bottom of the axes.
+    assert widget.ax.yaxis.get_transform().linthresh == 1.0
+    zero_y = widget.ax.transData.transform((5.0, 0.0))[1]
+    bottom_y = widget.ax.transAxes.transform((0.0, 0.0))[1]
+    assert np.isfinite(zero_y)
+    assert zero_y == pytest.approx(bottom_y)
+
+    # Autoscaled modes do not leave a negative margin on the log axis.
+    widget.display_mode = "Individual layers"
+    widget.update_multi_data({"A": data, "B": data + 1})
+    assert widget.ax.get_yscale() == "symlog"
+    assert widget.ax.get_ylim()[0] == 0
+
+    widget.log_scale = False
+    assert widget.ax.get_yscale() == "linear"
+
+
+def test_histogram_settings_dialog_applies_log_scale_and_bins(
+    qtbot, monkeypatch
+):
+    """Accepting the dialog re-bins the data and switches the y axis."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+    widget.update_data(np.linspace(0.0, 1.0, 500))
+
+    seen = {}
+
+    def fake_exec(self):
+        seen['bins'] = self.bins_spinbox.value()
+        seen['log'] = self.log_scale_checkbox.isChecked()
+        self.bins_spinbox.setValue(25)
+        self.log_scale_checkbox.setChecked(True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    widget._open_settings_dialog()
+
+    assert seen == {'bins': 10, 'log': False}
+    assert widget.bins == 25
+    assert len(widget.counts) == 25
+    assert widget.log_scale
+    assert widget.ax.get_yscale() == "symlog"
+
+
+def test_histogram_widget_set_bins_rehistograms(qtbot):
+    """Changing the bins recomputes every dataset on the new bins."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+    rng = np.random.default_rng(0)
+    widget.update_multi_data(
+        {"A": rng.normal(0, 1, 300), "B": rng.normal(1, 1, 300)}
+    )
+
+    widget.set_bins(30)
+
+    assert len(widget.counts) == 30
+    assert all(len(c) == 30 for c in widget._counts_per_dataset.values())
+    with pytest.raises(ValueError):
+        widget.set_bins(0)
+
+
+def test_layer_colormap_settings_roundtrip():
+    """Colormaps survive being stored in settings and read back."""
+    import json
+
+    from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
+
+    from napari_phasors._utils import (
+        layer_colormap_from_settings,
+        layer_colormap_to_settings,
+    )
+
+    entry = layer_colormap_to_settings(AVAILABLE_COLORMAPS['magma'], 0.5)
+    json.dumps(entry)  # must be writable to the OME-TIFF settings
+    assert entry['colormap_name'] == 'magma'
+    assert entry['gamma'] == 0.5
+    assert layer_colormap_from_settings(entry) == 'magma'
+
+    custom = Colormap(
+        colors=[[0, 0, 0, 1], [0.2, 0.4, 0.6, 1]],
+        name='napari_phasors_test_unregistered',
+    )
+    restored = layer_colormap_from_settings(layer_colormap_to_settings(custom))
+    assert isinstance(restored, Colormap)
+    np.testing.assert_allclose(restored.colors, custom.colors)
+
+    assert layer_colormap_from_settings(None) is None
+    assert (
+        layer_colormap_from_settings(
+            {'colormap_name': 'no_such_colormap', 'colormap_colors': None}
+        )
+        is None
+    )

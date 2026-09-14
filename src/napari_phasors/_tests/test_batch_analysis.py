@@ -7,6 +7,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 from napari.layers import Image
+from qtpy.QtWidgets import QDoubleSpinBox
 
 from napari_phasors._batch_analysis import (
     BatchAnalysisWidget,
@@ -934,6 +935,117 @@ def test_mapping_mesh_ranges_collected(qtbot, make_viewer_model):
         assert job["overlay"]["mesh_clip_semicircle"] is False
 
 
+def test_mapping_lifetime_mesh_plot_jobs(qtbot, make_viewer_model):
+    """Checked lifetime meshes become mesh plot jobs with their range."""
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget.mapping_group.setChecked(True)
+    widget.mapping_plot_toggle.setChecked(True)
+    widget.mapping_range_auto_checkbox.setChecked(False)
+    assert widget.mapping_lifetime_min_spin.isEnabled()
+    widget.mapping_mesh_lifetime_checkboxes["Normal Lifetime"].setChecked(True)
+    widget.mapping_lifetime_min_spin.setValue(1.5)
+    widget.mapping_lifetime_max_spin.setValue(4.0)
+    widget.mapping_frequency_spin.setText("80")
+    widget.mapping_harmonic_spin.setValue(1)
+
+    mapping = widget._collect_mapping()
+    assert "Normal Lifetime" in mapping["meshes"]
+    assert mapping["mesh_lifetime_ranges"] == {"Normal Lifetime": (1.5, 4.0)}
+
+    jobs = widget._collect_plot_jobs(widget.build_pipeline([1, 2]))
+    job = next(
+        j for j in jobs if j["suffix"] == "mapping_phasor_normal_lifetime_mesh"
+    )
+    overlay = job["overlay"]
+    assert overlay["mesh"] == "Normal Lifetime"
+    assert overlay["mesh_frequency"] == 80.0
+    assert overlay["mesh_lifetime_ranges"] == {"Normal Lifetime": (1.5, 4.0)}
+
+    # Without a frequency there is no lifetime to draw, so no mesh plot.
+    widget.mapping_frequency_spin.setText("")
+    jobs = widget._collect_plot_jobs(widget.build_pipeline([1, 2]))
+    assert "mapping_phasor_normal_lifetime_mesh" not in [
+        j["suffix"] for j in jobs
+    ]
+
+
+def test_lifetime_mesh_uses_each_plots_harmonic():
+    """A harmonic-n plot draws its lifetime mesh at n times the frequency."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from phasorpy.plot import PhasorPlot
+
+    from napari_phasors._batch_analysis import (
+        _draw_mapping_overlay_mesh,
+        _overlay_for_harmonic,
+    )
+
+    overlay = {
+        "kind": "mapping",
+        "mesh": "Apparent Phase Lifetime",
+        "mesh_frequency": 80.0,
+        "mesh_harmonic": 1,
+        "mesh_lifetime_ranges": {"Apparent Phase Lifetime": (1.0, 3.0)},
+        "mesh_phase_range": (0.0, 0.2),
+        "mesh_modulation_range": (0.0, 0.5),
+    }
+    assert _overlay_for_harmonic(overlay, 2)["mesh_harmonic"] == 2
+    assert overlay["mesh_harmonic"] == 1  # the job's overlay is untouched
+    assert _overlay_for_harmonic(None, 2) is None
+
+    plot = PhasorPlot()
+    with patch("napari_phasors.phasor_mapping_tab.draw_phasor_mesh") as draw:
+        _draw_mapping_overlay_mesh(
+            plot, _overlay_for_harmonic(overlay, 2), {}, dpi=72
+        )
+    kwargs = draw.call_args.kwargs
+    assert kwargs["frequency"] == 160.0
+    assert kwargs["lifetime_range"] == (1.0, 3.0)
+    # A lifetime mesh is restricted by its lifetime range alone.
+    assert kwargs["phase_range"] is None
+    assert kwargs["modulation_range"] is None
+
+    # No frequency: nothing is drawn.
+    with patch("napari_phasors.phasor_mapping_tab.draw_phasor_mesh") as draw:
+        _draw_mapping_overlay_mesh(
+            plot, {**overlay, "mesh_frequency": 0}, {}, dpi=72
+        )
+    draw.assert_not_called()
+
+
+def test_lifetime_mesh_phasor_plot_png(tmp_path):
+    """A phasor plot with a lifetime mesh overlay renders to a PNG."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from napari_phasors._batch_analysis import _save_phasor_plot_png
+
+    rng = np.random.default_rng(0)
+    real = rng.uniform(0.3, 0.8, 200)
+    imag = rng.uniform(0.2, 0.45, 200)
+    path = tmp_path / "mesh.png"
+    _save_phasor_plot_png(
+        real,
+        imag,
+        {"semi_circle": True, "plot_type": "Scatter"},
+        {
+            "kind": "mapping",
+            "color_by": "None",
+            "mesh": "Apparent Modulation Lifetime",
+            "mesh_frequency": 80.0,
+            "mesh_harmonic": 1,
+            "mesh_lifetime_ranges": {
+                "Apparent Modulation Lifetime": (1.0, 4.0)
+            },
+        },
+        str(path),
+        dpi=72,
+    )
+    assert path.exists() and path.stat().st_size > 0
+
+
 def test_draw_phasor_mesh_keeps_square_aspect():
     """The shared mesh helper restores a 1:1 data aspect (no distortion)."""
     import matplotlib
@@ -1421,6 +1533,51 @@ def test_group_for_modes(qtbot, make_viewer_model):
     }
     assert widget._group_for("a.ome.tif") == (1, "Ctrl", "#ff0000")
     assert widget._group_for("b.ome.tif") == (2, "Treated", "#0000ff")
+    # A file assigned to no group joins none, rather than falling into
+    # group 1 and corrupting its combined output.
+    assert widget._group_for("c.ome.tif") == (None, None, None)
+
+
+def test_warn_unassigned_files_before_grouped_run(
+    qtbot, make_viewer_model, monkeypatch
+):
+    """A grouped run names the scanned files that belong to no group."""
+    import napari_phasors._batch_analysis as batch_mod
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    warnings = []
+    monkeypatch.setattr(
+        batch_mod, "show_warning", lambda msg: warnings.append(msg)
+    )
+
+    files = ["/data/a.ome.tif", "/data/b.ome.tif", "/data/new.ome.tif"]
+
+    # Merged mode says nothing.
+    widget._group_config = {"mode": "Merged"}
+    widget._warn_unassigned_files(files)
+    assert warnings == []
+
+    widget._group_config = {
+        "mode": "Grouped",
+        "assignments": {"a.ome.tif": 1, "b.ome.tif": 2},
+    }
+    widget._warn_unassigned_files(files)
+    assert len(warnings) == 1
+    assert "new.ome.tif" in warnings[0]
+
+    # Nothing to report once every file has a group.
+    warnings.clear()
+    widget._group_config["assignments"]["new.ome.tif"] = 1
+    widget._warn_unassigned_files(files)
+    assert warnings == []
+
+    # Grouped mode with nothing assigned at all names every file.
+    widget._group_config = {"mode": "Grouped", "assignments": {}}
+    widget._warn_unassigned_files(files)
+    assert len(warnings) == 1
+    assert "a.ome.tif" in warnings[0]
 
 
 def test_contour_key_styles_grouped(qtbot, make_viewer_model):
@@ -2495,8 +2652,28 @@ def test_auto_mapping_ranges_uses_all_files(
     g, s = coords
     assert g.size > 0 and s.size > 0
 
+    # Pooled lifetime ranges, one per checked lifetime mesh.
+    widget.mapping_frequency_spin.setText("80")
+    _, _, lifetime_ranges = widget._resolve_mesh_ranges(
+        ["Apparent Phase Lifetime", "Normal Lifetime"]
+    )
+    assert set(lifetime_ranges) == {
+        "Apparent Phase Lifetime",
+        "Normal Lifetime",
+    }
+    for low, high in lifetime_ranges.values():
+        assert 0.0 <= low <= high <= 25.0  # capped at two 80 MHz periods
+
     # The Auto button must not raise (regression: it used self.layer_combo).
+    widget.mapping_mesh_lifetime_checkboxes["Normal Lifetime"].setChecked(True)
     widget._auto_mapping_ranges()
+    assert (
+        widget.mapping_lifetime_max_spin.value()
+        >= widget.mapping_lifetime_min_spin.value()
+    )
+    assert widget.mapping_lifetime_max_spin.value() == pytest.approx(
+        lifetime_ranges["Normal Lifetime"][1], abs=0.01
+    )
     assert (
         widget.mapping_phase_max_spin.value()
         >= widget.mapping_phase_min_spin.value()
@@ -3971,7 +4148,7 @@ def _fake_channel_results(profiles_by_channel):
     for channel, profile in profiles_by_channel:
         layer = Image(
             np.zeros((2, 2)),
-            name=f"f Intensity Image: Channel {channel}",
+            name=f"f Intensity: Channel {channel} [Phasor]",
             metadata={
                 "settings": {"channel": channel},
                 "_signal_profile": np.asarray(profile, dtype=float),
@@ -4392,3 +4569,127 @@ def test_color_plot_by_metric_falls_back_to_jet_when_resolution_fails(
 
     assert calls["n"] == 2
     assert plot.ax.kwargs["cmap"] is not None
+
+
+def test_batch_files_in_flight_is_bounded_by_the_workers(tmp_path):
+    """Twice the worker count keeps the pool fed without queueing the batch."""
+    from napari_phasors._batch_analysis import _batch_files_in_flight
+
+    files = []
+    for index in range(20):
+        path = tmp_path / f"{index}.bin"
+        path.write_bytes(b"x" * 1024)
+        files.append(str(path))
+
+    assert _batch_files_in_flight(files, 1) == 2
+    assert _batch_files_in_flight(files, 4) == 8
+    # Never zero, whatever is passed in.
+    assert _batch_files_in_flight(files, 0) == 1
+
+
+def test_batch_files_in_flight_drops_when_memory_is_tight(
+    tmp_path, monkeypatch
+):
+    """A machine that cannot hold 2N decoded files decodes fewer at once."""
+    from napari_phasors import _batch_analysis, _parallel
+    from napari_phasors._batch_analysis import _batch_files_in_flight
+
+    path = tmp_path / "big.bin"
+    path.write_bytes(b"x" * 4096)
+    files = [str(path)] * 8
+
+    monkeypatch.setattr(_batch_analysis, "items_for_memory", lambda *a, **k: 3)
+    assert _batch_files_in_flight(files, 8) == 3
+    # A cap looser than the structural bound leaves it alone.
+    monkeypatch.setattr(
+        _batch_analysis, "items_for_memory", lambda *a, **k: 999
+    )
+    assert _batch_files_in_flight(files, 2) == 4
+    # No reading at all means no cap.
+    monkeypatch.setattr(
+        _batch_analysis, "items_for_memory", lambda *a, **k: None
+    )
+    assert _batch_files_in_flight(files, 2) == 4
+    assert _parallel.memory_fraction() > 0
+
+
+def test_batch_files_in_flight_ignores_unreadable_paths(tmp_path):
+    """A path that cannot be stat'ed contributes nothing rather than raising."""
+    from napari_phasors._batch_analysis import _batch_files_in_flight
+
+    assert _batch_files_in_flight([str(tmp_path / "missing.bin")], 2) == 4
+
+
+def test_transparency_controls_are_stored_as_alpha(qtbot, make_viewer_model):
+    """The batch dialogs ask for transparency and store its complement.
+
+    The exported plots are drawn with matplotlib, whose ``alpha`` is opacity,
+    so every transparency control is inverted on the way into the settings.
+    """
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    widget.mapping_mesh_transparency_spin.setValue(0.25)
+    assert widget._collect_mapping()["mesh_alpha"] == pytest.approx(0.75)
+
+    controls = widget._plot_combined_controls
+    controls["marker_transparency"].setValue(0.4)
+    settings = widget._collect_plot_settings(mode="combined")
+    assert settings["marker_alpha"] == pytest.approx(0.6)
+
+
+def test_component_line_transparency_is_stored_as_alpha(
+    qtbot, make_viewer_model, monkeypatch
+):
+    """The line style dialog's transparency round-trips through ``line_alpha``."""
+    from qtpy.QtWidgets import QDialog
+
+    import napari_phasors._batch_analysis as ba
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._component_line_style["line_alpha"] = 0.4
+
+    seen = {}
+
+    def _accept(dialog):
+        # The spinbox shows transparency, i.e. the complement of the stored
+        # alpha; nudge it and confirm the inverse lands back in the style.
+        spin = dialog.findChildren(QDoubleSpinBox)
+        seen["values"] = [s.value() for s in spin]
+        return QDialog.Accepted
+
+    monkeypatch.setattr(ba.QDialog, "exec", _accept)
+    widget._open_component_line_style_dialog()
+
+    assert pytest.approx(0.6) in seen["values"]
+    assert widget._component_line_style["line_alpha"] == pytest.approx(0.4)
+
+
+def test_export_histogram_honours_log_scale_and_bins(qtbot, tmp_path):
+    """Batch histograms follow the log-scale and bin choices."""
+    from napari_phasors._batch_analysis import (
+        _new_export_histogram,
+        _save_histogram_png,
+        default_group_config,
+    )
+
+    config = default_group_config()
+    assert config["log_scale"] is False
+    assert config["bins"] == 150
+
+    config.update(log_scale=True, bins=40)
+    hw = _new_export_histogram(config, "Lifetime")
+    hw.update_data(np.random.default_rng(0).normal(size=500))
+    assert len(hw.counts) == 40
+    assert hw.ax.get_yscale() == "symlog"
+
+    path = tmp_path / "hist.png"
+    _save_histogram_png(
+        np.random.default_rng(1).normal(size=500),
+        30,
+        str(path),
+        "Lifetime",
+        log_scale=True,
+    )
+    assert path.exists()

@@ -1,7 +1,10 @@
 import json
+import os
+import warnings
 
 import numpy as np
 import pytest
+import tifffile
 import xarray as xr
 from phasorpy.datasets import fetch
 from phasorpy.io import (
@@ -32,7 +35,7 @@ def test_reader_ptu():
     )
     assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -83,7 +86,10 @@ def test_reader_ptu_nonzero_channel_label(monkeypatch):
     layer_data_list = reader_module.raw_file_reader("example.ptu")
 
     assert len(layer_data_list) == 1
-    assert layer_data_list[0][1]["name"].endswith("Channel 3")
+    assert (
+        layer_data_list[0][1]["name"]
+        == "example Intensity: Channel 3 [Phasor]"
+    )
     assert layer_data_list[0][1]["metadata"]["settings"]["channel"] == 3
 
 
@@ -105,7 +111,10 @@ def test_raw_reader_nonzero_channel_label(monkeypatch, extension):
     layer_data_list = reader_module.raw_file_reader(f"example{extension}")
 
     assert len(layer_data_list) == 1
-    assert layer_data_list[0][1]["name"].endswith("Channel 3")
+    assert (
+        layer_data_list[0][1]["name"]
+        == "example Intensity: Channel 3 [Phasor]"
+    )
     assert layer_data_list[0][1]["metadata"]["settings"]["channel"] == 3
 
 
@@ -204,7 +213,7 @@ def test_reader_fbd():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "test_file$EI0S Intensity Image: Channel 0"
+        == "test_file$EI0S Intensity: Channel 0 [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -250,7 +259,7 @@ def test_reader_fbd():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "test_file$EI0S Intensity Image: Channel 1"
+        == "test_file$EI0S Intensity: Channel 1 [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -303,7 +312,7 @@ def test_reader_sdt():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "seminal_receptacle_FLIM_single_image Intensity Image: Channel 0"
+        == "seminal_receptacle_FLIM_single_image Intensity: Channel 0 [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -350,7 +359,7 @@ def test_reader_lsm():
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -395,7 +404,7 @@ def test_reader_ometif():
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -439,7 +448,7 @@ def test_raw_reader_tiff_does_not_forward_widget_axis_option_to_imread(
     def fake_imread(path):
         return np.arange(24, dtype=np.float32).reshape(2, 3, 4)
 
-    def fake_phasor_from_signal(signal, axis, harmonic):
+    def fake_phasor_from_signal(signal, *, axis, harmonic):
         mean_image = np.zeros((2, 4), dtype=np.float32)
         g_image = np.zeros((2, 2, 4), dtype=np.float32)
         s_image = np.zeros((2, 2, 4), dtype=np.float32)
@@ -448,7 +457,7 @@ def test_raw_reader_tiff_does_not_forward_widget_axis_option_to_imread(
     monkeypatch.setattr(reader_module.tifffile, "imread", fake_imread)
     monkeypatch.setattr(
         reader_module,
-        "phasor_from_signal",
+        "parallel_phasor_from_signal",
         fake_phasor_from_signal,
     )
 
@@ -603,7 +612,7 @@ def test_reader_czi():
         layer_data_tuple[1], dict
     )
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity [Phasor]"
 
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -664,6 +673,87 @@ def test_reader_r64():
         assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
         layer_data = layer_data_list[0]
         assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_r64_harmonics_metadata():
+    """R64 files carry two harmonics but report none, so they are inferred.
+
+    ``phasor_from_simfcs_referenced`` returns no ``'harmonic'`` metadata.
+    Without inference the layer's ``harmonics`` would be None and downstream
+    analyses would mistake the harmonic axis of G/S for image data.
+    """
+    r64_file = fetch("simfcs.r64")
+    metadata = napari_get_reader(r64_file)(r64_file)[0][1]["metadata"]
+    assert metadata["harmonics"] == [1, 2]
+    assert metadata["G"].shape[0] == 2
+
+    metadata = napari_get_reader(r64_file, harmonics=1)(r64_file)[0][1][
+        "metadata"
+    ]
+    assert metadata["harmonics"] == 1
+    assert metadata["G"].ndim == 2
+
+    metadata = napari_get_reader(r64_file, harmonics=[2])(r64_file)[0][1][
+        "metadata"
+    ]
+    assert metadata["harmonics"] == [2]
+
+
+def test_processed_reader_defaults_to_first_two_harmonics(tmp_path):
+    """Processed files default to the first two harmonics, like raw files."""
+    from phasorpy.io import phasor_to_ometiff
+
+    mean = np.random.rand(8, 8).astype(np.float32)
+    real = np.random.rand(5, 8, 8).astype(np.float32)
+    imag = np.random.rand(5, 8, 8).astype(np.float32)
+    path = str(tmp_path / "five.ome.tif")
+    phasor_to_ometiff(path, mean, real, imag, harmonic=[1, 2, 3, 4, 5])
+
+    metadata = napari_get_reader(path)(path)[0][1]["metadata"]
+    assert metadata["harmonics"] == [1, 2]
+    assert metadata["G"].shape == (2, 8, 8)
+
+    # An explicit request is never trimmed.
+    metadata = napari_get_reader(path, harmonics="all")(path)[0][1]["metadata"]
+    assert metadata["harmonics"] == [1, 2, 3, 4, 5]
+    metadata = napari_get_reader(path, harmonics=[1, 3, 5])(path)[0][1][
+        "metadata"
+    ]
+    assert metadata["harmonics"] == [1, 3, 5]
+
+    # A file with a single harmonic is left alone.
+    path = str(tmp_path / "one.ome.tif")
+    phasor_to_ometiff(path, mean, real[0], imag[0], harmonic=1)
+    metadata = napari_get_reader(path)(path)[0][1]["metadata"]
+    assert metadata["harmonics"] == 1
+    assert metadata["G"].shape == (8, 8)
+
+
+def test_infer_harmonics_without_a_harmonic_axis():
+    """A single-harmonic read reports the number it was asked for."""
+    mean = np.zeros((4, 4))
+    real = np.zeros((4, 4))
+
+    assert reader_module._infer_harmonics(3, real, mean) == 3
+    # A non-integer request with no harmonic axis falls back to the first.
+    assert reader_module._infer_harmonics("all", real, mean) == 1
+    assert reader_module._infer_harmonics(True, real, mean) == 1
+
+
+def test_keep_first_harmonics_normalizes_a_scalar_harmonic():
+    """A scalar harmonic is widened to a list before the stack is trimmed."""
+    real = np.zeros((4, 8, 8))
+    imag = np.zeros((4, 8, 8))
+
+    trimmed_real, trimmed_imag, harmonics = (
+        reader_module._keep_first_harmonics(
+            real, imag, 1, mean_ndim=2, limit=2
+        )
+    )
+
+    assert trimmed_real.shape[0] == 2
+    assert trimmed_imag.shape[0] == 2
+    assert harmonics == [1]
 
 
 def test_reader_json_imaging():
@@ -995,7 +1085,7 @@ def test_raw_reader_multichannel_insufficient_samples_returns_empty(
 # --------------------------------------------------------------------------
 
 
-def _make_stack_layer(mean, g, s, name="f Intensity Image", summed=None):
+def _make_stack_layer(mean, g, s, name="f Intensity [Phasor]", summed=None):
     meta = {
         "original_mean": mean.copy(),
         "settings": {"channel": 0},
@@ -1063,7 +1153,7 @@ def test_stack_reader_success_2d_phasors(monkeypatch):
     assert meta["G"].shape == (3, 2, 2)
     assert meta["stack_files"] == ["a.lsm", "b.lsm", "c.lsm"]
     assert len(meta["summed_signal"]) == 3
-    assert "Stack Intensity Image" in kwargs["name"]
+    assert "Stack Intensity: Channel 0 [Phasor]" in kwargs["name"]
 
 
 def test_stack_reader_success_3d_phasors_preserves_colormap(monkeypatch):
@@ -1074,7 +1164,7 @@ def test_stack_reader_success_3d_phasors_preserves_colormap(monkeypatch):
         mean = np.ones((2, 2))
         g = np.zeros((2, 2, 2))  # (n_harmonics, Y, X)
         mean_, kwargs = _make_stack_layer(
-            mean, g, g, name="x Intensity Image: Channel 0", summed=None
+            mean, g, g, name="x Intensity: Channel 0 [Phasor]", summed=None
         )
         kwargs["colormap"] = "green"
         kwargs["blending"] = "additive"
@@ -1103,15 +1193,160 @@ def _patch_processed(monkeypatch, mean, real, imag, attrs):
     )
 
 
-def test_processed_reader_description_too_large_raises(monkeypatch):
-    """An oversized description dictionary raises a ValueError."""
+def test_processed_reader_description_too_large_warns(monkeypatch):
+    """An oversized description is ignored with a warning, not fatal."""
     mean = np.ones((4, 4))
     real = np.zeros((1, 4, 4))
     big = {"x": "a" * 300000}
     attrs = {"description": json.dumps(big), "harmonic": [1]}
     _patch_processed(monkeypatch, mean, real, real, attrs)
-    with pytest.raises(ValueError, match="too large"):
-        reader_module.processed_file_reader("x.ome.tif")
+    with pytest.warns(UserWarning, match="larger than"):
+        layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        pytest.param("ImageJ=1.54f\nunit=micron", id="plain_text"),
+        pytest.param("", id="empty_string"),
+        pytest.param('{"Info": "written by another tool"}', id="foreign_json"),
+        pytest.param("[1, 2, 3]", id="json_list"),
+        pytest.param("42", id="json_scalar"),
+    ],
+)
+def test_processed_reader_foreign_description_is_ignored(
+    monkeypatch, description
+):
+    """A description written by another tool is ignored, not fatal.
+
+    Regression test for the ``UnboundLocalError`` raised when a description
+    parsed as JSON but did not contain the plugin's settings key.
+    """
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    attrs = {"description": description, "harmonic": [1]}
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param("{not-json", id="corrupt_json"),
+        pytest.param('"a string"', id="json_string"),
+        pytest.param("[1, 2]", id="json_list"),
+        pytest.param(17, id="not_a_string"),
+    ],
+)
+def test_processed_reader_corrupt_settings_entry_warns(monkeypatch, payload):
+    """A malformed settings entry is dropped with a warning."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    attrs = {
+        "description": json.dumps({"napari_phasors_settings": payload}),
+        "harmonic": [1],
+    }
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    with pytest.warns(UserWarning):
+        layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+
+
+def test_processed_reader_non_string_description_warns(monkeypatch):
+    """A non-string description is ignored with a warning."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    attrs = {"description": {"already": "decoded"}, "harmonic": [1]}
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    with pytest.warns(UserWarning, match="expected a string"):
+        layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+
+
+def test_processed_reader_missing_description_is_ignored(monkeypatch, recwarn):
+    """A file without any description reads cleanly and warns about nothing."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    _patch_processed(monkeypatch, mean, real, real, {"harmonic": [1]})
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+    assert [w for w in recwarn if issubclass(w.category, UserWarning)] == []
+
+
+def test_processed_reader_frequency_survives_bad_description(monkeypatch):
+    """``frequency`` from file attrs is kept even if the description is bad."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    attrs = {
+        "description": "not json at all",
+        "harmonic": [1],
+        "frequency": 80.0,
+    }
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"]["frequency"] == 80.0
+
+
+def test_parse_description_settings_unescapes_html():
+    """HTML-encoded descriptions written by tifffile are decoded."""
+    settings = {"frequency": 80.0, "calibrated": 1}
+    description = json.dumps(
+        {"napari_phasors_settings": json.dumps(settings)}
+    ).replace('"', "&quot;")
+    parsed = reader_module._parse_description_settings(description)
+    assert parsed["frequency"] == 80.0
+    assert parsed["calibrated"] is True
+
+
+def test_parse_description_settings_at_size_limit():
+    """A description exactly at the size limit is still parsed."""
+    padding = "a" * 100
+    settings = json.dumps({"pad": padding})
+    description = json.dumps({"napari_phasors_settings": settings})
+    description += " " * (
+        reader_module.MAX_DESCRIPTION_CHARS - len(description)
+    )
+    assert len(description) == reader_module.MAX_DESCRIPTION_CHARS
+    assert reader_module._parse_description_settings(description) == {
+        "pad": padding
+    }
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        pytest.param("ImageJ=1.54f\nunit=micron", id="plain_text"),
+        pytest.param('{"Info": "written by another tool"}', id="foreign_json"),
+        pytest.param("[1, 2, 3]", id="json_list"),
+        pytest.param('{"napari_phasors_settings": "{not-json"}', id="corrupt"),
+    ],
+)
+def test_read_real_ometiff_with_foreign_description(tmp_path, description):
+    """End-to-end: a real OME-TIF with a foreign description still opens.
+
+    Exercises the full phasorpy write/read round trip rather than a patched
+    reader, so it also covers the HTML escaping tifffile applies on write.
+    """
+    from phasorpy.io import phasor_to_ometiff
+
+    path = tmp_path / "foreign.ome.tif"
+    rng = np.random.default_rng(0)
+    mean = rng.random((8, 8)).astype(np.float32)
+    real = rng.random((8, 8)).astype(np.float32)
+    imag = rng.random((8, 8)).astype(np.float32)
+    phasor_to_ometiff(
+        path, mean, real, imag, harmonic=1, description=description
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        layers = reader_module.processed_file_reader(str(path))
+
+    assert len(layers) == 1
+    assert layers[0][1]["metadata"]["settings"] == {}
+    np.testing.assert_allclose(layers[0][0], mean, rtol=1e-6)
 
 
 def test_processed_reader_calibrated_and_frequency_settings(monkeypatch):
@@ -1197,3 +1432,1119 @@ def test_processed_reader_invalid_z_spacing_is_ignored(monkeypatch):
 
 
 # TODO: Add tests for .tif files
+
+
+# --- CZI mosaics ------------------------------------------------------------
+
+
+class _FakeSegment:
+    """Stand-in for a decoded CZI sub-block segment."""
+
+    def __init__(self, values):
+        self._values = values
+
+    def data(self):
+        return self._values
+
+
+class _FakeEntry:
+    """Stand-in for one entry of a CZI sub-block directory."""
+
+    def __init__(self, dims, start, shape, mosaic_index, values):
+        self.dims = dims
+        self.start = start
+        self.shape = shape
+        self.mosaic_index = mosaic_index
+        self._values = values
+
+    def read_segment_data(self, czi):
+        return _FakeSegment(self._values)
+
+
+class _FakeCziFile:
+    """Stand-in for :class:`czifile.CziFile` backed by an in-memory mosaic."""
+
+    directory = []
+    opened = 0
+    closed = 0
+
+    def __init__(self, path):
+        type(self).opened += 1
+        self.filtered_subblock_directory = list(type(self).directory)
+
+    def close(self):
+        type(self).closed += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+
+def _install_fake_czi(
+    monkeypatch,
+    n_rows=2,
+    n_cols=3,
+    tile_shape=(8, 8),
+    n_planes=8,
+    overlap=0,
+    with_channel_axis=True,
+    reverse_planes=False,
+):
+    """Register a fake ``czifile`` module describing a small mosaic.
+
+    Each sub-block holds one 2-D plane, as a real CZI does; the planes of a
+    tile are what :class:`CziMosaic` stacks into its ``C`` axis, and for a
+    Zeiss FLIM file that stack is the histogram the phasor transform reads.
+
+    Returns the ``(y, x)`` position of every tile, in mosaic-index order.
+    """
+    import sys
+    import types
+
+    height, width = tile_shape
+    step_y = height - overlap
+    step_x = width - overlap
+
+    dims = ("H", "C", "Y", "X") if with_channel_axis else ("H", "Y", "X")
+    entries = []
+    positions = []
+    index = 0
+    for row in range(n_rows):
+        for col in range(n_cols):
+            origin_y, origin_x = row * step_y, col * step_x
+            positions.append((origin_y, origin_x))
+            planes = range(n_planes)
+            if reverse_planes:
+                planes = reversed(list(planes))
+            for plane in planes:
+                values = np.full(
+                    (height, width), (index + 1) * 10 + plane, dtype=np.uint16
+                )
+                start = (
+                    (plane, plane, origin_y, origin_x)
+                    if with_channel_axis
+                    else (plane, origin_y, origin_x)
+                )
+                shape = (
+                    (1, 1, height, width)
+                    if with_channel_axis
+                    else (1, height, width)
+                )
+                entries.append(
+                    _FakeEntry(
+                        dims=dims,
+                        start=start,
+                        shape=shape,
+                        mosaic_index=index,
+                        values=values,
+                    )
+                )
+            index += 1
+
+    _FakeCziFile.directory = entries
+    _FakeCziFile.opened = 0
+    _FakeCziFile.closed = 0
+
+    module = types.ModuleType("czifile")
+    module.CziFile = _FakeCziFile
+    monkeypatch.setitem(sys.modules, "czifile", module)
+    return positions
+
+
+def test_czi_mosaic_reads_tiles_and_positions(monkeypatch):
+    """The sub-block directory yields tile count, shape and positions."""
+    positions = _install_fake_czi(monkeypatch, n_rows=2, n_cols=3, n_planes=8)
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        assert mosaic.n_tiles == 6
+        assert mosaic.n_channels == 8
+        assert mosaic.tile_shape == (8, 8)
+        assert mosaic.positions == positions
+        assert mosaic.canvas_shape() == (16, 24)
+
+        tile = mosaic.read_tile(0)
+        assert tile.dims == ("C", "Y", "X")
+        assert tile.shape == (8, 8, 8)
+
+    assert _FakeCziFile.closed == 1
+
+
+def test_czi_mosaic_orders_planes_by_the_channel_axis(monkeypatch):
+    """Sub-blocks are restacked in channel order, not directory order."""
+    _install_fake_czi(
+        monkeypatch, n_rows=1, n_cols=2, n_planes=3, reverse_planes=True
+    )
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        tile = mosaic.read_tile(1)
+        assert tile.shape == (3, 8, 8)
+        # Seeded as (index + 1) * 10 + plane, so a correctly sorted tile 1
+        # counts upwards even though the directory listed it backwards.
+        assert [int(plane.max()) for plane in np.asarray(tile)] == [20, 21, 22]
+
+
+def test_czi_mosaic_without_a_channel_axis(monkeypatch):
+    """A file whose sub-blocks carry no ``C`` dimension still stacks."""
+    _install_fake_czi(
+        monkeypatch, n_rows=1, n_cols=2, n_planes=4, with_channel_axis=False
+    )
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        assert mosaic.n_channels == 4
+        assert np.asarray(mosaic.read_tile(0)).shape == (4, 8, 8)
+
+
+def test_czi_mosaic_rejects_an_out_of_range_tile(monkeypatch):
+    """Asking for a tile the file does not have names the real count."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=2)
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        with pytest.raises(ValueError, match="has 2 tile"):
+            mosaic.read_tile(5)
+        with pytest.raises(ValueError, match="cannot read tile -1"):
+            mosaic.read_tile(-1)
+
+
+def test_czi_mosaic_rejects_an_empty_file(monkeypatch):
+    """A directory with no entries is not a mosaic."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=1)
+    _FakeCziFile.directory = []
+
+    with pytest.raises(ValueError, match="no image data"):
+        reader_module.CziMosaic("empty.czi")
+
+
+def test_czi_mosaic_binning_shrinks_tiles_and_canvas(monkeypatch):
+    """Binning sums photon blocks and rescales the mosaic grid with them."""
+    _install_fake_czi(
+        monkeypatch, n_rows=2, n_cols=2, tile_shape=(8, 8), n_planes=2
+    )
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        full = np.asarray(mosaic.read_tile(0))
+        binned = np.asarray(mosaic.read_tile(0, binning=2))
+
+        assert binned.shape == (2, 4, 4)
+        # Summing 2x2 blocks preserves the total photon count.
+        assert binned.sum() == full.sum()
+
+        assert mosaic.binned_tile_shape(2) == (4, 4)
+        assert mosaic.binned_positions(2) == [(0, 0), (0, 4), (4, 0), (4, 4)]
+        assert mosaic.canvas_shape(2) == (8, 8)
+        # A factor of one is the identity for every accessor.
+        assert mosaic.binned_positions(1) == mosaic.positions
+        assert mosaic.canvas_shape(1) == (16, 16)
+
+
+def test_bin_spatial_trims_and_rejects_impossible_factors():
+    """Binning drops the ragged remainder, but refuses to erase the tile."""
+    cube = np.arange(2 * 5 * 7, dtype=np.uint16).reshape(2, 5, 7)
+
+    binned = reader_module._bin_spatial(cube, 2)
+    assert binned.shape == (2, 2, 3)
+    # The odd last row and column are trimmed before summing.
+    assert binned[0, 0, 0] == cube[0, :2, :2].sum()
+
+    assert reader_module._bin_spatial(cube, 1) is cube
+
+    with pytest.raises(ValueError, match="leaves nothing"):
+        reader_module._bin_spatial(cube, 16)
+
+
+def test_czi_mosaic_info_describes_or_declines(monkeypatch):
+    """Probing reports a real mosaic and quietly declines anything else."""
+    _install_fake_czi(monkeypatch, n_rows=2, n_cols=2, n_planes=8)
+    info = reader_module.czi_mosaic_info("mosaic.czi")
+    assert info == {
+        "n_tiles": 4,
+        "tile_shape": (8, 8),
+        "canvas_shape": (16, 16),
+        "n_channels": 8,
+    }
+
+    # A single-tile CZI is not a mosaic.
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=1)
+    assert reader_module.czi_mosaic_info("single.czi") is None
+
+    # Neither is a file that cannot be opened at all.
+    _FakeCziFile.directory = []
+    assert reader_module.czi_mosaic_info("broken.czi") is None
+
+    # Nor a file that is not a CZI in the first place.
+    assert reader_module.czi_mosaic_info("something.tif") is None
+
+
+def test_czi_dimension_sizes_renames_the_phase_axis(monkeypatch):
+    """phasorpy calls the CZI phase axis ``Q``, so probing matches it."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=2, n_planes=6)
+
+    sizes = reader_module._czi_dimension_sizes("mosaic.czi")
+    assert "H" not in sizes
+    assert sizes["Q"] == 6
+    assert sizes["Y"] == 8
+    assert sizes["X"] == 16
+
+    # A file that raises on open is reported as "unknown", not as an error.
+    def _boom(self, path):
+        raise OSError("nope")
+
+    monkeypatch.setattr(_FakeCziFile, "__init__", _boom)
+    assert reader_module._czi_dimension_sizes("broken.czi") is None
+
+
+def test_read_czi_mosaic_tiles_transforms_each_tile(monkeypatch):
+    """Requested tiles are decoded and phasor-transformed one by one."""
+    _install_fake_czi(monkeypatch, n_rows=2, n_cols=2, n_planes=8)
+
+    layers = reader_module._read_czi_mosaic_tiles(
+        "mosaic.czi", [0, 3], harmonics=[1]
+    )
+
+    assert sorted(layers) == [0, 3]
+    for index, per_channel in layers.items():
+        assert len(per_channel) == 1
+        data, add_kwargs = per_channel[0]
+        assert np.shape(data) == (8, 8)
+        assert f"[{index}]" in add_kwargs["name"]
+
+
+def test_read_czi_mosaic_tiles_rejects_out_of_range(monkeypatch):
+    """An index past the end names the tile count and the bad indices."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=2)
+
+    with pytest.raises(ValueError, match=r"has 2 tile\(s\).*\[7\]"):
+        reader_module._read_czi_mosaic_tiles("mosaic.czi", [0, 7])
+
+
+def test_read_file_tiles_routes_a_czi_mosaic_without_a_tile_axis(monkeypatch):
+    """A CZI mosaic is detected and split even with no axis chosen."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=3, n_planes=8)
+
+    layers = reader_module._read_file_tiles(
+        "mosaic.czi", [0, 1, 2], harmonics=[1]
+    )
+    assert sorted(layers) == [0, 1, 2]
+
+
+def test_read_file_tiles_honours_the_binning_option(monkeypatch):
+    """The binning reader option reaches the mosaic decode."""
+    _install_fake_czi(
+        monkeypatch, n_rows=1, n_cols=2, tile_shape=(16, 16), n_planes=8
+    )
+
+    layers = reader_module._read_file_tiles(
+        "mosaic.czi",
+        [0],
+        harmonics=[1],
+        tile_axis=reader_module.CZI_MOSAIC_AXIS,
+        reader_options={"binning": 4},
+    )
+    data, _ = layers[0][0]
+    assert np.shape(data) == (4, 4)
+
+
+# --- axis probing -----------------------------------------------------------
+
+
+def test_file_axis_sizes_falls_back_to_the_signal(monkeypatch, tmp_path):
+    """A CZI whose directory cannot be read is probed through its signal."""
+    import tifffile as tifffile_module
+
+    path = tmp_path / "plain.tif"
+    tifffile_module.imwrite(str(path), np.zeros((8, 6, 4), dtype=np.uint16))
+    assert reader_module.file_axis_sizes(str(path)) == {0: 8, 1: 6, 2: 4}
+
+    # A CZI reports its dimension names instead.
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=2, n_planes=4)
+    sizes = reader_module.file_axis_sizes("mosaic.czi")
+    assert sizes["Q"] == 4
+
+
+def test_describe_file_axes_says_unknown_when_nothing_can_be_read(tmp_path):
+    """An unreadable file is described as unknown rather than crashing."""
+    path = tmp_path / "broken.tif"
+    path.write_bytes(b"not a tiff")
+
+    assert reader_module.describe_file_axes(str(path)) == "unknown"
+
+
+def test_signal_dimension_sizes_returns_none_for_an_unreadable_file(tmp_path):
+    """Probing is best effort: a failure means 'unknown', not an exception."""
+    path = tmp_path / "broken.tif"
+    path.write_bytes(b"not a tiff")
+
+    assert reader_module._signal_dimension_sizes(str(path)) is None
+
+
+def test_resolve_tile_axis_by_name_and_error(tmp_path):
+    """A named axis is resolved, and an unknown name is refused by name."""
+    import xarray as xr_module
+
+    signal = xr_module.DataArray(
+        np.zeros((3, 4, 5), dtype=np.uint16), dims=("T", "Y", "X")
+    )
+
+    assert reader_module._resolve_tile_axis(signal, "T", "f.tif") == 0
+
+    with pytest.raises(ValueError, match="no dimension named 'Z'"):
+        reader_module._resolve_tile_axis(signal, "Z", "f.tif")
+
+
+def test_take_tile_uses_named_selection_when_available():
+    """A DataArray is sliced by dimension name so its coordinates survive."""
+    import xarray as xr_module
+
+    signal = xr_module.DataArray(
+        np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4),
+        dims=("T", "Y", "X"),
+    )
+
+    tile = reader_module._take_tile(signal, 0, 1)
+    assert tile.dims == ("Y", "X")
+    assert np.array_equal(np.asarray(tile), np.asarray(signal)[1])
+
+    plain = np.arange(24).reshape(2, 3, 4)
+    assert np.array_equal(reader_module._take_tile(plain, 0, 1), plain[1])
+
+
+# --- tile reading errors ----------------------------------------------------
+
+
+def _write_flim_tiles(directory, n_tiles=4, tile_size=8, n_bins=8):
+    """Write *n_tiles* small FLIM TIFFs and return their paths."""
+    rng = np.random.default_rng(0)
+    paths = []
+    for index in range(n_tiles):
+        path = os.path.join(str(directory), f"tile_{index:02d}.tif")
+        tifffile.imwrite(
+            path,
+            (rng.random((n_bins, tile_size, tile_size)) * 100).astype(
+                np.uint16
+            ),
+        )
+        paths.append(path)
+    return paths
+
+
+def test_read_file_tiles_needs_a_reader(tmp_path):
+    """A file no reader handles is named in the error."""
+    path = tmp_path / "mystery.xyz"
+    path.write_text("nope")
+
+    with pytest.raises(ValueError, match="No reader available"):
+        reader_module._read_file_tiles(str(path), [0])
+
+
+def test_read_file_tiles_reports_progress(tmp_path):
+    """The progress object is driven for both the whole-file and split paths."""
+
+    class _Progress:
+        def __init__(self):
+            self.descriptions = []
+            self.updates = 0
+
+        def set_description(self, text):
+            self.descriptions.append(text)
+
+        def update(self, amount):
+            self.updates += amount
+
+    paths = _write_flim_tiles(tmp_path, n_tiles=1)
+
+    whole = _Progress()
+    reader_module._read_file_tiles(
+        paths[0], [0], harmonics=[1], progress=whole
+    )
+    assert whole.updates == 1
+    assert any("Reading" in text for text in whole.descriptions)
+
+    split = _Progress()
+    reader_module._read_file_tiles(
+        paths[0], [0, 1], harmonics=[1], tile_axis=0, progress=split
+    )
+    assert split.updates == 2
+    assert any("tile 1/2" in text for text in split.descriptions)
+
+
+def test_read_tile_phasors_rejects_tiles_of_different_shapes(tmp_path):
+    """Every tile must match the first one's shape."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2, tile_size=8)
+    odd = os.path.join(str(tmp_path), "odd.tif")
+    tifffile.imwrite(odd, np.zeros((8, 6, 6), dtype=np.uint16))
+
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        reader_module.read_tile_phasors([paths[0], odd], harmonics=[1])
+
+
+def test_read_tile_phasors_rejects_non_2d_tiles(tmp_path):
+    """A tile that is still 3-D after reading cannot be placed on a canvas."""
+    path = os.path.join(str(tmp_path), "stack.tif")
+    tifffile.imwrite(path, np.zeros((4, 3, 6, 6), dtype=np.uint16))
+
+    with pytest.raises(ValueError, match="stitching expects"):
+        reader_module.read_tile_phasors([path, path], harmonics=[1])
+
+
+def test_read_tile_phasors_warns_about_mixed_frequencies(
+    tmp_path, monkeypatch
+):
+    """Tiles from different acquisitions must not be blended silently."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    real_reader = reader_module._read_file_tiles
+    seen = {"n": 0}
+
+    def tag_frequency(path, indices, **kwargs):
+        result = real_reader(path, indices, **kwargs)
+        seen["n"] += 1
+        for layers in result.values():
+            for _, add_kwargs in layers:
+                add_kwargs["metadata"].setdefault("settings", {})[
+                    "frequency"
+                ] = (80.0 * seen["n"])
+        return result
+
+    monkeypatch.setattr(reader_module, "_read_file_tiles", tag_frequency)
+
+    errors = []
+    monkeypatch.setattr(reader_module, "show_error", errors.append)
+    reader_module.read_tile_phasors(paths, harmonics=[1])
+
+    assert any("different laser frequencies" in message for message in errors)
+
+
+def test_raw_file_tile_reader_reports_both_failure_points(
+    tmp_path, monkeypatch
+):
+    """Reading and stitching each surface their error and return no layers."""
+    from napari_phasors._stitching import layout_from_rows
+
+    paths = _write_flim_tiles(tmp_path, n_tiles=4)
+    geometry = layout_from_rows(paths, "2,2", tile_shape=(8, 8))
+
+    errors = []
+    monkeypatch.setattr(reader_module, "show_error", errors.append)
+
+    monkeypatch.setattr(
+        reader_module,
+        "read_tile_phasors",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("cannot read")),
+    )
+    assert reader_module.raw_file_tile_reader(paths, geometry) == []
+    assert any("cannot read" in message for message in errors)
+
+    monkeypatch.undo()
+    errors.clear()
+    monkeypatch.setattr(reader_module, "show_error", errors.append)
+    monkeypatch.setattr(
+        reader_module.TileSet,
+        "stitch",
+        lambda self, geom, progress=None: (_ for _ in ()).throw(
+            ValueError("cannot stitch")
+        ),
+    )
+    assert reader_module.raw_file_tile_reader(paths, geometry) == []
+    assert any("cannot stitch" in message for message in errors)
+
+
+def test_signal_dimension_sizes_keys_unnamed_axes_by_position(monkeypatch):
+    """A format returning a plain array is described by axis index."""
+    monkeypatch.setattr(
+        reader_module,
+        "load_raw_signal",
+        lambda path, io_options=None: np.zeros((3, 5, 7), dtype=np.uint16),
+    )
+
+    assert reader_module._signal_dimension_sizes("plain.bin") == {
+        0: 3,
+        1: 5,
+        2: 7,
+    }
+
+
+def test_signal_dimension_sizes_keys_named_axes_by_name(monkeypatch):
+    """A format returning a labelled array is described by dimension name."""
+    monkeypatch.setattr(
+        reader_module,
+        "load_raw_signal",
+        lambda path, io_options=None: xr.DataArray(
+            np.zeros((3, 5, 7), dtype=np.uint16), dims=("H", "Y", "X")
+        ),
+    )
+
+    assert reader_module._signal_dimension_sizes("labelled.ptu") == {
+        "H": 3,
+        "Y": 5,
+        "X": 7,
+    }
+
+
+def test_read_tile_phasors_promotes_tiles_without_a_harmonic_axis(
+    tmp_path, monkeypatch
+):
+    """A reader that returns 2-D G/S gets a harmonic axis before blending."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    real_reader = reader_module._read_file_tiles
+
+    def squeeze_harmonic(path, indices, **kwargs):
+        result = real_reader(path, indices, **kwargs)
+        for layers in result.values():
+            for _, add_kwargs in layers:
+                metadata = add_kwargs["metadata"]
+                metadata["G"] = np.asarray(metadata["G"])[0]
+                metadata["S"] = np.asarray(metadata["S"])[0]
+        return result
+
+    monkeypatch.setattr(reader_module, "_read_file_tiles", squeeze_harmonic)
+
+    tile_set = reader_module.read_tile_phasors(paths, harmonics=[1])
+    _, real, imag = tile_set.tiles[0][0]
+
+    assert real.shape[0] == 1
+    assert imag.shape[0] == 1
+
+
+def test_read_czi_mosaic_tiles_reports_progress(monkeypatch):
+    """The mosaic decode drives the caller's progress bar tile by tile."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=3, n_planes=8)
+
+    class _Progress:
+        def __init__(self):
+            self.descriptions = []
+            self.updates = 0
+
+        def set_description(self, text):
+            self.descriptions.append(text)
+
+        def update(self, amount):
+            self.updates += amount
+
+    progress = _Progress()
+    reader_module._read_czi_mosaic_tiles(
+        "mosaic.czi", [0, 1, 2], harmonics=[1], progress=progress
+    )
+
+    assert progress.updates == 3
+    assert any("tile 3/3" in text for text in progress.descriptions)
+
+
+def test_read_tile_phasors_rejects_a_file_that_produced_nothing(
+    tmp_path, monkeypatch
+):
+    """A reader that returns no layers for a tile is an error, not an empty tile."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    monkeypatch.setattr(
+        reader_module,
+        "_read_file_tiles",
+        lambda path, indices, **kwargs: {index: [] for index in indices},
+    )
+
+    with pytest.raises(ValueError, match="No data could be read"):
+        reader_module.read_tile_phasors(paths, harmonics=[1])
+
+
+def test_read_tile_phasors_rejects_a_changing_channel_count(
+    tmp_path, monkeypatch
+):
+    """Every tile must contribute the same number of channels."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    real_reader = reader_module._read_file_tiles
+    seen = {"n": 0}
+
+    def drop_a_channel(path, indices, **kwargs):
+        result = real_reader(path, indices, **kwargs)
+        seen["n"] += 1
+        if seen["n"] > 1:
+            for index, layers in result.items():
+                result[index] = layers + layers
+        return result
+
+    monkeypatch.setattr(reader_module, "_read_file_tiles", drop_a_channel)
+
+    with pytest.raises(ValueError, match="channel"):
+        reader_module.read_tile_phasors(paths, harmonics=[1])
+
+
+def test_read_tile_phasors_promotes_single_harmonic_tiles(tmp_path):
+    """A tile whose G/S have no harmonic axis is given one before blending."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    tile_set = reader_module.read_tile_phasors(paths, harmonics=1)
+
+    mean, real, imag = tile_set.tiles[0][0]
+    assert real.ndim == 3
+    assert imag.ndim == 3
+    assert real.shape[0] == 1
+    assert mean.shape == tile_set.tile_shape
+
+
+def test_stitched_layer_keeps_the_tiles_display_settings(tmp_path):
+    """Colormap and blending chosen for a tile carry over to the mosaic."""
+    from napari_phasors._stitching import layout_from_rows
+
+    paths = _write_flim_tiles(tmp_path, n_tiles=4)
+    geometry = layout_from_rows(paths, "2,2", tile_shape=(8, 8))
+
+    tile_set = reader_module.read_tile_phasors(paths, harmonics=[1])
+    tile_set.templates[0]["colormap"] = "magenta"
+    tile_set.templates[0]["blending"] = "additive"
+
+    layers = tile_set.stitch(geometry)
+    _, add_kwargs = layers[0]
+
+    assert add_kwargs["colormap"] == "magenta"
+    assert add_kwargs["blending"] == "additive"
+
+
+def test_stack_reader_reads_the_files_concurrently(monkeypatch):
+    """Every file in a stack is decoded on its own worker thread."""
+    import threading
+
+    from napari_phasors import _parallel
+
+    n_files = 4
+    # Each fake read blocks until all of them have arrived, so the test can
+    # only finish if the reads really do overlap.
+    barrier = threading.Barrier(n_files, timeout=30)
+    threads = set()
+
+    def fake(path, reader_options=None, harmonics=None):
+        barrier.wait()
+        threads.add(threading.current_thread().name)
+        mean = np.ones((2, 2))
+        g = np.zeros((2, 2))
+        return [_make_stack_layer(mean, g, g)]
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake)
+    monkeypatch.setattr(
+        reader_module, "workers_for_memory", lambda *a, **k: n_files
+    )
+
+    previous = _parallel.parallel_enabled()
+    _parallel.set_parallel_enabled(True)
+    try:
+        layers = reader_module.raw_file_stack_reader(
+            [f"d/{i}.lsm" for i in range(n_files)]
+        )
+    finally:
+        _parallel.set_parallel_enabled(previous)
+
+    assert layers[0][0].shape == (n_files, 2, 2)
+    assert len(threads) == n_files
+
+
+def test_stack_reader_falls_back_to_one_thread_when_parallelism_is_off(
+    monkeypatch,
+):
+    """The Plot Settings switch also governs how a stack is read."""
+    import threading
+
+    from napari_phasors import _parallel
+
+    threads = set()
+
+    def fake(path, reader_options=None, harmonics=None):
+        threads.add(threading.current_thread())
+        mean = np.ones((2, 2))
+        g = np.zeros((2, 2))
+        return [_make_stack_layer(mean, g, g)]
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake)
+
+    previous = _parallel.parallel_enabled()
+    _parallel.set_parallel_enabled(False)
+    try:
+        layers = reader_module.raw_file_stack_reader(
+            [f"d/{i}.lsm" for i in range(4)]
+        )
+    finally:
+        _parallel.set_parallel_enabled(previous)
+
+    assert layers[0][0].shape == (4, 2, 2)
+    assert threads == {threading.current_thread()}
+
+
+def test_channel_selection_dialog(qtbot):
+    """Test ChannelSelectionDialog interactions."""
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    channels = ["Channel 0", "Channel 1", "Channel 2"]
+    dialog = ChannelSelectionDialog(channels)
+    qtbot.addWidget(dialog)
+
+    # By default, all channels are selected
+    assert dialog.selected_channels() == [0, 1, 2]
+    assert not dialog.is_single_layer()
+    assert dialog.ok_btn.isEnabled()
+
+    # Deselect all
+    dialog.btn_deselect_all.click()
+    assert dialog.selected_channels() == []
+    assert not dialog.ok_btn.isEnabled()
+
+    # Select all
+    dialog.btn_select_all.click()
+    assert dialog.selected_channels() == [0, 1, 2]
+    assert dialog.ok_btn.isEnabled()
+
+    # Uncheck one item
+    dialog.set_channel_checked(1, False)
+    assert dialog.selected_channels() == [0, 2]
+    assert dialog.ok_btn.isEnabled()
+
+    # Check single layer
+    dialog.single_layer_checkbox.setChecked(True)
+    assert dialog.is_single_layer()
+
+
+def test_multichannel_reader_options_selection(monkeypatch):
+    """Test raw_file_reader with channel subset and single_layer options."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    # 1. Filter specific channels: channels=[0, 2]
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"channels": [0, 2], "from_custom_import": True},
+    )
+    assert len(layers) == 2
+    assert layers[0][1]["name"].endswith("Channel 0 [Phasor]")
+    assert layers[1][1]["name"].endswith("Channel 2 [Phasor]")
+
+    # 2. Import into single 3D layer: single_layer=True
+    layers_stacked = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"single_layer": True, "from_custom_import": True},
+    )
+    assert len(layers_stacked) == 1
+    stacked_layer = layers_stacked[0]
+    # Data shape should be (C, Y, X) -> (3, 2, 2)
+    assert stacked_layer[0].shape == (3, 2, 2)
+    metadata = stacked_layer[1]["metadata"]
+    # G and S should have shape (harmonics, C, Y, X) -> (2, 3, 2, 2)
+    assert metadata["G"].shape == (2, 3, 2, 2)
+    assert metadata["S"].shape == (2, 3, 2, 2)
+    assert list(metadata["channel_labels"]) == [0, 1, 2]
+
+
+def test_multichannel_interactive_dialog(monkeypatch):
+    """Test interactive dialog popup in raw_file_reader."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    # Mock dialog returning Accepted with channels=[1]
+    def mock_exec_accept(self):
+        self.btn_deselect_all.click()
+        self.set_channel_checked(1, True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(ChannelSelectionDialog, "exec", mock_exec_accept)
+    monkeypatch.setattr(ChannelSelectionDialog, "exec_", mock_exec_accept)
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"interactive": True},
+    )
+    assert len(layers) == 1
+    assert layers[0][1]["name"].endswith("Channel 1 [Phasor]")
+
+    # Mock dialog returning Rejected (user clicked Cancel)
+    monkeypatch.setattr(
+        ChannelSelectionDialog, "exec", lambda self: QDialog.Rejected
+    )
+    monkeypatch.setattr(
+        ChannelSelectionDialog, "exec_", lambda self: QDialog.Rejected
+    )
+    layers_cancelled = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"interactive": True},
+    )
+    assert layers_cancelled == []
+
+
+class _FakeViewerModel:
+    """Stand-in for napari's ``ViewerModel`` in batch-detection tests."""
+
+    def _add_layers_with_plugins(self, *args, **kwargs):  # pragma: no cover
+        raise NotImplementedError
+
+
+def _open_batch(paths, read):
+    """Mimic ``ViewerModel.open``: one reader call per path, one frame.
+
+    The frame's name and locals are what the reader looks for, so the inner
+    function deliberately mirrors napari's ``ViewerModel.open`` signature.
+    """
+
+    def open(self, paths_):  # noqa: A001 - must match napari's frame name
+        return [read(path) for path in paths_]
+
+    return open(_FakeViewerModel(), list(paths))
+
+
+def test_current_open_batch_outside_napari():
+    """No napari ``open`` on the stack means no batch, so no answer sharing."""
+    assert reader_module._current_open_batch() is None
+    assert reader_module._get_batch_channel_choice(None, ("0", "1")) == (
+        False,
+        None,
+    )
+    # A single-file "batch" is not shared either.
+    assert reader_module._get_batch_channel_choice(["a.ptu"], ("0",)) == (
+        False,
+        None,
+    )
+
+
+def test_multichannel_dialog_shown_once_per_channel_group(monkeypatch):
+    """One dialog per group of files sharing the same channels."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    def fake_read(path, reader_options=None):
+        # The third file exposes four channels, the others three.
+        n_channels = 4 if path.endswith("c.ptu") else 3
+        return xr.DataArray(
+            np.ones((2, 2, n_channels, 4), dtype=np.uint16),
+            dims=("Y", "X", "C", "H"),
+            coords={
+                "Y": [0, 1],
+                "X": [0, 1],
+                "C": list(range(n_channels)),
+                "H": [0, 1, 2, 3],
+            },
+        )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"], ".ptu", fake_read
+    )
+
+    shown = []
+
+    def mock_exec_accept(self):
+        shown.append(tuple(self._channel_labels))
+        self.btn_deselect_all.click()
+        self.set_channel_checked(0, True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(ChannelSelectionDialog, "exec", mock_exec_accept)
+    monkeypatch.setattr(ChannelSelectionDialog, "exec_", mock_exec_accept)
+
+    paths = ["a.ptu", "b.ptu", "c.ptu", "d.ptu"]
+    results = _open_batch(
+        paths,
+        lambda path: reader_module.raw_file_reader(
+            path, reader_options={"interactive": True}
+        ),
+    )
+
+    # 'a' and 'c' ask; 'b' reuses a's answer and 'd' reuses it too.
+    assert len(shown) == 2
+    assert [len(labels) for labels in shown] == [3, 4]
+    # Every file honours the single selected channel.
+    assert [len(layers) for layers in results] == [1, 1, 1, 1]
+
+
+def test_multichannel_dialog_cancel_applies_to_batch_group(monkeypatch):
+    """Cancelling skips the rest of the files with those same channels."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    shown = []
+
+    def mock_exec_reject(self):
+        shown.append(self)
+        return QDialog.Rejected
+
+    monkeypatch.setattr(ChannelSelectionDialog, "exec", mock_exec_reject)
+    monkeypatch.setattr(ChannelSelectionDialog, "exec_", mock_exec_reject)
+
+    results = _open_batch(
+        ["a.ptu", "b.ptu", "c.ptu"],
+        lambda path: reader_module.raw_file_reader(
+            path, reader_options={"interactive": True}
+        ),
+    )
+
+    assert len(shown) == 1
+    assert results == [[], [], []]
+
+
+def test_channel_dialog_batch_note():
+    """The dialog says the choice covers the batch only when it does."""
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    single = ChannelSelectionDialog([0, 1], filename="a.ptu")
+    assert "applied to" not in _dialog_text(single)
+
+    batched = ChannelSelectionDialog([0, 1], filename="a.ptu", batch_size=4)
+    text = _dialog_text(batched)
+    assert "Opening 4 files" in text
+    assert "same channels" in text
+
+
+def _dialog_text(dialog):
+    """Concatenate the text of every label in a dialog."""
+    from qtpy.QtWidgets import QLabel
+
+    return " ".join(label.text() for label in dialog.findChildren(QLabel))
+
+
+def test_multichannel_single_layer_single_harmonic(monkeypatch):
+    """A single harmonic keeps its axis: (1, C, Y, X)."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"single_layer": True, "from_custom_import": True},
+        harmonics=[1],
+    )
+    assert len(layers) == 1
+    stacked, add_kwargs = layers[0]
+    assert stacked.shape == (3, 2, 2)
+    metadata = add_kwargs["metadata"]
+    assert metadata["G"].shape == (1, 3, 2, 2)
+    assert metadata["S"].shape == (1, 3, 2, 2)
+    assert metadata["G_original"].shape == (1, 3, 2, 2)
+    assert list(metadata["harmonics"]) == [1]
+    assert add_kwargs["name"] == "test Intensity [Phasor]"
+
+
+def test_multichannel_single_layer_keeps_signal(monkeypatch):
+    """``_keep_signal`` stacks each channel's signal alongside the phasors."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={
+            "single_layer": True,
+            "from_custom_import": True,
+            "_keep_signal": True,
+        },
+        harmonics=[1],
+    )
+    metadata = layers[0][1]["metadata"]
+    assert metadata["signal_full"].shape == (3, 2, 2, 4)
+    assert "signal_axis" in metadata
+
+
+def test_multichannel_no_channel_selected_returns_no_layers(monkeypatch):
+    """Asking for none of the channels reads nothing."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"channels": [], "from_custom_import": True},
+    )
+    assert layers == []
+
+
+def test_napari_main_window_lookup(monkeypatch):
+    """The dialog parent is napari's main window, when there is one."""
+    import napari
+
+    sentinel = object()
+
+    class _Window:
+        _qt_window = sentinel
+
+    class _Viewer:
+        window = _Window()
+
+    monkeypatch.setattr(napari, "current_viewer", lambda: _Viewer())
+    assert reader_module._napari_main_window() is sentinel
+
+    # A viewer without a Qt window (headless ViewerModel) has no parent.
+    monkeypatch.setattr(napari, "current_viewer", lambda: object())
+    assert reader_module._napari_main_window() is None
+
+    # Neither does a napari that cannot be queried at all.
+    def _raise():
+        raise RuntimeError("no Qt")
+
+    monkeypatch.setattr(napari, "current_viewer", _raise)
+    assert reader_module._napari_main_window() is None
+
+
+def test_channel_dialog_theme_fallback(monkeypatch, qtbot):
+    """An unparented dialog styles itself, and survives a napari without Qt."""
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    parentless = ChannelSelectionDialog([0, 1])
+    qtbot.addWidget(parentless)
+    assert parentless.styleSheet() != ""
+    assert len(parentless.checkboxes) == 2
+
+    import napari.qt
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("no stylesheet")
+
+    monkeypatch.setattr(napari.qt, "get_stylesheet", _raise)
+    unstyled = ChannelSelectionDialog([0, 1])
+    qtbot.addWidget(unstyled)
+    assert unstyled.styleSheet() == ""

@@ -186,7 +186,7 @@ def test_phasor_center_settings_dialog(qtbot):
     dialog._size_spinbox.setValue(10)
     assert dialog.get_marker_size() == 10
 
-    dialog._alpha_spinbox.setValue(0.5)
+    dialog._transparency_spinbox.setValue(0.5)
     assert dialog.get_alpha() == 0.5
 
     group_assignments = dialog.get_group_assignments()

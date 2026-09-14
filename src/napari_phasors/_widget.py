@@ -24,6 +24,7 @@ from napari.utils.notifications import show_error, show_info
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator, QIntValidator
 from qtpy.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QCompleter,
@@ -32,18 +33,33 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
 from superqt import QRangeSlider
 
+from ._fbd import (
+    DEFAULT_CANDIDATES,
+    IOTECH,
+    find_reference_file,
+    match_reference_settings,
+    signal_from_fbd,
+)
 from ._reader import (
+    CziMosaic,
     _get_filename_extension,
     _signal_from_brighteyes_mcs,
+    _split_widget_reader_options,
+    czi_mosaic_info,
+    describe_file_axes,
+    iter_index_mapping,
     napari_get_reader,
+    probe_tile_axes,
     raw_file_stack_reader,
 )
 from ._update_check import maybe_check_for_update
@@ -52,7 +68,9 @@ from ._utils import (
     CollapsibleSection,
     FileOrderDialog,
     PopoutWindowMixin,
+    TileLayoutDialog,
     natural_sort_key,
+    show_activity_progress,
 )
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
 
@@ -107,6 +125,14 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         self.multi_file_button = QPushButton("Open 3D stack")
         self.multi_file_button.clicked.connect(self._open_multi_file_dialog)
         self.main_layout.addWidget(self.multi_file_button)
+
+        self.tile_button = QPushButton("Open tiled mosaic")
+        self.tile_button.setToolTip(
+            "Stitch several tiles into one image. Stitching is done on the "
+            "phasor coordinates rather than the raw data."
+        )
+        self.tile_button.clicked.connect(self._open_tile_dialog)
+        self.main_layout.addWidget(self.tile_button)
 
         self.main_layout.addWidget(QLabel("Path to the selected file(s): "))
 
@@ -346,6 +372,174 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             new_widget._update_signal_plot()
         self.dynamic_widget_layout.addWidget(new_widget)
 
+    def _ask_tile_source(self):
+        """Ask whether the tiles are picked individually or taken from a folder.
+
+        Returns
+        -------
+        str or None
+            ``'files'``, ``'folder'``, or ``None`` if the user cancelled.
+        """
+        choice = QMessageBox(self)
+        choice.setWindowTitle("Open tiled mosaic")
+        choice.setText("Where are the tiles?")
+        choice.setInformativeText(
+            "Pick the tile files individually, or a folder to use every "
+            "supported file it contains."
+        )
+        files_button = choice.addButton(
+            "Select files...", QMessageBox.AcceptRole
+        )
+        folder_button = choice.addButton(
+            "Select folder...", QMessageBox.AcceptRole
+        )
+        choice.addButton(QMessageBox.Cancel)
+        choice.exec()
+
+        clicked = choice.clickedButton()
+        if clicked is files_button:
+            return "files"
+        if clicked is folder_button:
+            return "folder"
+        return None
+
+    def _open_tile_dialog(self):
+        """Select tiles and describe how they are laid out in a mosaic."""
+        supported_extensions = (
+            "*.ome.tif",
+            "*.tif",
+            "*.tiff",
+            "*.lsm",
+            "*.ptu",
+            "*.fbd",
+            "*.sdt",
+            "*.czi",
+            "*.flif",
+            "*.bh",
+            "*.b&h",
+            "*.bhz",
+            "*.bin",
+            "*.r64",
+            "*.ref",
+            "*.ifli",
+            "*.lif",
+        )
+
+        source = self._ask_tile_source()
+        if source == "files":
+            file_paths, _ = QFileDialog.getOpenFileNames(
+                self,
+                "Select tiles",
+                "",
+                "Supported files (" + " ".join(supported_extensions) + ")",
+            )
+        elif source == "folder":
+            directory = QFileDialog.getExistingDirectory(
+                self, "Select a folder of tiles"
+            )
+            if not directory:
+                return
+            file_paths = []
+            for extension in supported_extensions:
+                file_paths.extend(
+                    glob.glob(os.path.join(directory, extension))
+                )
+        else:
+            return
+
+        file_paths = list(dict.fromkeys(file_paths))
+        if not file_paths:
+            show_error("No supported files found in the selection.")
+            return
+
+        extensions = {_get_filename_extension(p)[1] for p in file_paths}
+        if len(extensions) > 1:
+            show_error(
+                "All tiles must have the same extension. "
+                f"Found: {sorted(extensions)}"
+            )
+            return
+
+        common_ext = extensions.pop()
+        if common_ext not in self.reader_options:
+            show_error(f"Extension {common_ext} is not supported.")
+            return
+
+        file_paths = sorted(file_paths, key=natural_sort_key)
+
+        # A mosaic is either spread over several files or held inside one
+        # file along a tile dimension, so a single file is only rejected once
+        # it turns out to hold a single tile too.
+        tile_axes = probe_tile_axes(file_paths[0])
+        if len(file_paths) < 2 and not tile_axes:
+            show_error(
+                f"{os.path.basename(file_paths[0])} holds a single image "
+                f"({describe_file_axes(file_paths[0])}), so there is nothing "
+                "to stitch. Select several files, or one file that stores "
+                "its tiles along a dimension of their own."
+            )
+            return
+
+        # A mosaic file records where each of its tiles sits, which beats any
+        # description of the arrangement, so hand those positions to the
+        # dialog when they exist.
+        tile_positions = None
+        tile_shape = None
+        if len(file_paths) == 1:
+            mosaic = czi_mosaic_info(file_paths[0])
+            if mosaic is not None:
+                tile_shape = mosaic["tile_shape"]
+                with suppress(Exception):
+                    with CziMosaic(file_paths[0]) as reader:
+                        tile_positions = list(reader.positions)
+
+        if tile_shape is None:
+            # The tile size is only known once a file has been read; showing
+            # it in the dialog makes the stitched size meaningful there.
+            tile_shape = _estimate_output_shape_from_options(
+                file_paths[0], {}, [1]
+            )
+            if tile_shape is not None and len(tile_shape) != 2:
+                tile_shape = None
+
+        dialog = TileLayoutDialog(
+            file_paths,
+            parent=self,
+            tile_shape=tile_shape,
+            tile_axes=tile_axes,
+            tile_positions=tile_positions,
+        )
+        if dialog.exec() != TileLayoutDialog.Accepted:
+            return
+
+        geometry = dialog.get_geometry()
+        if geometry is None:
+            return
+        sources = dialog.get_sources()
+        tile_axis = dialog.get_tile_axis()
+        binning = dialog.get_binning()
+        if len(sources) < 2:
+            show_error("A mosaic needs at least two tiles.")
+            return
+
+        n_files = len({source.path for source in sources})
+        origin = (
+            f"{len(sources)} tile(s) in "
+            f"{os.path.basename(sources[0].path)}"
+            if n_files == 1
+            else f"{len(sources)} tile(s) across {n_files} file(s)"
+        )
+        self._show_path_text(f"{origin} selected for stitching")
+        self._clear_dynamic_widgets()
+
+        create_widget_class = self.reader_options[common_ext]
+        new_widget = create_widget_class(self.viewer, sources[0].path)
+        new_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        new_widget.enable_tile_mode(
+            sources, geometry, tile_axis=tile_axis, binning=binning
+        )
+        self.dynamic_widget_layout.addWidget(new_widget)
+
     def _clear_dynamic_widgets(self):
         """Remove all widgets from the dynamic widget layout."""
         for i in reversed(range(self.dynamic_widget_layout.count())):
@@ -396,6 +590,12 @@ class AdvancedOptionsWidget(QWidget):
         self.path = path
         self._stack_z_spacing_layout = None
         self._stack_z_spacing_edit = None
+        self._tile_paths = None
+        self._tile_axis = None
+        self._tile_geometry = None
+        self._tile_set = None
+        self._tile_layers = []
+        self._tile_section = None
         self.reader_options = {}
         if not hasattr(self, 'harmonics'):
             self.harmonics = [1]
@@ -565,24 +765,35 @@ class AdvancedOptionsWidget(QWidget):
                     val = val_str
                 options[key] = val
 
+    def _clean_io_options(self, options=None):
+        """Return reader options with widget-only options removed."""
+        if options is None:
+            options = self.reader_options
+        _, _, io_options = _split_widget_reader_options(options)
+        return io_options
+
+    def _preview_shape_and_labels(self):
+        """Return ``(shape, labels)`` describing the decoded signal axes.
+
+        Used to populate the phasor-axis selector. The default implementation
+        decodes the preview signal, but subclasses may override this to derive
+        the shape from file metadata instead, avoiding large memory
+        allocations (see :class:`PtuWidget`).
+        """
+        preview = self._get_preview_signal_data()
+        if preview is None:
+            return (), []
+        if hasattr(preview, 'dims'):
+            return tuple(preview.shape), [str(d).upper() for d in preview.dims]
+        arr = np.asarray(preview)
+        return arr.shape, _default_axis_labels(len(arr.shape))
+
     def _update_axis_options(self):
         """Refresh axis options based on preview signal shape and dims."""
         if not hasattr(self, 'axis_combo'):
             return
 
-        preview = self._get_preview_signal_data()
-        # Determine shape and labels
-        if preview is None:
-            shape = ()
-            labels = []
-        else:
-            if hasattr(preview, 'dims'):
-                labels = [str(d).upper() for d in preview.dims]
-                shape = tuple(preview.shape)
-            else:
-                arr = np.asarray(preview)
-                shape = arr.shape
-                labels = _default_axis_labels(len(shape))
+        shape, labels = self._preview_shape_and_labels()
 
         # Build items: prefer dimension name, show size
         items = ["Auto"]
@@ -648,6 +859,12 @@ class AdvancedOptionsWidget(QWidget):
         grouped_paths = getattr(self, '_grouped_file_paths', None)
         multi_paths = getattr(self, '_multi_file_paths', None)
 
+        if self._tile_paths:
+            self.shape_preview_label.setText(
+                f"Estimated output shape: {self._tile_canvas_text()}"
+            )
+            return
+
         if grouped_paths:
             n_files = len(grouped_paths)
         elif multi_paths:
@@ -655,12 +872,13 @@ class AdvancedOptionsWidget(QWidget):
         else:
             n_files = 1
 
-        shape = _estimate_output_shape_from_options(
-            self.path,
-            self.reader_options,
-            self.harmonics,
-            n_files=n_files,
-        )
+        base_shape = self._estimate_base_output_shape()
+        if base_shape is None:
+            shape = None
+        elif n_files > 1:
+            shape = (n_files,) + tuple(base_shape)
+        else:
+            shape = tuple(base_shape)
 
         axis_order = getattr(self, '_stack_axis_order', None)
         axis_labels = getattr(self, '_stack_axis_labels', None)
@@ -683,16 +901,112 @@ class AdvancedOptionsWidget(QWidget):
             if len(shape) == 2:
                 shape_text += " (Y, X)"
             elif len(shape) == 3:
-                shape_text += " (Z, Y, X)"
+                if self.reader_options.get("single_layer"):
+                    shape_text += " (C, Y, X)"
+                else:
+                    shape_text += " (Z, Y, X)"
             elif len(shape) == 4:
-                shape_text += " (T, Z, Y, X)"
+                if self.reader_options.get("single_layer"):
+                    shape_text += " (C, Z, Y, X)"
+                else:
+                    shape_text += " (T, Z, Y, X)"
 
         self.shape_preview_label.setText(
             f"Estimated output shape: {shape_text}"
         )
 
+    def _tile_canvas_text(self):
+        """Return the stitched canvas size for the current tile settings.
+
+        Before the tiles are read the tile size is unknown, so it is taken
+        from the first tile's estimated shape.
+        """
+        from dataclasses import replace
+
+        geometry = self._current_tile_geometry()
+        tile_shape = geometry.tile_shape
+        if not (tile_shape and tile_shape[0] and tile_shape[1]):
+            estimated = _estimate_output_shape_from_options(
+                self.path, self.reader_options, self.harmonics
+            )
+            if estimated is None or len(estimated) != 2:
+                return "N/A"
+            geometry = replace(geometry, tile_shape=tuple(estimated))
+
+        canvas = geometry.canvas_shape()
+        return f"{tuple(canvas)} (Y, X)"
+
+    def _extra_preview_signature(self):
+        """Format-specific option fields affecting the preview signal.
+
+        Subclasses that read options from extra widgets (e.g. ``dtime``,
+        ``laser_factor``, ``index``) override this so the preview cache is
+        invalidated when those change. Returns a hashable value.
+        """
+        return ()
+
+    def _preview_signature(self):
+        """Hashable key identifying the inputs of the current preview signal.
+
+        Lets the plot, axis-selector, and shape-estimate consumers share a
+        single decode within a refresh while still invalidating when the user
+        changes an option (path, channel, extra fields, ...).
+        """
+        multi = tuple(getattr(self, '_multi_file_paths', None) or ())
+        grouped = tuple(getattr(self, '_grouped_file_paths', None) or ())
+        # Widget-level options like 'phasor_axis' and 'single_layer' only
+        # affect the transformed layers, not the decoded preview signal,
+        # so exclude them to avoid needless cache invalidation.
+        opts = tuple(
+            sorted(
+                (k, repr(v))
+                for k, v in self.reader_options.items()
+                if k
+                not in (
+                    'phasor_axis',
+                    'single_layer',
+                    'from_custom_import',
+                    'interactive',
+                    '_keep_signal',
+                )
+            )
+        )
+        kwargs = tuple(
+            (key_edit.text(), val_edit.text())
+            for key_edit, val_edit, _ in getattr(self, 'kwargs_widgets', [])
+        )
+        return (
+            self.path,
+            multi,
+            grouped,
+            opts,
+            kwargs,
+            self._extra_preview_signature(),
+        )
+
     def _get_preview_signal_data(self):
-        """Return preview signal, averaging across selected stack/grouped files."""
+        """Return the preview signal, decoding at most once per option set.
+
+        Wraps :meth:`_compute_preview_signal_data` with a single-entry cache
+        keyed on :meth:`_preview_signature`, so the signal-preview plot, the
+        phasor-axis selector, and the output-shape estimate reuse one decode
+        instead of decoding the file two or three times per refresh.
+        """
+        try:
+            signature = self._preview_signature()
+        except Exception:  # noqa: BLE001
+            return self._compute_preview_signal_data()
+
+        if getattr(self, '_preview_signal_cache_key', None) == signature:
+            return self._preview_signal_cache
+
+        signal = self._compute_preview_signal_data()
+        self._preview_signal_cache_key = signature
+        self._preview_signal_cache = signal
+        return signal
+
+    def _compute_preview_signal_data(self):
+        """Decode the preview signal, averaging across stack/grouped files."""
         multi_paths = getattr(self, '_multi_file_paths', None)
         grouped_paths = getattr(self, '_grouped_file_paths', None)
 
@@ -726,6 +1040,56 @@ class AdvancedOptionsWidget(QWidget):
         except ValueError:
             return signals[0]
 
+    def _estimate_base_output_shape(self):
+        """Return the estimated per-file mean-intensity output shape.
+
+        Derives the shape from the cached preview signal when possible so no
+        second decode + phasor transform is needed; falls back to running the
+        reader when the signal lacks the metadata required to derive it.
+        """
+        _, extension = _get_filename_extension(self.path)
+        shape = _phasor_output_shape_from_signal(
+            self._get_preview_signal_data(), extension, self.reader_options
+        )
+        if shape is not None:
+            return shape
+        return _estimate_output_shape_from_options(
+            self.path, self.reader_options, self.harmonics, n_files=1
+        )
+
+    def _get_channel_preview_signal(self, channel_idx):
+        """Return the preview signal for one channel.
+
+        Decodes the all-channel signal once (shared via the preview cache) and
+        slices out the requested channel, so previewing an N-channel file costs
+        a single decode instead of N. Falls back to decoding the channel
+        directly if the channel axis cannot be located.
+        """
+        original_channel = self.reader_options.get("channel")
+        self.reader_options["channel"] = None
+        try:
+            signal = self._get_preview_signal_data()
+        finally:
+            self.reader_options["channel"] = original_channel
+
+        dims = getattr(signal, "dims", None)
+        if signal is not None and dims is not None and "C" in dims:
+            c_axis = list(dims).index("C")
+            if channel_idx < signal.shape[c_axis]:
+                try:
+                    return signal.isel({"C": channel_idx})
+                except Exception:  # noqa: BLE001
+                    return np.take(
+                        np.asarray(signal), channel_idx, axis=c_axis
+                    )
+
+        # Fallback: decode the requested channel directly.
+        self.reader_options["channel"] = channel_idx
+        try:
+            return self._get_preview_signal_data()
+        finally:
+            self.reader_options["channel"] = original_channel
+
     def _update_signal_plot(self):
         """Update the signal plot based on current parameters."""
         try:
@@ -745,10 +1109,7 @@ class AdvancedOptionsWidget(QWidget):
                 colors = plt.cm.tab10(np.linspace(0, 1, self.all_channels))
 
                 for channel_idx in range(self.all_channels):
-                    original_channel = self.reader_options.get("channel")
-                    self.reader_options["channel"] = channel_idx
-                    signal = self._get_preview_signal_data()
-                    self.reader_options["channel"] = original_channel
+                    signal = self._get_channel_preview_signal(channel_idx)
 
                     if signal is None:
                         continue
@@ -947,6 +1308,255 @@ class AdvancedOptionsWidget(QWidget):
         self._stack_z_spacing = value
         self._stack_z_spacing_edit.setText(str(value))
 
+    def enable_tile_mode(self, tiles, geometry, tile_axis=None, binning=1):
+        """Switch this widget to stitching *tiles* into a single mosaic.
+
+        Parameters
+        ----------
+        tiles : list
+            Tiles in the order matching ``geometry.placements``, as paths or
+            :class:`~napari_phasors._stitching.TileSource` objects. Several
+            entries may share a path when one file holds many tiles.
+        geometry : TileGeometry
+            Mosaic layout produced by :class:`TileLayoutDialog`.
+        tile_axis : str or int, optional
+            Dimension along which a file stores its tiles. Detected
+            automatically when ``None``.
+        binning : int, optional
+            Spatial binning applied while reading each tile.
+        """
+        from ._stitching import as_tile_sources
+
+        self._tile_paths = as_tile_sources(tiles)
+        self._tile_axis = tile_axis
+        if binning and binning > 1:
+            self.reader_options["binning"] = int(binning)
+        else:
+            self.reader_options.pop("binning", None)
+        self._tile_geometry = geometry
+        self._tile_set = None
+        self._tile_layers = []
+        self._add_tile_controls()
+        if hasattr(self, 'btn'):
+            self.btn.setText(f"Stitch Mosaic ({len(self._tile_paths)} tiles)")
+        self._update_shape_preview()
+
+    def _add_tile_controls(self):
+        """Add the mosaic stitching controls above the transform button."""
+        if self._tile_section is not None:
+            return
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.tile_overlap_y_slider, self.tile_overlap_y_label = (
+            self._add_overlap_row(
+                content_layout, "Overlap Y", self._tile_geometry.overlap_y
+            )
+        )
+        self.tile_overlap_x_slider, self.tile_overlap_x_label = (
+            self._add_overlap_row(
+                content_layout, "Overlap X", self._tile_geometry.overlap_x
+            )
+        )
+
+        blend_layout = QHBoxLayout()
+        blend_layout.addWidget(QLabel("Blending: "))
+        self.tile_blend_combo = QComboBox()
+        self.tile_blend_combo.addItems(["Feather", "Average", "Sum counts"])
+        self.tile_blend_combo.setCurrentIndex(
+            ("feather", "average", "sum").index(self._tile_geometry.blend_mode)
+        )
+        self.tile_blend_combo.setToolTip(
+            "How intensity is combined where tiles overlap. Feather "
+            "cross-fades for a seamless image; sum counts keeps the total "
+            "photons, so overlaps are brighter but have better statistics. "
+            "Phasor coordinates are identical either way."
+        )
+        self.tile_blend_combo.currentIndexChanged.connect(
+            self._on_tile_settings_changed
+        )
+        blend_layout.addWidget(self.tile_blend_combo)
+        blend_layout.addStretch()
+        content_layout.addLayout(blend_layout)
+
+        self.tile_estimate_btn = QPushButton("Estimate overlap from data")
+        self.tile_estimate_btn.setToolTip(
+            "Match neighbouring tiles to find the overlap that aligns them "
+            "best. Available once the tiles have been read."
+        )
+        self.tile_estimate_btn.setEnabled(False)
+        self.tile_estimate_btn.clicked.connect(self._on_estimate_overlap)
+        content_layout.addWidget(self.tile_estimate_btn)
+
+        self.tile_status_label = QLabel(
+            "Overlap and blending can be changed after stitching; "
+            "the tiles are not read again."
+        )
+        self.tile_status_label.setWordWrap(True)
+        self.tile_status_label.setStyleSheet("color: grey;")
+        content_layout.addWidget(self.tile_status_label)
+
+        self._tile_section = CollapsibleSection(
+            title="Mosaic stitching",
+            initially_collapsed=False,
+            text_color="#c7c7c7",
+        )
+        self._tile_section.add_widget(content)
+
+        inserted = False
+        if hasattr(self, 'shape_preview_label'):
+            index = self.mainLayout.indexOf(self.shape_preview_label)
+            if index >= 0:
+                self.mainLayout.insertWidget(index, self._tile_section)
+                inserted = True
+        if not inserted:
+            self.mainLayout.addWidget(self._tile_section)
+
+    def _add_overlap_row(self, layout, label, initial_fraction):
+        """Add one labelled overlap slider. Returns ``(slider, label)``."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel(f"{label}: "))
+
+        slider = QSlider(Qt.Orientation.Horizontal)
+        # Tenths of a percent, so a slider step stays below one pixel for
+        # tiles up to about a thousand pixels across.
+        slider.setRange(0, 900)
+        slider.setValue(int(round(initial_fraction * 1000)))
+        slider.valueChanged.connect(self._on_overlap_slider_changed)
+        slider.sliderReleased.connect(self._on_tile_settings_changed)
+        row.addWidget(slider)
+
+        value_label = QLabel(f"{initial_fraction * 100:.1f} %")
+        value_label.setFixedWidth(55)
+        row.addWidget(value_label)
+        layout.addLayout(row)
+        return slider, value_label
+
+    def _current_tile_geometry(self):
+        """Return the layout with the overlap and blending currently set."""
+        from dataclasses import replace
+
+        geometry = self._tile_geometry
+        if not hasattr(self, 'tile_overlap_y_slider'):
+            return geometry
+        return replace(
+            geometry,
+            overlap_y=self.tile_overlap_y_slider.value() / 1000.0,
+            overlap_x=self.tile_overlap_x_slider.value() / 1000.0,
+            blend_mode=("feather", "average", "sum")[
+                self.tile_blend_combo.currentIndex()
+            ],
+        )
+
+    def _on_overlap_slider_changed(self):
+        """Keep the percentage labels in step with the sliders."""
+        for slider, label in (
+            (self.tile_overlap_y_slider, self.tile_overlap_y_label),
+            (self.tile_overlap_x_slider, self.tile_overlap_x_label),
+        ):
+            label.setText(f"{slider.value() / 10.0:.1f} %")
+
+        # Dragging emits a value for every pixel of travel; wait for the
+        # release before re-stitching, but respond immediately to the arrow
+        # keys and to programmatic changes.
+        if not (
+            self.tile_overlap_y_slider.isSliderDown()
+            or self.tile_overlap_x_slider.isSliderDown()
+        ):
+            self._on_tile_settings_changed()
+
+    def _on_tile_settings_changed(self):
+        """Re-stitch the mosaic with the current overlap and blending."""
+        self._tile_geometry = self._current_tile_geometry()
+        self._update_shape_preview()
+        if self._tile_set is not None:
+            self._restitch()
+
+    def _on_estimate_overlap(self):
+        """Measure the overlap from the tiles and apply it to the sliders."""
+        from ._stitching import estimate_overlap
+
+        if self._tile_set is None:
+            return
+
+        overlap_y, overlap_x = estimate_overlap(
+            self._tile_set.means(0), self._current_tile_geometry()
+        )
+        if overlap_y is None and overlap_x is None:
+            self.tile_status_label.setText(
+                "Could not match neighbouring tiles. Check the layout order, "
+                "or set the overlap manually."
+            )
+            return
+
+        found = []
+        for value, slider in (
+            (overlap_y, self.tile_overlap_y_slider),
+            (overlap_x, self.tile_overlap_x_slider),
+        ):
+            if value is None:
+                continue
+            slider.blockSignals(True)
+            slider.setValue(int(round(value * 1000)))
+            slider.blockSignals(False)
+            found.append(f"{value * 100:.1f} %")
+
+        self._on_overlap_slider_changed()
+        self._on_tile_settings_changed()
+        axes = (
+            "Y"
+            if overlap_x is None
+            else ("X" if overlap_y is None else "Y and X")
+        )
+        self.tile_status_label.setText(
+            f"Estimated overlap for {axes}: {', '.join(found)}."
+        )
+
+    def _restitch(self):
+        """Blend the cached tiles again and refresh the mosaic layer(s)."""
+        geometry = self._current_tile_geometry()
+        try:
+            layers = self._tile_set.stitch(geometry)
+        except ValueError as error:
+            show_error(f"Could not stitch mosaic: {error}")
+            return
+
+        live = [
+            layer for layer in self._tile_layers if layer in self.viewer.layers
+        ]
+
+        if len(live) == len(layers):
+            # Update in place so the mosaic keeps its position in the layer
+            # list, along with any contrast or colormap the user has set.
+            for layer, (data, add_kwargs) in zip(live, layers, strict=True):
+                layer.metadata.update(add_kwargs["metadata"])
+                layer.data = data
+                layer.reset_contrast_limits()
+        else:
+            # Some layers were removed; drop the rest rather than leaving
+            # half a stale mosaic behind next to the new one.
+            for layer in live:
+                self.viewer.layers.remove(layer)
+            self._tile_layers = []
+            for data, add_kwargs in layers:
+                add_kwargs = dict(add_kwargs)
+                self._tile_layers.append(
+                    self.viewer.add_image(
+                        data,
+                        name=add_kwargs.pop("name"),
+                        metadata=add_kwargs.pop("metadata"),
+                        **add_kwargs,
+                    )
+                )
+
+        canvas = geometry.canvas_shape()
+        self.tile_status_label.setText(
+            f"Stitched {self._tile_set.n_tiles} tile(s) into "
+            f"{canvas[0]} x {canvas[1]} px."
+        )
+
     def _get_signal_data(self):
         """Get signal data based on file type and current parameters.
         This method should be overridden by subclasses."""
@@ -987,6 +1597,7 @@ class AdvancedOptionsWidget(QWidget):
 
         self.channels = None
         self.channels_single_label = None
+        self.single_layer_checkbox = None
 
         self.mainLayout.addLayout(self.channels_layout)
 
@@ -1004,6 +1615,11 @@ class AdvancedOptionsWidget(QWidget):
             self.channels_single_label.deleteLater()
             self.channels_single_label = None
 
+        if self.single_layer_checkbox is not None:
+            self.single_layer_checkbox.setParent(None)
+            self.single_layer_checkbox.deleteLater()
+            self.single_layer_checkbox = None
+
         if hasattr(self, 'all_channels') and self.all_channels > 1:
             self.channels = QComboBox()
             self.channels.addItems(["All channels"])
@@ -1014,12 +1630,46 @@ class AdvancedOptionsWidget(QWidget):
                 self._on_channels_combobox_changed
             )
             self.channels_layout.addWidget(self.channels)
+
+            # Only meaningful while more than one channel is imported, so it
+            # is hidden as soon as a single channel is picked.
+            self.single_layer_checkbox = QCheckBox(
+                "Import channels in the same layer"
+            )
+            self.single_layer_checkbox.setToolTip(
+                "Stack all imported channels into a single "
+                "multi-dimensional layer\n"
+                "with a channel slider bar in the napari viewer."
+            )
+            self.single_layer_checkbox.toggled.connect(
+                self._on_single_layer_checkbox_changed
+            )
+            self.channels_layout.addWidget(self.single_layer_checkbox)
+            self._update_single_layer_checkbox()
         else:
             self.channels_single_label = QLabel("0")
             self.channels_layout.addWidget(self.channels_single_label)
             self.reader_options["channel"] = 0
 
         self.channels_layout.addStretch()
+
+    def _update_single_layer_checkbox(self):
+        """Show the single-layer checkbox only while all channels are imported."""
+        if self.single_layer_checkbox is None:
+            return
+        importing_all = self.channels is not None and (
+            self.channels.currentIndex() == 0
+        )
+        self.single_layer_checkbox.setVisible(importing_all)
+        if importing_all and self.single_layer_checkbox.isChecked():
+            self.reader_options["single_layer"] = True
+        else:
+            self.reader_options.pop("single_layer", None)
+
+    def _on_single_layer_checkbox_changed(self, checked):
+        """Callback whenever the single-layer checkbox is toggled."""
+        self._update_single_layer_checkbox()
+        self._update_shape_preview()
 
     def _harmonic_widget(self):
         """Add the harmonic widget to main layout."""
@@ -1197,6 +1847,7 @@ class AdvancedOptionsWidget(QWidget):
             self.reader_options["channel"] = None
         else:
             self.reader_options["channel"] = index - 1
+        self._update_single_layer_checkbox()
         self._update_shape_preview()
 
     def _on_click(self, path, reader_options, harmonics):
@@ -1205,8 +1856,18 @@ class AdvancedOptionsWidget(QWidget):
         If ``_multi_file_paths`` is set, all files are stacked into a
         single 3D layer via :func:`raw_file_stack_reader`.
         """
+        reader_options = (
+            dict(reader_options) if reader_options is not None else {}
+        )
+        reader_options["from_custom_import"] = True
+
         if hasattr(self, '_apply_kwargs'):
             self._apply_kwargs(reader_options)
+
+        if self._tile_paths:
+            self._read_and_stitch_tiles(reader_options, harmonics)
+            return
+
         grouped_paths = getattr(self, '_grouped_file_paths', None)
         multi_paths = getattr(self, '_multi_file_paths', None)
         self._on_stack_z_spacing_changed()
@@ -1285,6 +1946,37 @@ class AdvancedOptionsWidget(QWidget):
                     metadata=add_kw.pop("metadata"),
                     **add_kw,
                 )
+
+    def _read_and_stitch_tiles(self, reader_options, harmonics):
+        """Read every tile once, then stitch it into the mosaic layer(s).
+
+        The transformed tiles are cached on the widget so the overlap and
+        blending can be changed afterwards without reading the files again.
+        """
+        from ._reader import read_tile_phasors
+
+        try:
+            self._tile_set = read_tile_phasors(
+                self._tile_paths,
+                reader_options=reader_options,
+                harmonics=harmonics,
+                tile_axis=self._tile_axis,
+            )
+        except ValueError as error:
+            self._tile_set = None
+            show_error(str(error))
+            return
+
+        if hasattr(self, 'tile_estimate_btn'):
+            self.tile_estimate_btn.setEnabled(True)
+
+        cached_mb = self._tile_set.nbytes() / (1024 * 1024)
+        show_info(
+            f"Read {self._tile_set.n_tiles} tile(s) from "
+            f"{self._tile_set.n_files} file(s); {cached_mb:.0f} MB of phasor "
+            "data cached for re-stitching."
+        )
+        self._restitch()
 
     @staticmethod
     def _apply_axis_transform(add_kwargs, data, axis_order, axis_labels):
@@ -1410,6 +2102,23 @@ def _try_get_z_spacing_from_ome_tiff(path):
         return None
 
 
+def _parse_optional(text, cast):
+    """Return `text` converted with `cast`, or None if it is not a value.
+
+    Option line edits are optional and validated as-you-type, so they can
+    hold an empty string or a partial number (``"-"``, ``"1e"``) when read.
+    """
+    if text is None:
+        return None
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return cast(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def _default_axis_labels(ndim):
     """Return default axis labels for a given dimensionality."""
     if ndim == 2:
@@ -1448,6 +2157,170 @@ def _estimate_result_shape(file_paths):
         return None
 
 
+def _reduce_ptu_signal_dims(
+    ptu_shape, ptu_dims, bins_in_period, channel, dtime
+):
+    """Return ``(shape, dims)`` of a decoded PTU signal from metadata only.
+
+    Mirrors the axis reduction of :func:`phasorpy.io.signal_from_ptu` with
+    ``keepdims=False`` for the import widget's options: the time axis is always
+    integrated away (``frame=-1``), the channel axis is kept only when no
+    channel is selected, and ``dtime`` sets the histogram length.
+    """
+    out_shape, out_dims = [], []
+    for size, dim in zip(ptu_shape, ptu_dims, strict=False):
+        dim = str(dim).upper()
+        if dim == "T":
+            continue
+        if dim == "C":
+            if channel is None:
+                out_shape.append(int(size))
+                out_dims.append(dim)
+            continue
+        if dim == "H":
+            if dtime < 0:
+                continue
+            out_shape.append(
+                min(dtime, bins_in_period) if dtime > 0 else bins_in_period
+            )
+            out_dims.append(dim)
+            continue
+        out_shape.append(int(size))
+        out_dims.append(dim)
+    return tuple(out_shape), tuple(out_dims)
+
+
+def _estimate_ptu_output_shape(path, reader_options):
+    """Estimate the per-layer mean-intensity shape of a PTU file from metadata.
+
+    Avoids running the full reader (decode + phasor transform), which can
+    allocate tens of GB for large files. The phasor transform collapses the
+    histogram axis and the channel axis is iterated into separate layers, so
+    both are dropped from the returned spatial shape.
+    """
+    import ptufile
+
+    reader_options = reader_options or {}
+    channel = reader_options.get("channel")
+    try:
+        dtime = int(float(reader_options.get("dtime", 0)))
+    except (TypeError, ValueError):
+        dtime = 0
+
+    try:
+        with _silence_ptufile_logger():
+            with ptufile.PtuFile(path) as ptu:
+                shape = tuple(int(s) for s in ptu.shape)
+                dims = tuple(str(d).upper() for d in ptu.dims)
+                bins = int(ptu.number_bins_in_period)
+    except Exception:  # noqa: BLE001
+        return None
+
+    sig_shape, sig_dims = _reduce_ptu_signal_dims(
+        shape, dims, bins, channel, dtime
+    )
+
+    drop = set()
+    phasor_axis = reader_options.get("phasor_axis")
+    if phasor_axis is not None and 0 <= phasor_axis < len(sig_dims):
+        drop.add(phasor_axis)
+    else:
+        drop.update(i for i, d in enumerate(sig_dims) if d == "H")
+    drop.update(i for i, d in enumerate(sig_dims) if d == "C")
+
+    base = tuple(s for i, s in enumerate(sig_shape) if i not in drop)
+    if (
+        reader_options.get("single_layer")
+        and channel is None
+        and "C" in sig_dims
+    ):
+        c_size = sig_shape[sig_dims.index("C")]
+        if c_size > 1:
+            return (c_size,) + base
+    return base
+
+
+def _phasor_output_shape_from_signal(signal, extension, reader_options):
+    """Derive the per-layer mean-intensity shape from a decoded signal.
+
+    Mirrors the axis selection of :func:`napari_phasors._reader.raw_file_reader`
+    so the estimated output shape can be computed from the already-decoded
+    preview signal instead of running the full reader (decode + phasor
+    transform) a second time. Returns ``None`` if the shape cannot be derived,
+    so callers can fall back to the reader.
+    """
+    if signal is None:
+        return None
+    reader_options = reader_options or {}
+    axis_override = reader_options.get("phasor_axis")
+
+    has_dims = hasattr(signal, "dims")
+    dims = tuple(signal.dims) if has_dims else ()
+    try:
+        shape = tuple(int(s) for s in signal.shape)
+    except (AttributeError, TypeError):
+        shape = tuple(int(s) for s in np.asarray(signal).shape)
+    ndim = len(shape)
+    if ndim == 0:
+        return None
+
+    # Without dimension labels the histogram/channel axes cannot be located
+    # reliably, except for plain TIFF (axis 0 by convention) or an explicit
+    # phasor-axis override. Bail out so the caller falls back to the reader.
+    if (
+        not has_dims
+        and axis_override is None
+        and extension
+        not in (
+            ".tif",
+            ".tiff",
+        )
+    ):
+        return None
+
+    iter_axis = iter_index_mapping.get(extension)
+
+    if iter_axis is None or iter_axis not in dims:
+        # Single-layer path.
+        if axis_override is not None:
+            axis = axis_override
+        elif extension in (".tif", ".tiff"):
+            axis = 0
+        elif has_dims and "H" in dims:
+            axis = dims.index("H")
+        elif has_dims and "C" in dims:
+            axis = dims.index("C")
+        else:
+            axis = 0
+        if not 0 <= axis < ndim:
+            return None
+        return tuple(s for i, s in enumerate(shape) if i != axis)
+
+    # Multi-channel path: the channel axis is iterated into separate layers,
+    # and each layer's phasor axis (H) is collapsed.
+    iter_index = dims.index(iter_axis)
+    reduced_dims = tuple(d for i, d in enumerate(dims) if i != iter_index)
+    reduced_shape = tuple(s for i, s in enumerate(shape) if i != iter_index)
+    if axis_override is not None:
+        hist_axis = axis_override
+    elif "H" in reduced_dims:
+        hist_axis = reduced_dims.index("H")
+    else:
+        hist_axis = 0
+    if not 0 <= hist_axis < len(reduced_shape):
+        return None
+    layer_shape = tuple(
+        s for i, s in enumerate(reduced_shape) if i != hist_axis
+    )
+    if (
+        reader_options.get("single_layer")
+        and reader_options.get("channel") is None
+        and shape[iter_index] > 1
+    ):
+        return (shape[iter_index],) + layer_shape
+    return layer_shape
+
+
 def _estimate_output_shape_from_options(
     path,
     reader_options,
@@ -1456,7 +2329,22 @@ def _estimate_output_shape_from_options(
 ):
     """Estimate output shape with current reader options and harmonics."""
     try:
+        reader_options = (
+            dict(reader_options) if reader_options is not None else {}
+        )
+        reader_options["from_custom_import"] = True
+        reader_options["interactive"] = False
+
         _, extension = _get_filename_extension(path)
+
+        if extension == ".ptu":
+            base_shape = _estimate_ptu_output_shape(path, reader_options)
+            if base_shape is None:
+                return None
+            if n_files > 1:
+                return (n_files,) + base_shape
+            return base_shape
+
         reader = napari_get_reader(
             path,
             reader_options=reader_options,
@@ -1465,11 +2353,7 @@ def _estimate_output_shape_from_options(
         if reader is None:
             return None
 
-        if extension == ".ptu":
-            with _silence_ptufile_logger():
-                layers = reader(path)
-        else:
-            layers = reader(path)
+        layers = reader(path)
         if not layers:
             return None
         base_shape = tuple(np.shape(layers[0][0]))
@@ -1482,6 +2366,11 @@ def _estimate_output_shape_from_options(
 
 class FbdWidget(AdvancedOptionsWidget):
     """Widget for FLIMbox FBD files."""
+
+    #: ``refine`` combobox indices mapped to the reader's ``refine`` value.
+    #: Index 0 ("Auto") is absent on purpose: leaving ``refine`` unset lets
+    #: the reader skip refining whenever an explicit laser factor is given.
+    REFINE_MODES = {1: True, 2: None, 3: False}
 
     def __init__(self, viewer, path):
         """Initialize the widget."""
@@ -1499,6 +2388,12 @@ class FbdWidget(AdvancedOptionsWidget):
 
     def initUI(self):
         """Initialize the user interface."""
+        # Match the reader defaults (integrate frames, keep all channels) before
+        # the first preview decode so the preview and estimated shape are
+        # consistent with the final transform.
+        self.reader_options["frame"] = -1
+        self.reader_options.setdefault("channel", None)
+
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
 
@@ -1528,6 +2423,71 @@ class FbdWidget(AdvancedOptionsWidget):
         laser_layout.addStretch()
         self.mainLayout.addLayout(laser_layout)
 
+        iotech_layout = QHBoxLayout()
+        self.iotech_laser_factor = QCheckBox(
+            "Derive laser factor for SimFCS (IOTech)"
+        )
+        self.iotech_laser_factor.setToolTip(
+            "Compute the laser factor that reproduces SimFCS from the file "
+            "header, instead of using the number above. The correct number "
+            "differs between fbdfile releases, so prefer this."
+        )
+        self.iotech_laser_factor.toggled.connect(self._on_iotech_toggled)
+        iotech_layout.addWidget(self.iotech_laser_factor)
+        iotech_layout.addStretch()
+        self.mainLayout.addLayout(iotech_layout)
+
+        line_start_layout = QHBoxLayout()
+        line_start_layout.addWidget(QLabel("Line Start (optional): "))
+        self.scanner_line_start = QLineEdit()
+        self.scanner_line_start.setPlaceholderText("from header")
+        self.scanner_line_start.setToolTip(
+            "First valid pixel of the scan line. Leave empty to use the "
+            "header's x_starting_pixel. Files recorded with an IOTech "
+            "scanner card need an explicit value, because the header omits "
+            "the hardware trigger latency that SimFCS applies internally."
+        )
+        self.scanner_line_start.setValidator(
+            QIntValidator(0, 65535, self.scanner_line_start)
+        )
+        self.scanner_line_start.editingFinished.connect(
+            lambda: self._update_signal_plot()
+        )
+        line_start_layout.addWidget(self.scanner_line_start)
+        line_start_layout.addStretch()
+        self.mainLayout.addLayout(line_start_layout)
+
+        refine_layout = QHBoxLayout()
+        refine_layout.addWidget(QLabel("Refine settings: "))
+        self.refine = QComboBox()
+        self.refine.addItems(["Auto", "Always", "If needed", "Never"])
+        self.refine.setToolTip(
+            "Recompute pixel dwell time and laser factor from the detected "
+            "frame durations. Refining overwrites the laser factor above, so "
+            "'Auto' refines only when no laser factor is given."
+        )
+        self.refine.currentIndexChanged.connect(
+            lambda _: self._update_signal_plot()
+        )
+        refine_layout.addWidget(self.refine)
+        refine_layout.addStretch()
+        self.mainLayout.addLayout(refine_layout)
+
+        match_layout = QHBoxLayout()
+        self.match_reference_btn = QPushButton("Match SimFCS reference...")
+        self.match_reference_btn.setToolTip(
+            "Select the SimFCS R64/REF file exported for this acquisition "
+            "and search the laser factor and line start whose "
+            "reconstruction correlates best with it."
+        )
+        self.match_reference_btn.clicked.connect(self._on_match_reference)
+        match_layout.addWidget(self.match_reference_btn)
+        self.match_reference_label = QLabel("")
+        self.match_reference_label.setWordWrap(True)
+        match_layout.addWidget(self.match_reference_label)
+        match_layout.addStretch()
+        self.mainLayout.addLayout(match_layout)
+
         self._kwargs_widget()
 
         self.btn = QPushButton("Phasor Transform")
@@ -1540,14 +2500,139 @@ class FbdWidget(AdvancedOptionsWidget):
 
         self._update_signal_plot()
 
+    def _on_iotech_toggled(self, checked):
+        """Grey out the manual laser factor while it is derived."""
+        self.laser_factor.setEnabled(not checked)
+        self._update_signal_plot()
+
+    def _on_match_reference(self):
+        """Derive the reconstruction settings from a SimFCS reference file."""
+        companion = find_reference_file(self.path)
+        start_dir = companion or os.path.dirname(self.path)
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select the SimFCS reference file recorded for this FBD file",
+            start_dir,
+            "SimFCS referenced (*.r64 *.ref *.R64 *.REF);;All files (*)",
+        )
+        if not path:
+            return
+        settings = self._matched_settings(path)
+        if settings is not None:
+            self._apply_matched_settings(settings)
+
+    def _matched_settings(self, reference_path):
+        """Return settings matching `reference_path`, or None if it failed."""
+        progress = show_activity_progress(
+            "Matching FBD reconstruction to reference..."
+        )
+        self.match_reference_btn.setEnabled(False)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                return match_reference_settings(
+                    self.path,
+                    reference_path,
+                    channel=self._match_channel(),
+                    frame=self.reader_options.get("frame", -1),
+                    progress=lambda done, total: self._report_match_progress(
+                        progress, done, total
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            show_error(f"Could not match the reference file: {exc}")
+            return None
+        finally:
+            self.match_reference_btn.setEnabled(True)
+            progress.close()
+
+    def _match_channel(self):
+        """Return the channel to match, defaulting to the first one.
+
+        A SimFCS reference file holds a single detector channel, so the
+        "All channels" selection cannot be matched as such.
+        """
+        channel = self.reader_options.get("channel")
+        return 0 if channel is None else channel
+
+    @staticmethod
+    def _report_match_progress(progress, done, total):
+        """Show how many candidate settings have been evaluated."""
+        progress.set_description(
+            f"Matching FBD reconstruction to reference ({done}/{total})"
+        )
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+
+    def _apply_matched_settings(self, settings):
+        """Fill the option fields with `settings` and refresh the preview."""
+        derived = settings.laser_factor == IOTECH
+        widgets = (
+            self.iotech_laser_factor,
+            self.laser_factor,
+            self.scanner_line_start,
+            self.refine,
+        )
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            self.iotech_laser_factor.setChecked(derived)
+            self.laser_factor.setEnabled(not derived)
+            if not derived:
+                self.laser_factor.setText(f"{settings.laser_factor:g}")
+            self.scanner_line_start.setText(str(settings.scanner_line_start))
+            self.refine.setCurrentIndex(
+                next(
+                    (
+                        index
+                        for index, value in self.REFINE_MODES.items()
+                        if value is settings.refine
+                    ),
+                    0,  # a value with no entry falls back to "Auto"
+                )
+            )
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+
+        summary = (
+            f"line start {settings.scanner_line_start}, laser factor "
+            f"{settings.laser_factor_value:.6f} "
+            f"(r = {settings.correlation:.4f})"
+        )
+        self.match_reference_label.setText(summary)
+        self.match_reference_label.setToolTip(
+            f"Best of {len(DEFAULT_CANDIDATES)} candidate reconstructions: "
+            f"{summary}"
+        )
+        self._update_signal_plot()
+
+    def _apply_fbd_options(self, options):
+        """Add the FBD-specific fields to `options`.
+
+        Applied before :meth:`_apply_kwargs` so a name typed in the
+        "Additional kwargs" section still wins.
+        """
+        if self.iotech_laser_factor.isChecked():
+            options["laser_factor"] = IOTECH
+        else:
+            laser_factor = _parse_optional(self.laser_factor.text(), float)
+            if laser_factor is not None:
+                options["laser_factor"] = laser_factor
+        line_start = _parse_optional(self.scanner_line_start.text(), int)
+        if line_start is not None:
+            options["scanner_line_start"] = line_start
+        refine_index = self.refine.currentIndex()
+        if refine_index in self.REFINE_MODES:
+            options["refine"] = self.REFINE_MODES[refine_index]
+        self._apply_kwargs(options)
+
     def _get_signal_data(self):
         """Get signal data for FBD files."""
-        from phasorpy.io import signal_from_fbd
-
         options = self.reader_options.copy()
-        if self.laser_factor.text():
-            options["laser_factor"] = float(self.laser_factor.text())
-        self._apply_kwargs(options)
+        self._apply_fbd_options(options)
+        options = self._clean_io_options(options)
 
         try:
             with warnings.catch_warnings():
@@ -1557,6 +2642,19 @@ class FbdWidget(AdvancedOptionsWidget):
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading FBD signal: {str(e)}")
             return None
+
+    def _extra_preview_signature(self):
+        """Include the FBD fields so the preview cache tracks them."""
+        return (
+            "laser_factor",
+            self.laser_factor.text(),
+            "iotech_laser_factor",
+            self.iotech_laser_factor.isChecked(),
+            "scanner_line_start",
+            self.scanner_line_start.text(),
+            "refine",
+            self.refine.currentIndex(),
+        )
 
     def _on_frames_combobox_changed(self, index):
         """Callback whenever the frames combobox changes."""
@@ -1570,9 +2668,7 @@ class FbdWidget(AdvancedOptionsWidget):
 
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
-        if self.laser_factor.text():
-            reader_options["laser_factor"] = float(self.laser_factor.text())
-        self._apply_kwargs(reader_options)
+        self._apply_fbd_options(reader_options)
         super()._on_click(path, reader_options, harmonics)
 
 
@@ -1587,6 +2683,12 @@ class PtuWidget(AdvancedOptionsWidget):
             with ptufile.PtuFile(path) as ptu:
                 self.all_frames = ptu.shape[0]
                 self.all_channels = ptu.shape[-2]
+                # Cache metadata so preview/estimation paths can derive shapes
+                # without decoding the full image (which can allocate tens of
+                # GB for large files).
+                self._ptu_shape = tuple(int(s) for s in ptu.shape)
+                self._ptu_dims = tuple(str(d).upper() for d in ptu.dims)
+                self._bins_in_period = int(ptu.number_bins_in_period)
 
         super().__init__(viewer, path)
         self.reader_options["frame"] = -1
@@ -1638,6 +2740,7 @@ class PtuWidget(AdvancedOptionsWidget):
         if self.dtime.text():
             options["dtime"] = float(self.dtime.text())
         self._apply_kwargs(options)
+        options = self._clean_io_options(options)
 
         try:
             with _silence_ptufile_logger():
@@ -1645,6 +2748,118 @@ class PtuWidget(AdvancedOptionsWidget):
             return signal
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading PTU signal: {str(e)}")
+            return None
+
+    def _dtime_option(self):
+        """Return the current ``dtime`` option as an int (0 if unset)."""
+        text = self.dtime.text().strip() if self.dtime.text() else ""
+        if not text:
+            return 0
+        try:
+            return int(float(text))
+        except ValueError:
+            return 0
+
+    def _preview_signal_dims(self):
+        """Return ``(shape, dims)`` of the decoded signal for current options.
+
+        Derived from cached PTU metadata rather than by decoding the image, so
+        it is instantaneous and allocates no memory. Mirrors the axis reduction
+        performed by :func:`phasorpy.io.signal_from_ptu` (``keepdims=False``)
+        for the widget's options (``frame=-1`` integrates the time axis, the
+        channel is selected/kept, and ``dtime`` sets the histogram length).
+        """
+        return _reduce_ptu_signal_dims(
+            self._ptu_shape,
+            self._ptu_dims,
+            self._bins_in_period,
+            self.reader_options.get("channel"),
+            self._dtime_option(),
+        )
+
+    def _preview_shape_and_labels(self):
+        """Derive the phasor-axis selector shape from metadata (no decode)."""
+        return self._preview_signal_dims()
+
+    def _extra_preview_signature(self):
+        """Include ``dtime`` so the preview cache tracks the histogram length."""
+        return ("dtime", self._dtime_option())
+
+    def _estimate_base_output_shape(self):
+        """Estimate the output shape from PTU metadata (no image decode)."""
+        options = dict(self.reader_options)
+        options["dtime"] = self._dtime_option()
+        return _estimate_ptu_output_shape(self.path, options)
+
+    def _decode_preview_histogram(self, path=None):
+        """Return the per-channel TCSPC histogram summed over all pixels.
+
+        Uses :meth:`ptufile.PtuFile.decode_histogram`, which builds a ``(C, H)``
+        array directly from the photon records without materializing the full
+        ``(T, Y, X, C, H)`` image. Decoding the whole image only to sum it away
+        for the preview plot can allocate tens of GB for large PTU files; this
+        keeps the preview at a few kilobytes. Cached per ``(path, dtime)`` so
+        the per-channel plotting loop decodes each file only once.
+        """
+        import ptufile
+
+        path = path or self.path
+        dtime = self._dtime_option()
+        cache_key = (path, dtime)
+        if getattr(self, "_preview_hist_cache_key", None) == cache_key:
+            return self._preview_hist_cache
+
+        with _silence_ptufile_logger():
+            with ptufile.PtuFile(path) as ptu:
+                hist = np.asarray(
+                    ptu.decode_histogram(dtype="uint32", dtime=dtime)
+                )
+
+        self._preview_hist_cache_key = cache_key
+        self._preview_hist_cache = hist
+        return hist
+
+    def _compute_preview_signal_data(self):
+        """Return a lightweight preview signal for the plot.
+
+        Overrides the base implementation (which decodes the full image via
+        :func:`signal_from_ptu`) with the pixel-summed histogram, so selecting a
+        large PTU file in the import widget no longer exhausts memory. The full
+        image is only decoded when the user runs the phasor transform.
+        """
+        multi_paths = getattr(self, "_multi_file_paths", None)
+        grouped_paths = getattr(self, "_grouped_file_paths", None)
+        paths_to_average = None
+        if grouped_paths and len(grouped_paths) > 1:
+            paths_to_average = grouped_paths
+        elif multi_paths and len(multi_paths) > 1:
+            paths_to_average = multi_paths
+
+        channel = self.reader_options.get("channel")
+
+        def _select_channel(hist):
+            if channel is None:
+                return hist
+            if 0 <= channel < hist.shape[0]:
+                return hist[channel]
+            return hist
+
+        try:
+            if paths_to_average is None:
+                return _select_channel(self._decode_preview_histogram())
+
+            signals = [
+                np.asarray(
+                    _select_channel(self._decode_preview_histogram(path))
+                )
+                for path in paths_to_average
+            ]
+            try:
+                return np.mean(np.stack(signals, axis=0), axis=0)
+            except ValueError:
+                return signals[0]
+        except Exception as e:  # noqa: BLE001
+            show_error(f"Error reading PTU signal preview: {str(e)}")
             return None
 
     def _on_frames_combobox_changed(self, index):
@@ -1717,8 +2932,7 @@ class LsmWidget(AdvancedOptionsWidget):
         try:
             options = self.reader_options.copy()
             self._apply_kwargs(options)
-            # Remove keys that shouldn't be passed to io functions
-            options.pop('phasor_axis', None)
+            options = self._clean_io_options(options)
 
             if self._is_lsm:
                 from phasorpy.io import signal_from_lsm
@@ -1857,6 +3071,7 @@ class SdtWidget(AdvancedOptionsWidget):
         options = self.reader_options.copy()
         if self.index.text():
             options["index"] = int(self.index.text())
+        options = self._clean_io_options(options)
 
         try:
             signal = signal_from_sdt(self.path, **options)
@@ -1864,6 +3079,10 @@ class SdtWidget(AdvancedOptionsWidget):
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading SDT signal: {str(e)}")
             return None
+
+    def _extra_preview_signature(self):
+        """Include the dataset ``index`` so the preview cache tracks it."""
+        return ("index", self.index.text())
 
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
@@ -1903,10 +3122,20 @@ class CziWidget(AdvancedOptionsWidget):
     def _get_signal_data(self):
         """Get signal data for CZI files."""
         try:
-            from phasorpy.io import signal_from_czi
-
             options = self.reader_options.copy()
             self._apply_kwargs(options)
+            binning = int(options.pop("binning", 1) or 1)
+
+            # A mosaic's nominal extent spans the whole scanned area, so
+            # reading it whole would mean allocating an array orders of
+            # magnitude larger than the file. Preview one tile instead.
+            if czi_mosaic_info(self.path) is not None:
+                with CziMosaic(self.path) as mosaic:
+                    return mosaic.read_tile(0, binning=binning)
+
+            from phasorpy.io import signal_from_czi
+
+            options = self._clean_io_options(options)
             return signal_from_czi(self.path, **options)
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading CZI signal: {str(e)}")
@@ -2306,6 +3535,7 @@ class LifWidget(AdvancedOptionsWidget):
                 except Exception:  # noqa: BLE001
                     options["image"] = text
             options["dim"] = dim
+            options = self._clean_io_options(options)
             return signal_from_lif(self.path, **options)
         except Exception as e:  # noqa: BLE001
             show_error(
@@ -2389,6 +3619,7 @@ class JsonWidget(AdvancedOptionsWidget):
             from phasorpy.io import signal_from_flimlabs_json
 
             options = self.reader_options.copy()
+            options = self._clean_io_options(options)
             return signal_from_flimlabs_json(self.path, **options)
         except Exception as e:  # noqa: BLE001
             show_error(

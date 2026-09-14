@@ -4,14 +4,14 @@ from typing import TYPE_CHECKING
 
 import matplotlib.cm as cm
 import numpy as np
-from matplotlib.colors import Normalize
+from matplotlib.colors import LinearSegmentedColormap, Normalize
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import (
     phasor_to_apparent_lifetime,
     phasor_to_normal_lifetime,
 )
-from phasorpy.phasor import phasor_to_polar
+from phasorpy.phasor import phasor_from_polar, phasor_to_polar
 from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtGui import QColor, QDoubleValidator
 from qtpy.QtWidgets import (
@@ -30,12 +30,29 @@ from scipy.ndimage import gaussian_filter
 from scipy.stats import binned_statistic_2d
 from superqt import QRangeSlider, QToggleSwitch
 
+from ._mapping_filters import (
+    MAPPING_METRICS,
+    MappingFilterList,
+    baseline_arrays,
+    combined_mask,
+    compute_metric,
+    get_filters,
+    kept_fraction,
+    rebuild_layer_from_filters,
+    requires_frequency,
+    select_harmonic,
+    set_filters,
+)
+from ._parallel import parallel_map
 from ._timelapse import slice_datasets
 from ._utils import (
     LIFETIME_OUTPUT_TYPES,
+    AutoUpdateMixin,
     HistogramWidget,
     analysis_section_stylesheet,
     create_mpl_colormap_from_qcolor,
+    layer_colormap_from_settings,
+    layer_colormap_to_settings,
     make_section,
     populate_colormap_combobox,
     resolve_colormap_by_name,
@@ -50,6 +67,80 @@ if TYPE_CHECKING:
 
 # Default grid resolution used when a precomputed mesh grid is not supplied.
 _DEFAULT_MESH_RESOLUTION = 300
+# Default opacity of the phase/modulation mesh overlay. The control exposes
+# its complement (transparency), which is how the rest of the plugin words it.
+DEFAULT_MESH_ALPHA = 0.45
+_MAPPING_OUTPUT_METADATA_KEY = 'phasor_mapping_output'
+_MAPPING_OUTPUT_TYPES = (
+    "Apparent Phase Lifetime",
+    "Apparent Modulation Lifetime",
+    "Normal Lifetime",
+    "Phase",
+    "Modulation",
+)
+
+
+def _phasor_to_lifetime(kind, real, imag, frequency):
+    """Return the *kind* lifetime (ns) of phasor coordinates.
+
+    ``kind`` is one of ``LIFETIME_OUTPUT_TYPES`` and ``frequency`` is the
+    effective frequency in MHz (the laser frequency times the harmonic).
+    Non-physical coordinates give negative or non-finite lifetimes; they are
+    returned as-is so callers can decide how to treat them.
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if kind == "Normal Lifetime":
+            return phasor_to_normal_lifetime(real, imag, frequency=frequency)
+        phase_lifetime, modulation_lifetime = phasor_to_apparent_lifetime(
+            real, imag, frequency=frequency
+        )
+    if kind == "Apparent Phase Lifetime":
+        return phase_lifetime
+    return modulation_lifetime
+
+
+def compute_lifetime_mesh_field(p_grid, m_grid, kind, frequency):
+    """Return the *kind* lifetime (ns) at every cell of a polar mesh grid.
+
+    The lifetime is computed with the same phasorpy function as the output
+    map, so a mesh cell and a pixel at the same phasor coordinates always
+    carry the same value. Iso-lifetime lines are rays from the origin for the
+    apparent phase lifetime (the phase mesh in ns), circles around the origin
+    for the apparent modulation lifetime (the modulation mesh in ns), and rays
+    from the semicircle centre (0.5, 0) for the normal lifetime.
+    """
+    with np.errstate(invalid="ignore"):
+        real, imag = phasor_from_polar(p_grid, m_grid)
+    return _phasor_to_lifetime(kind, real, imag, frequency)
+
+
+def lifetime_mesh_upper_bound(frequency):
+    """Return the largest lifetime (ns) a lifetime mesh range defaults to.
+
+    Two modulation periods at *frequency* (MHz): the same bound the output
+    range falls back to when lifetimes run away (the apparent phase lifetime
+    diverges as G approaches 0).
+    """
+    return 2e3 / frequency
+
+
+def lifetime_mesh_range_from_phasors(kind, real, imag, frequency):
+    """Return the ``(min, max)`` range in ns of the *kind* lifetimes of data.
+
+    Non-physical (negative or non-finite) lifetimes are ignored and both ends
+    are capped at :func:`lifetime_mesh_upper_bound`. Returns ``None`` when no
+    lifetime is valid.
+    """
+    upper = lifetime_mesh_upper_bound(frequency)
+    lifetimes = np.asarray(
+        _phasor_to_lifetime(kind, real, imag, frequency), dtype=float
+    )
+    lifetimes = lifetimes[np.isfinite(lifetimes) & (lifetimes >= 0)]
+    if not lifetimes.size:
+        return None
+    return min(float(lifetimes.min()), upper), min(
+        float(lifetimes.max()), upper
+    )
 
 
 def compute_phasor_mesh_mask(
@@ -60,13 +151,20 @@ def compute_phasor_mesh_mask(
     phase_range=None,
     modulation_range=None,
     clip_semicircle=False,
+    lifetime_grid=None,
+    lifetime_range=None,
 ):
     """Return the boolean mask of grid cells *excluded* from a phasor mesh.
 
-    A cell is masked (``True``) when it falls outside the requested phase or
-    modulation range, or -- when ``clip_semicircle`` is set in semicircle mode
-    -- outside the universal semicircle. ``p_grid``/``m_grid`` are the phase and
-    modulation arrays of a coordinate grid (see :func:`draw_phasor_mesh`).
+    A cell is masked (``True``) when it falls outside the requested phase,
+    modulation or lifetime range, or -- when ``clip_semicircle`` is set in
+    semicircle mode -- outside the universal semicircle. ``p_grid``/``m_grid``
+    are the phase and modulation arrays of a coordinate grid (see
+    :func:`draw_phasor_mesh`). When ``lifetime_grid`` is given, cells with a
+    non-finite lifetime are masked too, and so -- in semicircle mode -- are
+    cells below the diameter. Lifetimes mirror across it, but the phase and
+    modulation meshes (whose phase starts at 0) never draw that region, and
+    the lifetime meshes follow suit.
     """
     mask = np.zeros(np.shape(p_grid), dtype=bool)
     if phase_range is not None:
@@ -75,6 +173,17 @@ def compute_phasor_mesh_mask(
     if modulation_range is not None:
         mod_min, mod_max = modulation_range
         mask |= ~((m_grid >= mod_min) & (m_grid <= mod_max))
+    if lifetime_grid is not None:
+        with np.errstate(invalid="ignore"):
+            keep = np.isfinite(lifetime_grid)
+            if lifetime_range is not None:
+                lifetime_min, lifetime_max = lifetime_range
+                keep &= (lifetime_grid >= lifetime_min) & (
+                    lifetime_grid <= lifetime_max
+                )
+            if semicircle:
+                keep &= p_grid >= 0
+        mask |= ~keep
     if clip_semicircle and semicircle:
         with np.errstate(invalid="ignore"):
             # Bound by the arc (m <= cos(phase)) and by the diameter (s >= 0).
@@ -130,8 +239,11 @@ def draw_phasor_mesh(
     m_grid=None,
     mask=None,
     extent=None,
+    frequency=None,
+    lifetime_range=None,
+    lifetime_grid=None,
 ):
-    """Draw a phase/modulation mesh field behind the phasor data on ``ax``.
+    """Draw a phase/modulation/lifetime mesh field behind the phasor data.
 
     This is the single, viewer-independent implementation shared by the
     interactive Phasor Mapping tab and the headless Batch Analysis export, so
@@ -141,8 +253,10 @@ def draw_phasor_mesh(
     ----------
     ax : matplotlib.axes.Axes
         Axes to draw on.
-    kind : {"Phase", "Modulation"}
-        Quantity used to color the mesh.
+    kind : {"Phase", "Modulation", "Apparent Phase Lifetime", \
+"Apparent Modulation Lifetime", "Normal Lifetime"}
+        Quantity used to color the mesh. Lifetime kinds need ``frequency``
+        (or a precomputed ``lifetime_grid``).
     semicircle : bool
         Whether the plot is in semicircle (vs. full-quadrant) geometry. Used
         for the default grid extent, phase wrapping and the semicircle clip.
@@ -173,6 +287,14 @@ def draw_phasor_mesh(
     extent : list of float, optional
         ``[xmin, xmax, ymin, ymax]`` matching the grid. Required if grids are
         supplied; otherwise derived from the limits.
+    frequency : float, optional
+        Effective frequency in MHz (laser frequency times harmonic), used to
+        compute a lifetime mesh when ``lifetime_grid`` is not supplied.
+    lifetime_range : tuple of float, optional
+        ``(min, max)`` lifetime range in ns restricting which cells of a
+        lifetime mesh are shown.
+    lifetime_grid : numpy.ndarray, optional
+        Precomputed lifetime grid (see :func:`compute_lifetime_mesh_field`).
 
     Returns
     -------
@@ -198,6 +320,14 @@ def draw_phasor_mesh(
                 p_grid = np.mod(p_grid, 2.0 * np.pi)
         extent = [x_limits[0], x_limits[1], y_limits[0], y_limits[1]]
 
+    is_lifetime = kind in LIFETIME_OUTPUT_TYPES
+    if is_lifetime and lifetime_grid is None:
+        if frequency is None:
+            raise ValueError(f"A frequency is required to draw a {kind} mesh.")
+        lifetime_grid = compute_lifetime_mesh_field(
+            p_grid, m_grid, kind, frequency
+        )
+
     if mask is None:
         mask = compute_phasor_mesh_mask(
             p_grid,
@@ -206,9 +336,14 @@ def draw_phasor_mesh(
             phase_range=phase_range,
             modulation_range=modulation_range,
             clip_semicircle=clip_semicircle,
+            lifetime_grid=lifetime_grid if is_lifetime else None,
+            lifetime_range=lifetime_range,
         )
 
-    field = p_grid if kind == "Phase" else m_grid
+    if is_lifetime:
+        field = lifetime_grid
+    else:
+        field = p_grid if kind == "Phase" else m_grid
     # The exterior of the mesh is hidden purely through ``alpha_map`` (0 outside
     # the visible region). We deliberately keep the *colour* field fully valid
     # everywhere rather than masking it: a masked colour field renders excluded
@@ -238,6 +373,8 @@ def draw_phasor_mesh(
             vmin, vmax = phase_range
         elif kind == "Modulation" and modulation_range is not None:
             vmin, vmax = modulation_range
+        elif is_lifetime and lifetime_range is not None:
+            vmin, vmax = lifetime_range
         else:
             with np.errstate(invalid="ignore"):
                 visible = np.asarray(field)[~mask]
@@ -269,7 +406,7 @@ def draw_phasor_mesh(
     return image
 
 
-class PhasorMappingWidget(QWidget):
+class PhasorMappingWidget(AutoUpdateMixin, QWidget):
     """Widget to calculate and display phasor mapping outputs.
 
     Supports lifetime-derived outputs and direct phasor outputs:
@@ -304,6 +441,10 @@ class PhasorMappingWidget(QWidget):
         self._mesh_overlay_imshow = None
         self._phase_colormap_name = "cool"
         self._modulation_colormap_name = "PiYG"
+        # Output types whose colormap the user picked in the combobox since
+        # the last run. That explicit pick is applied on the next run; every
+        # other run keeps the colormap the output layers already have.
+        self._pending_combobox_colormaps = set()
         self._coloring_paused_by_tab = False
         self.min_lifetime = None
         self.max_lifetime = None
@@ -319,11 +460,20 @@ class PhasorMappingWidget(QWidget):
         )
         self._updating_settings = False  # Flag to prevent recursive updates
         self._needs_update = False  # Deferred update flag
+        self._has_calculated_output = False
+        self._output_refresh_timer = QTimer(self)
+        self._output_refresh_timer.setSingleShot(True)
+        self._output_refresh_timer.setInterval(50)
+        self._output_refresh_timer.timeout.connect(self._refresh_active_output)
         self._updating_linked_layers = (
             False  # Flag to prevent recursive layer updates
         )
         self.phase_range_factor = 100
         self.modulation_range_factor = 100
+        self.lifetime_mesh_range_factor = 100
+        # Set while this tab rewrites the phasor arrays from the filter
+        # stack, so the refresh it triggers does not recurse back into it.
+        self._applying_mapping_filter = False
         self._axes_limit_callback_cids = []
         self._mesh_axes_update_timer = QTimer(self)
         self._mesh_axes_update_timer.setSingleShot(True)
@@ -398,6 +548,31 @@ class PhasorMappingWidget(QWidget):
         frequency_layout.addWidget(self.frequency_input)
         output_box_layout.addWidget(self.frequency_widget)
         self.main_layout.addWidget(output_box)
+
+        # Filter section -----------------------------------------------------
+        # Each criterion is its own card. Chaining "set a range, press apply"
+        # steps made the pixels that vanished between two steps impossible to
+        # account for; a visible list of the criteria currently in force, each
+        # removable on its own, is what makes the result readable.
+        filter_box, filter_box_layout = make_section("Filter")
+        self.filter_box = filter_box
+
+        self.filter_intro_label = QLabel(
+            "Discard pixels whose value falls outside a range."
+        )
+        self.filter_intro_label.setWordWrap(True)
+        self.filter_intro_label.setToolTip(
+            "A pixel is kept only when it satisfies every enabled filter. Each one is measured on the unfiltered data, so the order you add them in does not matter and removing one restores exactly the pixels it hid."
+        )
+        filter_box_layout.addWidget(self.filter_intro_label)
+
+        self.filter_list = MappingFilterList(MAPPING_METRICS)
+        self.filter_list.set_editable_metrics(MAPPING_METRICS)
+        self.filter_list.set_params_provider(self._new_filter_params)
+        self.filter_list.set_harmonic_provider(self._current_harmonic)
+        self.filter_list.set_bounds_provider(self._filter_bounds_for)
+        self.filter_list.filtersChanged.connect(self._on_filters_changed)
+        filter_box_layout.addWidget(self.filter_list)
 
         # Coloring section ---------------------------------------------------
         # Only relevant for Phase/Modulation output; hidden for Lifetime (see
@@ -497,7 +672,8 @@ class PhasorMappingWidget(QWidget):
         self.mesh_overlay_checkbox = QToggleSwitch("Show mesh overlay")
         self.mesh_overlay_checkbox.onColor = QColor("#27ae60")
         self.mesh_overlay_checkbox.setToolTip(
-            "Show a full phase/modulation mesh behind the phasor data"
+            "Show a mesh of the selected phase, modulation or lifetime "
+            "behind the phasor data"
         )
         mesh_overlay_group_layout.addWidget(self.mesh_overlay_checkbox)
 
@@ -515,26 +691,26 @@ class PhasorMappingWidget(QWidget):
         self.mesh_colorbar_checkbox = QToggleSwitch("Show colorbar")
         self.mesh_colorbar_checkbox.onColor = QColor("#27ae60")
         self.mesh_colorbar_checkbox.setToolTip(
-            "Show a colorbar for the phase or modulation mesh/plot"
+            "Show a colorbar for the phase, modulation or lifetime mesh/plot"
         )
         self.mesh_colorbar_checkbox.setVisible(False)
 
-        # Row for Alpha, Clip Toggle, and Colorbar Toggle
+        # Row for Transparency, Clip Toggle, and Colorbar Toggle
         self.mesh_controls_widget = QWidget()
         mesh_controls_layout = QHBoxLayout(self.mesh_controls_widget)
         mesh_controls_layout.setContentsMargins(0, 0, 0, 0)
 
-        mesh_controls_layout.addWidget(QLabel("Alpha:"))
-        self.mesh_alpha_spinbox = QDoubleSpinBox()
-        self.mesh_alpha_spinbox.setRange(0.01, 1.0)
-        self.mesh_alpha_spinbox.setSingleStep(0.05)
-        self.mesh_alpha_spinbox.setDecimals(2)
-        self.mesh_alpha_spinbox.setValue(0.45)
-        self.mesh_alpha_spinbox.setToolTip(
-            "Opacity of the phase/modulation mesh overlay"
+        mesh_controls_layout.addWidget(QLabel("Transparency:"))
+        self.mesh_transparency_spinbox = QDoubleSpinBox()
+        self.mesh_transparency_spinbox.setRange(0.0, 0.99)
+        self.mesh_transparency_spinbox.setSingleStep(0.05)
+        self.mesh_transparency_spinbox.setDecimals(2)
+        self.mesh_transparency_spinbox.setValue(1.0 - DEFAULT_MESH_ALPHA)
+        self.mesh_transparency_spinbox.setToolTip(
+            "Transparency of the phase/modulation mesh overlay"
         )
-        self.mesh_alpha_spinbox.setFixedWidth(60)
-        mesh_controls_layout.addWidget(self.mesh_alpha_spinbox)
+        self.mesh_transparency_spinbox.setFixedWidth(60)
+        mesh_controls_layout.addWidget(self.mesh_transparency_spinbox)
 
         mesh_controls_layout.addSpacing(10)
         mesh_controls_layout.addWidget(self.mesh_clip_semicircle_checkbox)
@@ -563,9 +739,7 @@ class PhasorMappingWidget(QWidget):
         ph_row.addWidget(QLabel("to"))
         ph_row.addWidget(self.phase_max_edit)
         self.phase_auto_btn = QPushButton("Auto")
-        self.phase_auto_btn.clicked.connect(
-            self._initialize_mesh_ranges_from_current_data
-        )
+        self.phase_auto_btn.clicked.connect(self._on_mesh_auto_clicked)
         ph_row.addWidget(self.phase_auto_btn)
         ph_row.addStretch(1)
         ph_cnt_layout.addLayout(ph_row)
@@ -594,9 +768,7 @@ class PhasorMappingWidget(QWidget):
         mod_row.addWidget(QLabel("to"))
         mod_row.addWidget(self.modulation_max_edit)
         self.modulation_auto_btn = QPushButton("Auto")
-        self.modulation_auto_btn.clicked.connect(
-            self._initialize_mesh_ranges_from_current_data
-        )
+        self.modulation_auto_btn.clicked.connect(self._on_mesh_auto_clicked)
         mod_row.addWidget(self.modulation_auto_btn)
         mod_row.addStretch(1)
         mod_cnt_layout.addLayout(mod_row)
@@ -605,6 +777,45 @@ class PhasorMappingWidget(QWidget):
         self.modulation_range_slider.setValue((0, 100))
         mod_cnt_layout.addWidget(self.modulation_range_slider)
         mesh_overlay_group_layout.addWidget(self.modulation_range_container)
+
+        # Lifetime range controls (Lifetime mode). Each lifetime type keeps its
+        # own range, in ns; it sets the width of the mesh band: an angular
+        # wedge for the apparent phase and normal lifetimes, a ring for the
+        # apparent modulation lifetime.
+        self.lifetime_mesh_range_container = QWidget()
+        lt_cnt_layout = QVBoxLayout(self.lifetime_mesh_range_container)
+        lt_cnt_layout.setContentsMargins(0, 5, 0, 0)
+
+        lt_row = QHBoxLayout()
+        lt_row.addWidget(QLabel("Lifetime range (ns):"))
+        self.lifetime_mesh_min_edit = QLineEdit("0.00")
+        self.lifetime_mesh_max_edit = QLineEdit("10.00")
+        self.lifetime_mesh_min_edit.setValidator(QDoubleValidator())
+        self.lifetime_mesh_max_edit.setValidator(QDoubleValidator())
+        self.lifetime_mesh_min_edit.setFixedWidth(50)
+        self.lifetime_mesh_max_edit.setFixedWidth(50)
+        self.lifetime_mesh_min_edit.setAlignment(Qt.AlignCenter)
+        self.lifetime_mesh_max_edit.setAlignment(Qt.AlignCenter)
+        lt_row.addWidget(self.lifetime_mesh_min_edit)
+        lt_row.addWidget(QLabel("to"))
+        lt_row.addWidget(self.lifetime_mesh_max_edit)
+        self.lifetime_mesh_auto_btn = QPushButton("Auto")
+        self.lifetime_mesh_auto_btn.clicked.connect(self._on_mesh_auto_clicked)
+        lt_row.addWidget(self.lifetime_mesh_auto_btn)
+        lt_row.addStretch(1)
+        lt_cnt_layout.addLayout(lt_row)
+        self.lifetime_mesh_range_slider = QRangeSlider(
+            Qt.Orientation.Horizontal
+        )
+        self.lifetime_mesh_range_slider.setRange(0, 1000)
+        self.lifetime_mesh_range_slider.setValue((0, 1000))
+        lt_cnt_layout.addWidget(self.lifetime_mesh_range_slider)
+        self.lifetime_mesh_range_container.setToolTip(
+            "Lifetimes shown by the mesh. Wider ranges widen the wedge "
+            "(apparent phase and normal lifetimes) or the ring (apparent "
+            "modulation lifetime)."
+        )
+        mesh_overlay_group_layout.addWidget(self.lifetime_mesh_range_container)
 
         self.main_layout.addWidget(self.mesh_overlay_group)
 
@@ -621,17 +832,34 @@ class PhasorMappingWidget(QWidget):
             "selected layers.",
         )
         self.main_layout.addWidget(self.calculate_lifetime_button)
+
+        self.main_layout.addWidget(
+            self._build_autoupdate_toggle(
+                self.calculate_lifetime_button,
+                self._mapping_validation,
+                self._autoupdate_calculate_output,
+                "Recalculate the selected output automatically whenever the "
+                "output type, the frequency, the layer selection, or the "
+                "filtered/calibrated phasor data change.",
+            )
+        )
+        self.main_layout.addWidget(self.filter_box)
         self.main_layout.addStretch(1)
 
         # Re-evaluate the button whenever a required input changes.
         self.frequency_input.textChanged.connect(
-            lambda _=None: self._refresh_calculate_button()
+            lambda _=None: self._refresh_action_buttons()
         )
         self.output_mode_combobox.currentTextChanged.connect(
-            lambda _=None: self._refresh_calculate_button()
+            lambda _=None: self._on_mapping_input_changed()
         )
         self.lifetime_type_combobox.currentTextChanged.connect(
-            lambda _=None: self._refresh_calculate_button()
+            lambda _=None: self._on_mapping_input_changed()
+        )
+        # Autoupdate follows the *committed* frequency (Enter or focus-out),
+        # not every keystroke: "8" is a valid frequency on the way to "80".
+        self.frequency_input.editingFinished.connect(
+            self._on_mapping_input_changed
         )
 
         # Connect signals for mesh overlay
@@ -662,8 +890,17 @@ class PhasorMappingWidget(QWidget):
         self.modulation_max_edit.editingFinished.connect(
             self._on_modulation_edits_changed
         )
-        self.mesh_alpha_spinbox.valueChanged.connect(
-            self._on_mesh_alpha_changed
+        self.mesh_transparency_spinbox.valueChanged.connect(
+            self._on_mesh_transparency_changed
+        )
+        self.lifetime_mesh_range_slider.valueChanged.connect(
+            self._on_lifetime_mesh_slider_changed
+        )
+        self.lifetime_mesh_min_edit.editingFinished.connect(
+            self._on_lifetime_mesh_edits_changed
+        )
+        self.lifetime_mesh_max_edit.editingFinished.connect(
+            self._on_lifetime_mesh_edits_changed
         )
 
         self._sync_mode_widgets()
@@ -714,23 +951,18 @@ class PhasorMappingWidget(QWidget):
         """Debounce a mesh overlay refresh when the plot is panned or zoomed."""
         if self._coloring_paused_by_tab:
             return
-        output_type = self._get_selected_output_type()
-        if (
-            output_type in {"Phase", "Modulation"}
-            and self.mesh_overlay_checkbox.isChecked()
-        ):
+        if self.mesh_overlay_checkbox.isChecked():
             self._mesh_axes_update_timer.start()
 
     def _apply_mesh_after_axes_change(self):
-        """Re-apply the mesh overlay once panning or zooming has settled."""
+        """Re-apply the mesh overlay once panning or zooming has settled.
+
+        Also the debounced end of lifetime-mesh refreshes driven by the output
+        layers' contrast limits, which change continuously while dragged.
+        """
         if self._coloring_paused_by_tab:
             return
-        output_type = self._get_selected_output_type()
-        if (
-            output_type in {"Phase", "Modulation"}
-            and self.mesh_overlay_checkbox.isChecked()
-        ):
-            self._apply_histogram_coloring(output_type)
+        self._refresh_mesh_overlay_if_needed()
 
     def update_apply_2d_text(self):
         """Update the checkbox text based on the current plot type."""
@@ -804,22 +1036,37 @@ class PhasorMappingWidget(QWidget):
         self.colormap_widget.setVisible(not is_lifetime_mode)
         self.coloring_checkbox_widget.setVisible(not is_lifetime_mode)
 
-        self.mesh_overlay_group.setVisible(not is_lifetime_mode)
+        # The mesh applies to every mode; Lifetime swaps the phase and
+        # modulation ranges for a single lifetime range.
+        show_ranges = self.mesh_overlay_checkbox.isChecked()
+        self.mesh_controls_widget.setVisible(show_ranges)
+        self.phase_range_container.setVisible(
+            show_ranges and not is_lifetime_mode
+        )
+        self.modulation_range_container.setVisible(
+            show_ranges and not is_lifetime_mode
+        )
+        self.lifetime_mesh_range_container.setVisible(
+            show_ranges and is_lifetime_mode
+        )
+        self.mesh_clip_semicircle_checkbox.setVisible(
+            self._is_semicircle_mode()
+        )
+        self.mesh_colorbar_checkbox.setVisible(True)
         if not is_lifetime_mode:
-            show_ranges = self.mesh_overlay_checkbox.isChecked()
-            is_semi = self._is_semicircle_mode()
-            self.mesh_controls_widget.setVisible(show_ranges)
-            self.phase_range_container.setVisible(show_ranges)
-            self.modulation_range_container.setVisible(show_ranges)
-            self.mesh_clip_semicircle_checkbox.setVisible(is_semi)
-            self.mesh_colorbar_checkbox.setVisible(True)
             self._update_phase_slider_bounds_from_plot_mode()
-        else:
-            self.mesh_controls_widget.setVisible(False)
-            self.phase_range_container.setVisible(False)
-            self.modulation_range_container.setVisible(False)
-            if pw is not None:
-                pw._remove_mapping_colorbar()
+        elif not show_ranges and pw is not None:
+            # Lifetime mode only colours the mesh; without it a colorbar
+            # left over from Phase/Modulation describes nothing on screen.
+            pw._remove_mapping_colorbar()
+
+        # A new filter defaults to the quantity currently on screen, which is
+        # almost always the one the user is reasoning about.
+        output_type = self._get_selected_output_type()
+        if output_type in MAPPING_METRICS:
+            self.filter_list.set_current_metric(output_type)
+
+        self._refresh_action_buttons()
 
     def _is_semicircle_mode(self) -> bool:
         """Return whether the plot shows the universal semicircle.
@@ -939,25 +1186,309 @@ class PhasorMappingWidget(QWidget):
 
         self._persist_current_mesh_ranges_to_metadata()
 
+    def _refresh_action_buttons(self):
+        """Refresh the ready/blocked styling on primary action buttons."""
+        if (
+            hasattr(self, '_refresh_calculate_button')
+            and self._refresh_calculate_button is not None
+        ):
+            self._refresh_calculate_button()
+        if hasattr(self, 'filter_list'):
+            self._refresh_filter_add_button()
+
+    def _phase_wraps(self) -> bool:
+        """Return whether phase filters are measured on ``[0, 2pi)``."""
+        return not self._is_semicircle_mode()
+
+    def _filter_frequency(self, layer=None):
+        """Return the frequency metric filters should be evaluated at.
+
+        The tab's own input wins; a layer that was analysed earlier keeps the
+        frequency it was analysed with, so a stack restored from metadata
+        still means what it meant when it was created.
+        """
+        frequency = self._parse_positive_frequency(
+            self.frequency_input.text().strip()
+        )
+        if frequency is not None:
+            return frequency
+        if layer is not None:
+            stored = layer.metadata.get('settings', {}).get('frequency')
+            if stored is None:
+                stored = layer.metadata.get('frequency')
+            return self._parse_positive_frequency(stored)
+        return None
+
+    def _get_base_phasor_arrays(self, layer):
+        """Return *layer*'s phasor arrays before any metric filter.
+
+        This is the baseline every criterion is measured against: the
+        intensity threshold, the median/wavelet filter and the mask are all
+        applied, the metric filters are not. Measuring against the filtered
+        arrays instead is what would make a stack order-dependent, since each
+        new criterion would only ever see what the previous ones left.
+        """
+        return baseline_arrays(layer, self._layer_filter_params(layer))
+
+    def _layer_filter_params(self, layer):
+        """Return *layer*'s own intensity filter/threshold parameters."""
+        if self.parent_widget is None:
+            return {}
+        return self.parent_widget._filter_params_from_settings(layer)
+
+    def _compute_metric_for_layer(self, layer, metric, harmonic, arrays=None):
+        """Return *metric* evaluated on *layer*'s unfiltered baseline."""
+        mean, real, imag = (
+            arrays
+            if arrays is not None
+            else self._get_base_phasor_arrays(layer)
+        )
+        if mean is None:
+            return None
+        plane_real, plane_imag = select_harmonic(
+            real, imag, layer.metadata.get('harmonics'), harmonic, mean.ndim
+        )
+        return compute_metric(
+            metric,
+            plane_real,
+            plane_imag,
+            harmonic=harmonic,
+            frequency=self._filter_frequency(layer),
+            wrap_phase=self._phase_wraps(),
+        )
+
+    def _new_filter_params(self, metric, layer=None):
+        """Return the extra parameters to freeze into a new criterion."""
+        params = {}
+        if requires_frequency(metric):
+            frequency = self._filter_frequency(layer)
+            if frequency is not None:
+                params['frequency'] = frequency
+        return params
+
+    def _current_harmonic(self):
+        """Return the harmonic a new criterion should be measured on."""
+        return getattr(self.parent_widget, 'harmonic', 1) or 1
+
+    def _filter_add_blocked_reason(self):
+        """Return why a filter cannot be added right now, else ``None``."""
+        if not self._filter_layers():
+            return "Select at least one image layer with phasor features."
+        metric = self.filter_list.current_metric()
+        if requires_frequency(metric) and self._filter_frequency() is None:
+            return "Enter the frequency (MHz) before filtering on a lifetime."
+        return None
+
+    def _refresh_filter_add_button(self):
+        """Explain on the button itself when a filter cannot be added yet."""
+        reason = self._filter_add_blocked_reason()
+        self.filter_list.add_button.setEnabled(reason is None)
+        if reason is not None:
+            self.filter_list.add_button.setToolTip(reason)
+        else:
+            self.filter_list.add_button.setToolTip(
+                "Add a filter on the selected quantity."
+            )
+
+    def _filter_layers(self):
+        """Return the layers the filter stack is written to."""
+        if self.parent_widget is None:
+            return []
+        try:
+            return list(self.parent_widget.get_selected_layers())
+        except (AttributeError, RuntimeError):
+            return []
+
+    def _primary_filter_layer(self):
+        """Return the layer whose stack the cards show, or ``None``."""
+        layers = self._filter_layers()
+        return layers[0] if layers else None
+
+    def _sync_filter_ui(self):
+        """Show the stack stored on the primary layer, and refresh its ranges."""
+        layer = self._primary_filter_layer()
+        if layer is None:
+            self.filter_list.set_filters([])
+            self.filter_list.set_filter_stats({}, "")
+            return
+        self.filter_list.set_filters(get_filters(layer))
+        output_type = self._get_selected_output_type()
+        if output_type in MAPPING_METRICS and not self.filter_list.filters():
+            # An empty list should offer the quantity the user is looking at.
+            self.filter_list.set_current_metric(output_type)
+        self._refresh_filter_bounds()
+        self._refresh_filter_stats()
+        self._refresh_filter_add_button()
+
+    def _filter_bounds_for(self, metric, arrays=None):
+        """Return the ``(low, high)`` data range of *metric*, or ``None``.
+
+        Measured on the *unfiltered* baseline of the primary layer, so a
+        filter can never shrink the range the next filter is offered -- the
+        trap that made the old single-range control feel like it was hiding
+        data.
+        """
+        layer = self._primary_filter_layer()
+        if layer is None or metric not in MAPPING_METRICS:
+            return None
+        harmonic = getattr(self.parent_widget, 'harmonic', 1) or 1
+        values = self._compute_metric_for_layer(
+            layer, metric, harmonic, arrays=arrays
+        )
+        if values is None:
+            return None
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size == 0:
+            return None
+        return float(finite.min()), float(finite.max())
+
+    def _refresh_filter_bounds(self):
+        """Widen each card's slider to the full data range of its metric."""
+        layer = self._primary_filter_layer()
+        if layer is None:
+            return
+        metrics = {f['metric'] for f in self.filter_list.filters()}
+        current = self.filter_list.current_metric()
+        if current:
+            metrics.add(current)
+        metrics &= set(MAPPING_METRICS)
+        arrays = self._get_base_phasor_arrays(layer)
+        for metric in metrics:
+            bounds = self._filter_bounds_for(metric, arrays=arrays)
+            if bounds is not None:
+                self.filter_list.set_metric_bounds(metric, *bounds)
+
+    def _refresh_filter_stats(self):
+        """Report what each criterion, and the stack as a whole, keeps."""
+        filters = self.filter_list.filters()
+        layer = self._primary_filter_layer()
+        if layer is None or not filters:
+            self.filter_list.set_filter_stats({}, "")
+            return
+        mean, real, imag = self._get_base_phasor_arrays(layer)
+        harmonics = layer.metadata.get('harmonics')
+        stats = {}
+        for entry in filters:
+            single = dict(entry, enabled=True)
+            mask = combined_mask([single], mean, real, imag, harmonics)
+            fraction = kept_fraction(mask, mean)
+            prefix = "" if entry['enabled'] else "off · "
+            stats[entry['id']] = f"{prefix}keeps {fraction:.1%} of the pixels"
+        total_mask = combined_mask(filters, mean, real, imag, harmonics)
+        active = sum(1 for f in filters if f['enabled'])
+        kept = kept_fraction(total_mask, mean)
+        # Kept short so it fits the dock on one line; the sentence it stands
+        # for is the tooltip.
+        summary = f"{active} of {len(filters)} on · {kept:.1%} kept"
+        detail = (
+            f"{active} of {len(filters)} filters are active, and together "
+            f"they keep {kept:.1%} of the measured pixels of {layer.name}."
+        )
+        self.filter_list.set_filter_stats(stats, summary, detail=detail)
+
+    def _rebuild_layer_from_filters(self, layer, filters, on_error=None):
+        """Rewrite *layer*'s phasor arrays from its baseline plus *filters*."""
+        rebuild_layer_from_filters(
+            layer,
+            filters,
+            filter_params=self._layer_filter_params(layer),
+            on_error=on_error,
+        )
+
+    def _on_filters_changed(self, filters):
+        """Persist the edited stack and rebuild everything downstream of it."""
+        self._apply_filter_stack(filters)
+
+    def _apply_filter_stack(self, filters=None, layers=None):
+        """Write *filters* to *layers* and re-derive their phasor data.
+
+        Everything the tab shows -- the phasor plot, the output maps, the
+        histogram and the statistics table -- is derived from the layer's G/S
+        arrays, so rebuilding those from the stack is the only step needed to
+        keep all four in sync.
+        """
+        if self.parent_widget is None:
+            return
+        layers = self._filter_layers() if layers is None else list(layers)
+        if not layers:
+            return
+        if filters is None:
+            filters = self.filter_list.filters()
+
+        problems = []
+        self._applying_mapping_filter = True
+        try:
+            for layer in layers:
+                stored = set_filters(layer, filters)
+                self._rebuild_layer_from_filters(
+                    layer, stored, on_error=problems.append
+                )
+            self.parent_widget.refresh_phasor_data()
+            self._recalculate_after_filter_change()
+        finally:
+            self._applying_mapping_filter = False
+
+        self._sync_filter_ui()
+        for message in dict.fromkeys(problems):
+            show_warning(message)
+
+    def _recalculate_after_filter_change(self):
+        """Refresh the output maps and the histogram for the new stack."""
+        if self._has_calculated_output:
+            self._calculate_and_display_output(show_warnings=False)
+        else:
+            self.plot_lifetime_histogram()
+
+    def _reapply_filter_stack(self, selected_layers):
+        """Re-derive the phasor arrays of layers that carry a filter stack.
+
+        Called by the plotter after something else rewrote the arrays from
+        the originals (a mask assignment, an imported analysis), so that the
+        criteria on screen and the pixels on screen still agree.
+        """
+        for layer in selected_layers or []:
+            filters = get_filters(layer)
+            if not filters:
+                continue
+            self._rebuild_layer_from_filters(layer, filters)
+
     def _on_plot_geometry_mode_toggled(self, _checked):
         """Callback when the plot switches between semicircle and full polar."""
         self._update_phase_slider_bounds_from_plot_mode()
         self._sync_mode_widgets()
         if self.mesh_overlay_checkbox.isChecked():
             settings = self._get_current_layer_mapping_settings(create=False)
-            if not self._restore_mesh_ranges_from_settings(settings):
-                self._initialize_mesh_ranges_from_current_data()
+            self._sync_mesh_ranges(settings)
             self._persist_current_mesh_ranges_to_metadata()
         self.reapply_if_active()
 
     def _refresh_mesh_overlay_if_needed(self):
         """Re-apply the mesh overlay when it is enabled for the current output."""
-        output_type = self._get_selected_output_type()
-        if (
-            output_type in {"Phase", "Modulation"}
-            and self.mesh_overlay_checkbox.isChecked()
-        ):
+        if self.mesh_overlay_checkbox.isChecked():
+            self._apply_output_coloring(self._get_selected_output_type())
+
+    def _apply_output_coloring(self, output_type: str):
+        """Redraw the plot colouring and mesh overlay for *output_type*."""
+        if output_type in LIFETIME_OUTPUT_TYPES:
+            self._apply_lifetime_mesh(output_type)
+        else:
             self._apply_histogram_coloring(output_type)
+
+    def _sync_mesh_ranges(self, settings):
+        """Restore every mesh range from *settings*, else fit it to the data."""
+        if not self._restore_mesh_ranges_from_settings(settings):
+            self._initialize_mesh_ranges_from_current_data()
+        self._sync_lifetime_mesh_range(settings)
+
+    def _on_mesh_auto_clicked(self):
+        """Fit the displayed mesh range(s) to the data and redraw the mesh."""
+        if self._get_selected_output_type() in LIFETIME_OUTPUT_TYPES:
+            self._initialize_lifetime_mesh_range_from_current_data()
+            self._sync_lifetime_mesh_range_to_histogram()
+        else:
+            self._initialize_mesh_ranges_from_current_data()
+        self._refresh_mesh_overlay_if_needed()
 
     def get_selected_output_display_name(self) -> str:
         """Return the selected output's user-facing name.
@@ -983,14 +1514,19 @@ class PhasorMappingWidget(QWidget):
             'output_type': 'Apparent Phase Lifetime',
             'range_min': None,
             'range_max': None,
+            'output_ranges': {},
+            # {output_type: layer_colormap_to_settings(...)}
+            'output_colormaps': {},
             'mesh_overlay_enabled': False,
             'mesh_clip_semicircle_enabled': False,
             'mesh_colorbar_enabled': False,
-            'mesh_alpha': 0.45,
+            'mesh_alpha': DEFAULT_MESH_ALPHA,
             'mesh_phase_min': None,
             'mesh_phase_max': None,
             'mesh_modulation_min': None,
             'mesh_modulation_max': None,
+            # {lifetime output type: [min_ns, max_ns]}
+            'mesh_lifetime_ranges': {},
         }
 
     def _get_current_layer_mapping_settings(self, create: bool = False):
@@ -1089,12 +1625,155 @@ class PhasorMappingWidget(QWidget):
         """Return whether *output_type* can only be computed with a frequency."""
         return output_type in LIFETIME_OUTPUT_TYPES
 
+    @staticmethod
+    def _parse_positive_frequency(text):
+        """Return a finite positive frequency, or None for invalid text."""
+        try:
+            frequency = float(text)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(frequency) or frequency <= 0:
+            return None
+        return frequency
+
     def _get_selected_output_type(self) -> str:
         """Return the selected output type, resolving the lifetime sub-type."""
         mode = self.output_mode_combobox.currentText()
         if mode == "Lifetime":
             return self.lifetime_type_combobox.currentText()
         return mode
+
+    def _get_selected_source_names(self) -> set[str]:
+        """Return names checked in the plotter's Phasor Layers selector."""
+        if self.parent_widget is None:
+            return set()
+        try:
+            return {
+                layer.name
+                for layer in self.parent_widget.get_selected_layers()
+            }
+        except (AttributeError, RuntimeError):
+            return set()
+
+    def _mapping_output_info(self, layer):
+        """Return ``(output_type, source_name)`` for a Mapping output layer."""
+        if not isinstance(layer, Image):
+            return None
+        tag = layer.metadata.get(_MAPPING_OUTPUT_METADATA_KEY)
+        if isinstance(tag, dict):
+            output_type = tag.get('output_type')
+            source_name = tag.get('source_layer')
+            if output_type in _MAPPING_OUTPUT_TYPES and source_name:
+                return output_type, source_name
+        for output_type in _MAPPING_OUTPUT_TYPES:
+            prefix = f"{output_type}: "
+            if layer.name.startswith(prefix):
+                source_name = layer.name[len(prefix) :]
+                if source_name in self.viewer.layers:
+                    source_layer = self.viewer.layers[source_name]
+                    if (
+                        isinstance(source_layer, Image)
+                        and 'G' in source_layer.metadata
+                        and 'S' in source_layer.metadata
+                    ):
+                        return output_type, source_name
+        return None
+
+    def _mapping_output_layers(self, output_type=None, selected_only=False):
+        """Return Mapping outputs keyed by source name."""
+        selected_names = (
+            self._get_selected_source_names() if selected_only else None
+        )
+        result = {}
+        for layer in self.viewer.layers:
+            info = self._mapping_output_info(layer)
+            if info is None:
+                continue
+            layer_output_type, source_name = info
+            if output_type is not None and layer_output_type != output_type:
+                continue
+            if (
+                selected_names is not None
+                and source_name not in selected_names
+            ):
+                continue
+            existing = result.get(source_name)
+            layer_is_tagged = isinstance(
+                layer.metadata.get(_MAPPING_OUTPUT_METADATA_KEY), dict
+            )
+            existing_is_tagged = existing is not None and isinstance(
+                existing.metadata.get(_MAPPING_OUTPUT_METADATA_KEY), dict
+            )
+            if existing is None or (
+                layer_is_tagged and not existing_is_tagged
+            ):
+                result[source_name] = layer
+        return result
+
+    def _set_metric_layers(self, layers):
+        """Replace the active Mapping layer registry without duplicate events."""
+        for layer in self.metric_layers:
+            with contextlib.suppress(
+                AttributeError, RuntimeError, TypeError, ValueError
+            ):
+                layer.events.colormap.disconnect(self._on_colormap_changed)
+                layer.events.contrast_limits.disconnect(
+                    self._on_colormap_changed
+                )
+                layer.events.gamma.disconnect(self._on_colormap_changed)
+
+        self.metric_layers = list(layers)
+        self.lifetime_layers = list(self.metric_layers)
+        self.lifetime_layer = (
+            self.metric_layers[0] if self.metric_layers else None
+        )
+
+        for layer in self.metric_layers:
+            with contextlib.suppress(
+                AttributeError, RuntimeError, TypeError, ValueError
+            ):
+                layer.events.colormap.disconnect(self._on_colormap_changed)
+                layer.events.contrast_limits.disconnect(
+                    self._on_colormap_changed
+                )
+                layer.events.gamma.disconnect(self._on_colormap_changed)
+            layer.events.colormap.connect(self._on_colormap_changed)
+            layer.events.contrast_limits.connect(self._on_colormap_changed)
+            layer.events.gamma.connect(self._on_colormap_changed)
+
+        if self.lifetime_layer is not None:
+            self.lifetime_colormap = self.lifetime_layer.colormap.colors
+            self.colormap_contrast_limits = self.lifetime_layer.contrast_limits
+            self.colormap_gamma = self.lifetime_layer.gamma
+
+    def _sync_mapping_output_visibility(self):
+        """Show Mapping outputs only when their source layer is selected."""
+        selected_names = self._get_selected_source_names()
+        self._updating_linked_layers = True
+        try:
+            for layer in self.viewer.layers:
+                info = self._mapping_output_info(layer)
+                if info is None:
+                    continue
+                _, source_name = info
+                desired_visible = source_name in selected_names
+                if layer.visible != desired_visible:
+                    layer.visible = desired_visible
+        finally:
+            self._updating_linked_layers = False
+
+    def on_layer_selection_changed(self):
+        """Refresh Mapping outputs after the Phasor Layers selection changes."""
+        self._sync_mapping_output_visibility()
+        output_type = self._get_selected_output_type()
+        selected_layers = self._mapping_output_layers(
+            output_type, selected_only=True
+        )
+        self._set_metric_layers(selected_layers.values())
+        self.plot_lifetime_histogram()
+
+        if not selected_layers:
+            self._clear_2d_coloring()
 
     @staticmethod
     def _get_output_colormap_name(output_type: str) -> str:
@@ -1132,20 +1811,36 @@ class PhasorMappingWidget(QWidget):
         self.lifetime_type_combobox.setEnabled(is_lifetime_mode)
         self._sync_mode_widgets()
         self._update_calculate_button_text()
-        if mode == "Phase":
-            self.colormap_combobox.setCurrentText(self._phase_colormap_name)
-        elif mode == "Modulation":
-            self.colormap_combobox.setCurrentText(
-                self._modulation_colormap_name
-            )
+        self.colormap_combobox.blockSignals(True)
+        try:
+            if mode == "Phase":
+                self.colormap_combobox.setCurrentText(
+                    self._phase_colormap_name
+                )
+            elif mode == "Modulation":
+                self.colormap_combobox.setCurrentText(
+                    self._modulation_colormap_name
+                )
+        finally:
+            self.colormap_combobox.blockSignals(False)
+        self.custom_color_button.setVisible(
+            self.colormap_combobox.currentText() == "Select color..."
+        )
         output_type = self._get_selected_output_type()
         self.current_output_type = output_type
         self._set_frequency_input_enabled(
             self._output_requires_frequency(output_type)
         )
         self._configure_histogram_labels_for_output(output_type)
+        self._sync_filter_ui()
         self.outputTypeChanged.emit(output_type)
-        if output_type not in {"Phase", "Modulation"}:
+        is_reactive_transition = (
+            self._has_calculated_output and not self._updating_settings
+        )
+        if is_reactive_transition or output_type not in {
+            "Phase",
+            "Modulation",
+        }:
             self._clear_2d_coloring()
         else:
             can_apply_coloring = (
@@ -1157,10 +1852,18 @@ class PhasorMappingWidget(QWidget):
                 self._apply_histogram_coloring(output_type)
             else:
                 self._clear_2d_coloring()
+        if (
+            not self._updating_settings
+            and output_type in LIFETIME_OUTPUT_TYPES
+            and self.mesh_overlay_checkbox.isChecked()
+        ):
+            self._sync_lifetime_mesh_range()
+            self._apply_lifetime_mesh(output_type)
         if not self._updating_settings:
             self._update_lifetime_setting_in_metadata(
                 'output_type', output_type
             )
+        self._schedule_active_output_refresh()
 
     def _on_colormap_combobox_changed(self, name: str):
         """Callback when the colormap combobox is changed.
@@ -1179,6 +1882,8 @@ class PhasorMappingWidget(QWidget):
             self._phase_colormap_name = name
         elif output_type == "Modulation":
             self._modulation_colormap_name = name
+        if output_type in {"Phase", "Modulation"}:
+            self._pending_combobox_colormaps.add(output_type)
 
         if output_type in {"Phase", "Modulation"} and (
             self.apply_2d_colormap_checkbox.isChecked()
@@ -1187,10 +1892,19 @@ class PhasorMappingWidget(QWidget):
         ):
             actual_cmap_to_apply = self._resolve_layer_colormap(name)
 
-            for layer in self.metric_layers:
+            matching_layers = [
+                layer
+                for layer in self.metric_layers
+                if (
+                    (info := self._mapping_output_info(layer)) is not None
+                    and info[0] == output_type
+                )
+            ]
+            for layer in matching_layers:
                 if layer in self.viewer.layers:
                     layer.colormap = actual_cmap_to_apply
-            self._apply_histogram_coloring(output_type)
+            if matching_layers:
+                self._apply_histogram_coloring(output_type)
 
     def _resolve_layer_colormap(self, cmap_name: str):
         """Return a napari-compatible colormap value for image layers."""
@@ -1301,6 +2015,40 @@ class PhasorMappingWidget(QWidget):
             elif key == 'range_max':
                 mapping_settings['lifetime_range_max'] = value
 
+    def _restore_combobox_colormaps(self, settings):
+        """Show the stored Phase / Modulation colormaps in the combobox.
+
+        A combobox pick made for another layer must not carry over, so any
+        pending one is dropped. Colormaps the combobox does not list (a
+        picked solid colour) are left to the stored settings, which the next
+        run applies to the layers directly.
+        """
+        self._pending_combobox_colormaps.clear()
+        stored = settings.get('output_colormaps') or {}
+        for output_type, attr in (
+            ("Phase", "_phase_colormap_name"),
+            ("Modulation", "_modulation_colormap_name"),
+        ):
+            entry = stored.get(output_type)
+            name = (
+                entry.get('colormap_name') if isinstance(entry, dict) else None
+            )
+            if name and self.colormap_combobox.findText(name) >= 0:
+                setattr(self, attr, name)
+
+        name = {
+            "Phase": self._phase_colormap_name,
+            "Modulation": self._modulation_colormap_name,
+        }.get(self.output_mode_combobox.currentText())
+        if name is None:
+            return
+        self.colormap_combobox.blockSignals(True)
+        try:
+            self.colormap_combobox.setCurrentText(name)
+        finally:
+            self.colormap_combobox.blockSignals(False)
+        self.custom_color_button.setVisible(name == "Select color...")
+
     def _restore_lifetime_settings_from_metadata(self):
         """Restore all lifetime settings from the current layer's metadata."""
         layer_name = self.parent_widget.get_primary_layer_name()
@@ -1353,12 +2101,15 @@ class PhasorMappingWidget(QWidget):
                     self.mesh_overlay_checkbox.setChecked(False)
                 finally:
                     self.mesh_overlay_checkbox.blockSignals(False)
-                self.mesh_alpha_spinbox.blockSignals(True)
+                self.mesh_transparency_spinbox.blockSignals(True)
                 try:
-                    self.mesh_alpha_spinbox.setValue(0.45)
+                    self.mesh_transparency_spinbox.setValue(
+                        1.0 - DEFAULT_MESH_ALPHA
+                    )
                 finally:
-                    self.mesh_alpha_spinbox.blockSignals(False)
+                    self.mesh_transparency_spinbox.blockSignals(False)
                 self._sync_mode_widgets()
+                self._sync_filter_ui()
                 self._clear_2d_coloring()
                 self.histogram_widget.update_data(np.array([]))
             finally:
@@ -1367,6 +2118,7 @@ class PhasorMappingWidget(QWidget):
 
         self._updating_settings = True
         try:
+            self._restore_combobox_colormaps(settings)
             output_type = settings.get('output_type') or settings.get(
                 'lifetime_type',
                 'Apparent Phase Lifetime',
@@ -1389,7 +2141,7 @@ class PhasorMappingWidget(QWidget):
             )
 
             mesh_enabled = bool(settings.get('mesh_overlay_enabled', False))
-            mesh_alpha = float(settings.get('mesh_alpha', 0.45))
+            mesh_alpha = float(settings.get('mesh_alpha', DEFAULT_MESH_ALPHA))
             mesh_alpha = float(np.clip(mesh_alpha, 0.0, 1.0))
 
             self.mesh_overlay_checkbox.blockSignals(True)
@@ -1398,15 +2150,15 @@ class PhasorMappingWidget(QWidget):
             finally:
                 self.mesh_overlay_checkbox.blockSignals(False)
 
-            self.mesh_alpha_spinbox.blockSignals(True)
+            self.mesh_transparency_spinbox.blockSignals(True)
             try:
-                self.mesh_alpha_spinbox.setValue(mesh_alpha)
+                self.mesh_transparency_spinbox.setValue(1.0 - mesh_alpha)
             finally:
-                self.mesh_alpha_spinbox.blockSignals(False)
+                self.mesh_transparency_spinbox.blockSignals(False)
 
             self._update_phase_slider_bounds_from_plot_mode()
-            if not self._restore_mesh_ranges_from_settings(settings):
-                self._initialize_mesh_ranges_from_current_data()
+            self._sync_mesh_ranges(settings)
+            self._sync_filter_ui()
             self._sync_mode_widgets()
 
         finally:
@@ -1417,27 +2169,19 @@ class PhasorMappingWidget(QWidget):
         frequency_text = self.frequency_input.text().strip()
         output_type = self._get_selected_output_type()
 
-        if not self._updating_settings:
-            if not self._output_requires_frequency(output_type):
-                return
+        if self._updating_settings or not self._output_requires_frequency(
+            output_type
+        ):
+            return
+        frequency = self._parse_positive_frequency(frequency_text)
+        if frequency is None:
+            self.frequency = None
+            self._clear_current_output_display()
             if frequency_text:
-                try:
-                    self.frequency = float(frequency_text)
-                    self.calculate_output_data()
-                    self._update_lifetime_range_slider()
-                    self.create_output_layers()
-                    self._restore_lifetime_range_from_metadata()
-                    self._on_lifetime_range_changed(
-                        self.lifetime_range_slider.value()
-                    )
-                    self.plot_lifetime_histogram()
-                except ValueError:
-                    show_error(
-                        "Invalid frequency value. Please enter a valid number."
-                    )
-            elif frequency_text == "":
-                self.frequency = None
-                self.histogram_widget.update_data(np.array([]))
+                show_error("Invalid frequency value. Enter a positive number.")
+            return
+        self.frequency = frequency
+        self._calculate_and_display_output(show_warnings=False)
 
     def _set_frequency_input_enabled(self, enabled: bool):
         """Enable or disable the frequency input field."""
@@ -1466,6 +2210,7 @@ class PhasorMappingWidget(QWidget):
             self.lifetime_data = self.current_metric_data
 
         selected_layers = self.parent_widget.get_selected_layers()
+        output_layers = self._mapping_output_layers(output_type)
 
         self._updating_contrast_limits = True
         self._updating_linked_layers = True
@@ -1484,10 +2229,11 @@ class PhasorMappingWidget(QWidget):
                     output_values, min_lifetime, max_lifetime
                 )
 
-                lifetime_layer_name = f"{output_type}: {layer.name}"
-
-                if lifetime_layer_name in self.viewer.layers:
-                    lifetime_layer = self.viewer.layers[lifetime_layer_name]
+                lifetime_layer = output_layers.get(layer.name)
+                if lifetime_layer is not None:
+                    # Filtered pixels are already NaN in the phasor arrays
+                    # these values were computed from, and np.clip leaves NaN
+                    # alone, so the display range cannot resurrect them.
                     lifetime_layer.data = clipped_lifetime
                     lifetime_layer.contrast_limits = [
                         min_lifetime,
@@ -1506,6 +2252,7 @@ class PhasorMappingWidget(QWidget):
             self._update_lifetime_setting_in_metadata(
                 'range_max', max_lifetime
             )
+            self._store_output_range(min_lifetime, max_lifetime)
 
         self._apply_lifetime_range_change(min_val, max_val)
 
@@ -1534,32 +2281,45 @@ class PhasorMappingWidget(QWidget):
         all_output_data = []
         per_layer_data = {}
 
-        for layer in selected_layers:
+        # Every layer's output map is independent, and the phasor conversions
+        # release the GIL, so they are computed in a thread pool. Values that
+        # come from the UI are read once here, on this thread, because the
+        # workers must not touch Qt.
+        harmonic = self.parent_widget.harmonic
+        requires_frequency = self._output_requires_frequency(output_type)
+        semicircle_mode = self._is_semicircle_mode()
+        effective_frequency = (
+            base_frequency * harmonic if requires_frequency else None
+        )
+
+        def compute_output(layer):
+            """Return one layer's output map, or ``None``.
+
+            Pure array work (NumPy's error state is thread-local), so this is
+            safe to run in a worker thread.
+            """
             g_array = layer.metadata.get("G")
             s_array = layer.metadata.get("S")
             harmonics = layer.metadata.get("harmonics")
 
             if g_array is None or s_array is None:
-                continue
+                return None
 
-            if harmonics is not None:
+            if harmonics is not None and g_array.ndim > layer.data.ndim:
                 try:
-                    harmonics = np.atleast_1d(harmonics)
-                    harmonic_index = np.where(
-                        harmonics == self.parent_widget.harmonic
-                    )[0][0]
+                    harmonics_array = np.atleast_1d(harmonics)
+                    harmonic_index = np.where(harmonics_array == harmonic)[0][
+                        0
+                    ]
                     real = g_array[harmonic_index]
                     imag = s_array[harmonic_index]
                 except IndexError:
-                    continue
+                    return None
             else:
                 real = g_array
                 imag = s_array
 
-            if self._output_requires_frequency(output_type):
-                effective_frequency = (
-                    base_frequency * self.parent_widget.harmonic
-                )
+            if requires_frequency:
                 with np.errstate(divide='ignore', invalid='ignore'):
                     if output_type == "Normal Lifetime":
                         output_values = phasor_to_normal_lifetime(
@@ -1586,7 +2346,7 @@ class PhasorMappingWidget(QWidget):
                     phase_values, modulation_values = phasor_to_polar(
                         real, imag
                     )
-                if output_type == "Phase" and not self._is_semicircle_mode():
+                if output_type == "Phase" and not semicircle_mode:
                     # Full polar mode expects phase in [0, 2pi].
                     with np.errstate(invalid='ignore'):
                         phase_values = np.mod(phase_values, 2.0 * np.pi)
@@ -1595,13 +2355,27 @@ class PhasorMappingWidget(QWidget):
                     if output_type == "Phase"
                     else modulation_values
                 )
+            return output_values
+
+        outputs = parallel_map(
+            compute_output, selected_layers, on_error="collect"
+        )
+
+        for layer, output_values in zip(selected_layers, outputs, strict=True):
+            if isinstance(output_values, BaseException):
+                show_error(
+                    f"{output_type} failed for {layer.name}: {output_values}"
+                )
+                continue
+            if output_values is None:
+                continue
 
             if 'derived_data' not in layer.metadata:
                 layer.metadata['derived_data'] = {}
             if output_type not in layer.metadata['derived_data']:
                 layer.metadata['derived_data'][output_type] = {}
             layer.metadata['derived_data'][output_type][
-                self.parent_widget.harmonic
+                harmonic
             ] = output_values
 
             all_output_data.append(output_values)
@@ -1722,6 +2496,8 @@ class PhasorMappingWidget(QWidget):
                         self.max_lifetime * self.lifetime_range_factor
                     )
                 else:
+                    if self.min_lifetime >= self.max_lifetime:
+                        self.max_lifetime = self.min_lifetime + 1.0
                     min_slider_val = int(
                         self.min_lifetime * self.lifetime_range_factor
                     )
@@ -1740,12 +2516,46 @@ class PhasorMappingWidget(QWidget):
 
     def plot_lifetime_histogram(self):
         """Plot the histogram of the merged lifetime data from all selected layers."""
-        if (
-            self.current_metric_data is None
-            or not self.parent_widget.has_phasor_data()
-            or self.parent_widget.harmonic is None
-        ):
-            self.histogram_widget.update_data(np.array([]))
+        selected_names = self._get_selected_source_names()
+        if not selected_names or self.parent_widget.harmonic is None:
+            self.histogram_widget.clear()
+            return
+
+        output_type = self._get_selected_output_type()
+        output_layers = self._mapping_output_layers(
+            output_type, selected_only=True
+        )
+        if output_layers:
+            layers = list(output_layers.values())
+            if layers != self.metric_layers:
+                self._set_metric_layers(layers)
+            named = {layer.name: layer.data for layer in layers}
+            # Groups live on the analysed image layer, not on the derived
+            # output layer, so every tab sees the same grouping.
+            sources = {
+                layer.name: source for source, layer in output_layers.items()
+            }
+        elif not self._has_calculated_output:
+            # Keep a narrow fallback for calculations that have populated
+            # per-layer arrays but have not created the viewer layers yet.
+            named = {
+                f"{output_type}: {name}": data
+                for name, data in (self.per_layer_metric_data or {}).items()
+                if name in selected_names
+            }
+            sources = {
+                f"{output_type}: {name}": name
+                for name in (self.per_layer_metric_data or {})
+                if name in selected_names
+            }
+        else:
+            named = {}
+            sources = {}
+
+        self.histogram_widget.set_dataset_sources(sources)
+
+        if not named:
+            self.histogram_widget.clear()
             return
 
         self.histogram_widget.update_colormap(
@@ -1754,17 +2564,6 @@ class PhasorMappingWidget(QWidget):
             gamma=self.colormap_gamma,
         )
 
-        output_type = self._get_selected_output_type()
-        if output_type in {"Phase", "Modulation"}:
-            self._apply_histogram_coloring(output_type)
-        # Name the histogram datasets after the analysis output layers
-        # (e.g. "Lifetime: <image>"), not the intensity image layers, so the
-        # statistics Name column matches the created layers (as in the FRET
-        # tab). The output layers are named ``f"{output_type}: {image_name}"``.
-        named = {
-            f"{output_type}: {name}": data
-            for name, data in (self.per_layer_metric_data or {}).items()
-        }
         # In per-frame mode only the displayed timepoint is summarised. The
         # range slider keeps using the pooled extent (set elsewhere) so the
         # contrast limits don't jump around while playing.
@@ -1774,10 +2573,9 @@ class PhasorMappingWidget(QWidget):
         elif named:
             label, data = next(iter(named.items()))
             self.histogram_widget.update_data(data, label=label)
-        else:
-            self.histogram_widget.update_data(
-                self.current_metric_data, label="Layer"
-            )
+
+        if output_type in {"Phase", "Modulation"}:
+            self._apply_histogram_coloring(output_type)
 
     def _frame_context(self):
         """Return the plotter's time-lapse frame context, if available."""
@@ -1812,18 +2610,36 @@ class PhasorMappingWidget(QWidget):
                 if dict_obj is not None and old_name in dict_obj:
                     dict_obj[new_name] = dict_obj.pop(old_name)
 
-        # Rename derived layers
-        for output_type in [
-            "Phase",
-            "Modulation",
-            "Apparent Phase Lifetime",
-            "Apparent Modulation Lifetime",
-            "Normal Lifetime",
-        ]:
-            layer_name = f"{output_type}: {old_name}"
-            if layer_name in self.viewer.layers:
-                self.viewer.layers[layer_name].name = (
-                    f"{output_type}: {new_name}"
+        for output_layer in list(self.viewer.layers):
+            tag = output_layer.metadata.get(_MAPPING_OUTPUT_METADATA_KEY)
+            if (
+                isinstance(tag, dict)
+                and tag.get('source_layer') == old_name
+                and tag.get('output_type') in _MAPPING_OUTPUT_TYPES
+            ):
+                output_type = tag['output_type']
+            else:
+                output_type = next(
+                    (
+                        candidate
+                        for candidate in _MAPPING_OUTPUT_TYPES
+                        if output_layer.name == f"{candidate}: {old_name}"
+                    ),
+                    None,
+                )
+            if output_type is None:
+                continue
+
+            old_output_name = output_layer.name
+            output_layer.metadata[_MAPPING_OUTPUT_METADATA_KEY] = {
+                'source_layer': new_name,
+                'output_type': output_type,
+            }
+            if old_output_name == f"{output_type}: {old_name}":
+                output_layer.name = f"{output_type}: {new_name}"
+            if output_layer.name != old_output_name:
+                self.histogram_widget.rename_dataset(
+                    old_output_name, output_layer.name
                 )
 
     def create_output_layers(self):
@@ -1839,20 +2655,12 @@ class PhasorMappingWidget(QWidget):
             )
         else:
             cmap_name = self._get_output_colormap_name(output_type)
+        use_combobox_pick = output_type in self._pending_combobox_colormaps
+        self._pending_combobox_colormaps.discard(output_type)
 
-        for layer in self.metric_layers:
-            if layer in self.viewer.layers:
-                with contextlib.suppress(
-                    AttributeError, RuntimeError, TypeError, ValueError
-                ):
-                    layer.events.colormap.disconnect(self._on_colormap_changed)
-                    layer.events.contrast_limits.disconnect(
-                        self._on_colormap_changed
-                    )
-                    layer.events.gamma.disconnect(self._on_colormap_changed)
-        self.metric_layers = []
-        self.lifetime_layers = []
-        self.lifetime_layer = None
+        self._set_metric_layers([])
+        created_layers = []
+        existing_outputs = self._mapping_output_layers(output_type)
 
         for layer in selected_layers:
             derived_data = layer.metadata.get('derived_data', {})
@@ -1870,36 +2678,98 @@ class PhasorMappingWidget(QWidget):
             min_val, max_val = self.lifetime_range_slider.value()
             min_lifetime = min_val / self.lifetime_range_factor
             max_lifetime = max_val / self.lifetime_range_factor
-            clipped_output = np.clip(output_values, min_lifetime, max_lifetime)
-
-            selected_output_layer = Image(
-                clipped_output,
-                name=output_layer_name,
-                scale=layer.scale,
-                colormap=cmap_name,
-                contrast_limits=[min_lifetime, max_lifetime],
+            cl_max = (
+                max_lifetime
+                if max_lifetime > min_lifetime
+                else min_lifetime + 1.0
             )
+            clipped_output = np.clip(output_values, min_lifetime, cl_max)
 
-            if output_layer_name in self.viewer.layers:
-                self.viewer.layers.remove(
-                    self.viewer.layers[output_layer_name]
+            output_layer = existing_outputs.get(layer.name)
+            colormap, gamma = self._output_layer_colormap(
+                layer,
+                output_type,
+                output_layer,
+                cmap_name,
+                use_default=use_combobox_pick,
+            )
+            output_metadata = {
+                'source_layer': layer.name,
+                'output_type': output_type,
+            }
+            if output_layer is None:
+                selected_output_layer = Image(
+                    clipped_output,
+                    name=output_layer_name,
+                    scale=layer.scale,
+                    colormap=colormap,
+                    contrast_limits=[min_lifetime, cl_max],
+                    metadata={_MAPPING_OUTPUT_METADATA_KEY: output_metadata},
                 )
+                output_layer = self.viewer.add_layer(selected_output_layer)
+            else:
+                output_layer.data = clipped_output
+                output_layer.scale = layer.scale
+                output_layer.colormap = colormap
+                output_layer.contrast_limits = [
+                    min_lifetime,
+                    cl_max,
+                ]
+                output_layer.metadata[_MAPPING_OUTPUT_METADATA_KEY] = (
+                    output_metadata
+                )
+            if gamma is not None:
+                output_layer.gamma = gamma
+            self._store_output_colormap(layer, output_type, output_layer)
+            created_layers.append(output_layer)
 
-            output_layer = self.viewer.add_layer(selected_output_layer)
+        self._set_metric_layers(created_layers)
 
-            self.metric_layers.append(output_layer)
-            self.lifetime_layers.append(output_layer)
-            output_layer.events.colormap.connect(self._on_colormap_changed)
-            output_layer.events.contrast_limits.connect(
-                self._on_colormap_changed
-            )
-            output_layer.events.gamma.connect(self._on_colormap_changed)
+    def _output_layer_colormap(
+        self, source_layer, output_type, output_layer, default, use_default
+    ):
+        """Return ``(colormap, gamma)`` for *source_layer*'s output layer.
 
-            if self.lifetime_layer is None:
-                self.lifetime_layer = output_layer
-                self.lifetime_colormap = output_layer.colormap.colors
-                self.colormap_contrast_limits = output_layer.contrast_limits
-                self.colormap_gamma = output_layer.gamma
+        The colormap stored in the source layer's settings wins, so a
+        colormap the user set on the layer survives running the analysis
+        again, and one copied over with the settings is applied. Without a
+        stored one, an existing output layer keeps its own; only a new layer
+        gets *default*. With *use_default* (the user has just picked a
+        colormap in the tab) *default* is used regardless, keeping the gamma.
+        """
+        stored = self._stored_output_colormap(source_layer, output_type)
+        colormap = None
+        if not use_default:
+            colormap = layer_colormap_from_settings(stored)
+            if colormap is None and output_layer is not None:
+                colormap = output_layer.colormap
+        if colormap is None:
+            colormap = default
+
+        gamma = stored.get('gamma') if stored else None
+        if gamma is None and output_layer is not None:
+            gamma = output_layer.gamma
+        return colormap, gamma
+
+    def _stored_output_colormap(self, source_layer, output_type):
+        """Return the colormap entry stored for *output_type*, or None."""
+        settings = self._get_phasor_mapping_settings(source_layer)
+        if not settings:
+            return None
+        entry = (settings.get('output_colormaps') or {}).get(output_type)
+        return entry if isinstance(entry, dict) else None
+
+    def _store_output_colormap(self, source_layer, output_type, output_layer):
+        """Save *output_layer*'s colormap into *source_layer*'s settings."""
+        if self._updating_settings:
+            return
+        settings = self._get_phasor_mapping_settings(source_layer, create=True)
+        colormaps = settings.get('output_colormaps')
+        if not isinstance(colormaps, dict):
+            colormaps = settings['output_colormaps'] = {}
+        colormaps[output_type] = layer_colormap_to_settings(
+            output_layer.colormap, output_layer.gamma
+        )
 
     def create_lifetime_layer(self):
         """Backward-compatible alias for output layer creation."""
@@ -1936,6 +2806,9 @@ class PhasorMappingWidget(QWidget):
                 self._phase_colormap_name = cmap_name
             elif output_type == "Modulation":
                 self._modulation_colormap_name = cmap_name
+        # The layer now says which colormap is wanted; an older combobox pick
+        # must not override it on the next run.
+        self._pending_combobox_colormaps.discard(output_type)
 
         # Update all other lifetime layers to match
         self._updating_linked_layers = True
@@ -1948,6 +2821,16 @@ class PhasorMappingWidget(QWidget):
         finally:
             self._updating_linked_layers = False
 
+        # Remember the colormap with each analysed layer's settings, so a
+        # new run — and a copy of the settings — keeps it.
+        for layer in self.metric_layers:
+            info = self._mapping_output_info(layer)
+            if info is None or info[1] not in self.viewer.layers:
+                continue
+            self._store_output_colormap(
+                self.viewer.layers[info[1]], info[0], source_layer
+            )
+
         self.histogram_widget.update_colormap(
             colormap_colors=self.lifetime_colormap,
             contrast_limits=self.colormap_contrast_limits,
@@ -1959,17 +2842,24 @@ class PhasorMappingWidget(QWidget):
             or self.mesh_overlay_checkbox.isChecked()
         ):
             self._apply_histogram_coloring(output_type)
+        elif (
+            output_type in LIFETIME_OUTPUT_TYPES
+            and self.mesh_overlay_checkbox.isChecked()
+        ):
+            # Contrast limits change continuously while dragged in napari.
+            self._mesh_axes_update_timer.start()
 
     def _mapping_validation(self):
         """Return ``None`` if the output can be computed, else the missing msg."""
         if not self.parent_widget.get_selected_layers():
             return "Select at least one image layer with phasor features."
         output_type = self._get_selected_output_type()
-        if (
-            self._output_requires_frequency(output_type)
-            and not self.frequency_input.text().strip()
-        ):
-            return "Enter the frequency (MHz)."
+        if self._output_requires_frequency(output_type):
+            frequency_text = self.frequency_input.text().strip()
+            if not frequency_text:
+                return "Enter the frequency (MHz)."
+            if self._parse_positive_frequency(frequency_text) is None:
+                return "Enter a valid positive frequency (MHz)."
         return None
 
     def _on_image_layer_changed(self):
@@ -1985,6 +2875,7 @@ class PhasorMappingWidget(QWidget):
 
     def _teardown_on_layer_change(self):
         """Immediate cleanup: disconnect signals and clear data."""
+        self._output_refresh_timer.stop()
         layer_name = self.parent_widget.get_primary_layer_name()
         if not layer_name:
             self.histogram_widget.update_data(np.array([]))
@@ -2019,12 +2910,16 @@ class PhasorMappingWidget(QWidget):
 
     def _restore_on_layer_change(self):
         """Deferred restore: update UI state from metadata."""
+        if getattr(self, '_applying_mapping_filter', False):
+            return
+        self._output_refresh_timer.stop()
         self._needs_update = False
 
         layer_name = self.parent_widget.get_primary_layer_name()
         if layer_name:
             self._restore_lifetime_settings_from_metadata()
             self._sync_mode_widgets()
+            self._sync_filter_ui()
             self._set_frequency_input_enabled(
                 self._output_requires_frequency(
                     self._get_selected_output_type()
@@ -2037,32 +2932,87 @@ class PhasorMappingWidget(QWidget):
         # button reflects the current validation state (e.g. a selected layer
         # with the frequency already filled from metadata) instead of keeping a
         # stale blocked (grey) style.
-        if hasattr(self, '_refresh_calculate_button'):
-            self._refresh_calculate_button()
+        self._refresh_action_buttons()
+
+    def _on_mapping_input_changed(self):
+        """Re-evaluate the Calculate button after an input changed."""
+        self._refresh_action_buttons()
+        self.request_autoupdate()
+
+    def _autoupdate_calculate_output(self):
+        """Recompute the output for an autoupdate, without popping warnings.
+
+        An automatic run is not a user action, so a transiently invalid state
+        (a layer whose data a filter is still rewriting, say) must not raise
+        a dialog the user did not ask for.
+
+        Output-mode changes also arm the debounced refresh timer (which only
+        runs once an output exists); computing here makes that pending tick
+        redundant, so it is dropped rather than repeating the work.
+        """
+        if getattr(self, '_applying_mapping_filter', False):
+            return
+        self._output_refresh_timer.stop()
+        if self._calculate_and_display_output(show_warnings=False):
+            self._has_calculated_output = True
 
     def _on_calculate_lifetime_clicked(self):
         """Callback when Calculate button is clicked.
 
         Runs the lifetime calculation and creates/updates lifetime layers.
         """
-        selected_layers = self.parent_widget.get_selected_layers()
-        if not selected_layers:
-            show_warning("Select at least one layer")
-            return
+        if self._calculate_and_display_output(show_warnings=True):
+            self._has_calculated_output = True
 
+    def _clear_current_output_display(self):
+        """Clear stale data for the currently selected Mapping output."""
+        self.current_metric_data = None
+        self.current_metric_data_original = None
+        self.per_layer_metric_data = {}
+        self.per_layer_metric_data_original = {}
+        self._set_metric_layers([])
+        self.histogram_widget.clear()
+        self._clear_2d_coloring()
+
+    def _calculate_and_display_output(self, *, show_warnings):
+        """Calculate and render the selected Mapping output.
+
+        Returns
+        -------
+        bool
+            True when output data and layers were created.
+        """
+        validation_message = self._mapping_validation()
+        if validation_message is not None:
+            if show_warnings:
+                warning = (
+                    "Enter frequency"
+                    if validation_message == "Enter the frequency (MHz)."
+                    else validation_message
+                )
+                show_warning(warning)
+            self._clear_current_output_display()
+            return False
+
+        selected_layers = self.parent_widget.get_selected_layers()
         output_type = self._get_selected_output_type()
         frequency = self.frequency_input.text().strip()
-        if self._output_requires_frequency(output_type) and frequency == "":
-            show_warning("Enter frequency")
-            return
 
-        # Run the calculation
+        self.current_metric_data = None
+        self.current_metric_data_original = None
+        self.per_layer_metric_data = {}
+        self.per_layer_metric_data_original = {}
         self.calculate_output_data()
+        if self.current_metric_data is None:
+            self._clear_current_output_display()
+            return False
+
         self._update_lifetime_range_slider()
         self.create_output_layers()
         settings = self._get_current_layer_mapping_settings(create=False)
-        if not self._restore_mesh_ranges_from_settings(settings):
-            self._initialize_mesh_ranges_from_current_data()
+        self._sync_mesh_ranges(settings)
+
+        self._sync_filter_ui()
 
         self._restore_lifetime_range_from_metadata()
         self._on_lifetime_range_changed(self.lifetime_range_slider.value())
@@ -2070,13 +3020,9 @@ class PhasorMappingWidget(QWidget):
         if self.current_metric_data is not None:
             self.plot_lifetime_histogram()
 
-        if output_type in {"Phase", "Modulation"} and (
-            self.apply_2d_colormap_checkbox.isChecked()
-            or self.mesh_overlay_checkbox.isChecked()
-        ):
-            self._apply_histogram_coloring(output_type)
-        else:
+        if output_type not in {"Phase", "Modulation"}:
             self._clear_2d_coloring()
+            self._refresh_mesh_overlay_if_needed()
 
         # Update frequency in metadata for frequency-dependent outputs
         if not self._updating_settings and self._output_requires_frequency(
@@ -2088,12 +3034,37 @@ class PhasorMappingWidget(QWidget):
                     update_frequency_in_metadata(layer, frequency_float)
             except ValueError:
                 pass
+        return bool(self.metric_layers)
+
+    def _schedule_active_output_refresh(self):
+        """Coalesce Mapping control changes after the first calculation."""
+        if (
+            self._updating_settings
+            or not self._has_calculated_output
+            or getattr(self.parent_widget, '_is_closing', False)
+        ):
+            return
+        self._output_refresh_timer.start()
+
+    def _refresh_active_output(self):
+        """Recalculate Mapping output after a reactive control change."""
+        if (
+            self._updating_settings
+            or not self._has_calculated_output
+            or getattr(self.parent_widget, '_is_closing', False)
+        ):
+            return
+        self._calculate_and_display_output(show_warnings=False)
 
     def _on_lifetime_type_changed(self, text):
         """Callback when lifetime type combobox selection changes.
 
-        This only updates the setting in metadata - it does NOT run calculations.
-        User must click "Calculate" button to run lifetime analysis.
+        This only updates the setting in metadata - it does NOT run
+        calculations. Picking another lifetime asks for a different analysis,
+        not a different rendering of the one already on screen, so the user
+        clicks Calculate (or turns Autoupdate on) to run it. A refresh armed
+        by an earlier control change is dropped for the same reason: it would
+        compute the newly picked lifetime nobody asked for yet.
         """
         output_type = self._get_selected_output_type()
         self.current_output_type = output_type
@@ -2102,13 +3073,72 @@ class PhasorMappingWidget(QWidget):
             self._output_requires_frequency(output_type)
         )
         self._configure_histogram_labels_for_output(output_type)
+        if output_type in MAPPING_METRICS:
+            self.filter_list.set_current_metric(output_type)
+        self._sync_filter_ui()
         self.outputTypeChanged.emit(output_type)
         if not self._updating_settings:
             self._update_lifetime_setting_in_metadata('lifetime_type', text)
             self._update_lifetime_setting_in_metadata(
                 'output_type', output_type
             )
-        # Don't auto-calculate - user must click Calculate
+            # The mesh is only a guide drawn from the frequency, so unlike
+            # the output map it follows the new lifetime type right away.
+            if (
+                output_type in LIFETIME_OUTPUT_TYPES
+                and self.mesh_overlay_checkbox.isChecked()
+            ):
+                self._sync_lifetime_mesh_range()
+                self._apply_lifetime_mesh(output_type)
+        self._output_refresh_timer.stop()
+
+    def _store_output_range(self, min_value, max_value):
+        """Remember the displayed range of the current output type.
+
+        ``range_min``/``range_max`` are a single slot shared by every output,
+        so on their own they let one output's range clip another's map. The
+        per-output copy kept here is what the restore reads back.
+        """
+        layer_name = self.parent_widget.get_primary_layer_name()
+        if not layer_name or layer_name not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[layer_name]
+        settings = self._get_phasor_mapping_settings(layer, create=True)
+        ranges = settings.get('output_ranges')
+        if not isinstance(ranges, dict):
+            ranges = {}
+            settings['output_ranges'] = ranges
+        ranges[self._get_selected_output_type()] = [
+            float(min_value),
+            float(max_value),
+        ]
+
+    def _saved_range_for_current_output(self, settings):
+        """Return the stored ``(min, max)`` for the current output, or None.
+
+        Falls back to the shared ``range_min``/``range_max`` slot only when no
+        per-output range has ever been stored for this layer, which is how
+        settings written before this key existed (or imported from a settings
+        file) are still honoured.
+        """
+        output_type = self._get_selected_output_type()
+        ranges = settings.get('output_ranges')
+        if isinstance(ranges, dict) and ranges:
+            stored = ranges.get(output_type)
+            if (
+                isinstance(stored, (list, tuple))
+                and len(stored) == 2
+                and stored[0] is not None
+                and stored[1] is not None
+            ):
+                return float(stored[0]), float(stored[1])
+            return None
+
+        min_val = settings.get('range_min', settings.get('lifetime_range_min'))
+        max_val = settings.get('range_max', settings.get('lifetime_range_max'))
+        if min_val is None or max_val is None:
+            return None
+        return float(min_val), float(max_val)
 
     def _restore_lifetime_range_from_metadata(self):
         """Restore lifetime range from metadata after calculation."""
@@ -2118,53 +3148,36 @@ class PhasorMappingWidget(QWidget):
 
         layer = self.viewer.layers[layer_name]
         settings = self._get_phasor_mapping_settings(layer, create=False)
-        if settings is not None:
+        if settings is None:
+            return
 
-            min_key = (
-                'range_min'
-                if 'range_min' in settings
-                else 'lifetime_range_min'
-            )
-            max_key = (
-                'range_max'
-                if 'range_max' in settings
-                else 'lifetime_range_max'
-            )
+        saved = self._saved_range_for_current_output(settings)
+        if saved is None:
+            return
+        min_val, max_val = saved
 
-            if (
-                min_key in settings
-                and max_key in settings
-                and settings[min_key] is not None
-                and settings[max_key] is not None
-            ):
+        if (
+            self.min_lifetime is not None
+            and self.max_lifetime is not None
+            and min_val >= self.min_lifetime
+            and max_val <= self.max_lifetime
+        ):
 
-                min_val = settings[min_key]
-                max_val = settings[max_key]
+            min_slider = int(min_val * self.lifetime_range_factor)
+            max_slider = int(max_val * self.lifetime_range_factor)
 
-                if (
-                    self.min_lifetime is not None
-                    and self.max_lifetime is not None
-                    and min_val >= self.min_lifetime
-                    and max_val <= self.max_lifetime
-                ):
+            self._updating_settings = True
+            try:
+                self.lifetime_range_slider.setValue((min_slider, max_slider))
+                self.lifetime_min_edit.setText(f"{min_val:.2f}")
+                self.lifetime_max_edit.setText(f"{max_val:.2f}")
+                self.lifetime_range_label.setText(
+                    f"{self.histogram_widget._range_label_prefix}:"
+                )
+            finally:
+                self._updating_settings = False
 
-                    min_slider = int(min_val * self.lifetime_range_factor)
-                    max_slider = int(max_val * self.lifetime_range_factor)
-
-                    self._updating_settings = True
-                    try:
-                        self.lifetime_range_slider.setValue(
-                            (min_slider, max_slider)
-                        )
-                        self.lifetime_min_edit.setText(f"{min_val:.2f}")
-                        self.lifetime_max_edit.setText(f"{max_val:.2f}")
-                        self.lifetime_range_label.setText(
-                            f"{self.histogram_widget._range_label_prefix}:"
-                        )
-                    finally:
-                        self._updating_settings = False
-
-                    self._apply_lifetime_range_change(min_slider, max_slider)
+            self._apply_lifetime_range_change(min_slider, max_slider)
 
     def _apply_lifetime_range_change(self, min_slider, max_slider):
         """Apply lifetime range change for histogram without updating layers (layers updated in _on_lifetime_range_changed)."""
@@ -2186,6 +3199,14 @@ class PhasorMappingWidget(QWidget):
                 )
             self.per_layer_lifetime_data = self.per_layer_metric_data
             self.plot_lifetime_histogram()
+
+        # The lifetime mesh is coloured with the output layers' contrast
+        # limits, which this range just changed; coalesce slider drags.
+        if (
+            self._get_selected_output_type() in LIFETIME_OUTPUT_TYPES
+            and self.mesh_overlay_checkbox.isChecked()
+        ):
+            self._mesh_axes_update_timer.start()
 
     @staticmethod
     def _set_histogram_density_visible(pw, visible: bool):
@@ -2434,7 +3455,7 @@ class PhasorMappingWidget(QWidget):
             )
 
             extent = mesh_grid['extent']
-            mesh_alpha = float(self.mesh_alpha_spinbox.value())
+            mesh_alpha = self._mesh_alpha()
             alpha_key = (
                 *self._make_mesh_grid_cache_key(ax, resolution),
                 int(phase_min_i),
@@ -2681,12 +3702,12 @@ class PhasorMappingWidget(QWidget):
         self.plot_lifetime_histogram()
 
         output_type = self._get_selected_output_type()
-        if output_type in {"Phase", "Modulation"} and (
-            self.apply_2d_colormap_checkbox.isChecked()
-            or self.mesh_overlay_checkbox.isChecked()
+        if (
+            output_type in LIFETIME_OUTPUT_TYPES
+            and self.mesh_overlay_checkbox.isChecked()
         ):
-            self._apply_histogram_coloring(output_type)
-        else:
+            self._apply_lifetime_mesh(output_type)
+        elif output_type not in {"Phase", "Modulation"}:
             self._clear_2d_coloring()
 
     def on_tab_visibility_changed(self, is_visible: bool):
@@ -2699,6 +3720,7 @@ class PhasorMappingWidget(QWidget):
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""
+        self._output_refresh_timer.stop()
         self._mesh_axes_update_timer.stop()
         self._disconnect_axes_limit_callbacks()
 
@@ -2723,18 +3745,20 @@ class PhasorMappingWidget(QWidget):
         self._sync_mode_widgets()
         if checked:
             settings = self._get_current_layer_mapping_settings(create=False)
-            if not self._restore_mesh_ranges_from_settings(settings):
-                self._initialize_mesh_ranges_from_current_data()
+            self._sync_mesh_ranges(settings)
 
         self._update_lifetime_setting_in_metadata(
             'mesh_overlay_enabled', bool(checked)
         )
 
         output_type = self._get_selected_output_type()
-        if output_type not in {"Phase", "Modulation"}:
-            self._clear_2d_coloring()
-            return
-        if checked or self.apply_2d_colormap_checkbox.isChecked():
+        if output_type in LIFETIME_OUTPUT_TYPES:
+            if checked and self._mesh_frequency() is None:
+                show_warning(
+                    "Enter the frequency (MHz) to draw the lifetime mesh."
+                )
+            self._apply_lifetime_mesh(output_type)
+        elif checked or self.apply_2d_colormap_checkbox.isChecked():
             self._apply_histogram_coloring(output_type)
         else:
             self._clear_2d_coloring()
@@ -2756,7 +3780,12 @@ class PhasorMappingWidget(QWidget):
             return
         norm = Normalize(vmin=vmin, vmax=vmax)
         mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
-        label = "Phase (rad)" if output_type == "Phase" else "Modulation"
+        if output_type in LIFETIME_OUTPUT_TYPES:
+            label = "Lifetime (ns)"
+        elif output_type == "Phase":
+            label = "Phase (rad)"
+        else:
+            label = "Modulation"
         # Access the private method to update the colorbar in the plotter
         pw._update_mapping_colorbar(mappable=mappable, label=label)
 
@@ -2770,17 +3799,23 @@ class PhasorMappingWidget(QWidget):
         )
 
         output_type = self._get_selected_output_type()
-        if output_type in {"Phase", "Modulation"}:
+        if output_type in LIFETIME_OUTPUT_TYPES:
+            self._apply_lifetime_mesh(output_type)
+        elif output_type in {"Phase", "Modulation"}:
             if checked:
                 self._apply_histogram_coloring(output_type)
             elif self.parent_widget is not None:
                 self.parent_widget._remove_mapping_colorbar()
 
-    def _on_mesh_alpha_changed(self, _value):
-        """Refresh mesh overlay when alpha changes."""
+    def _mesh_alpha(self):
+        """Return the mesh opacity from the transparency control."""
+        return round(1.0 - float(self.mesh_transparency_spinbox.value()), 10)
+
+    def _on_mesh_transparency_changed(self, _value):
+        """Refresh mesh overlay when its transparency changes."""
         if not self._updating_settings:
             self._update_lifetime_setting_in_metadata(
-                'mesh_alpha', float(self.mesh_alpha_spinbox.value())
+                'mesh_alpha', self._mesh_alpha()
             )
         self._refresh_mesh_overlay_if_needed()
 
@@ -2842,6 +3877,288 @@ class PhasorMappingWidget(QWidget):
         except ValueError:
             pass
 
+    # Lifetime mesh ------------------------------------------------------
+
+    def _mesh_frequency(self):
+        """Return the lifetime mesh's effective frequency (MHz), or ``None``.
+
+        That is the tab's frequency times the displayed harmonic, the
+        frequency the lifetime output map is computed at.
+        """
+        frequency = self._parse_positive_frequency(
+            self.frequency_input.text().strip()
+        )
+        if frequency is None:
+            return None
+        harmonic = getattr(self.parent_widget, 'harmonic', 1) or 1
+        return frequency * harmonic
+
+    def _lifetime_mesh_range(self):
+        """Return the lifetime mesh ``(min, max)`` range in ns."""
+        min_i, max_i = self.lifetime_mesh_range_slider.value()
+        factor = self.lifetime_mesh_range_factor
+        return min_i / factor, max_i / factor
+
+    def _set_lifetime_mesh_range(
+        self, lifetime_min, lifetime_max, slider_max=None
+    ):
+        """Show ``[lifetime_min, lifetime_max]`` ns on the lifetime controls.
+
+        The slider's end is *slider_max* (its current end when omitted),
+        widened when needed so the range is never clamped.
+        """
+        factor = self.lifetime_mesh_range_factor
+        lifetime_min = max(0.0, float(lifetime_min))
+        lifetime_max = max(lifetime_min, float(lifetime_max))
+        if slider_max is None:
+            slider_max = self.lifetime_mesh_range_slider.maximum() / factor
+        slider_max = max(float(slider_max), lifetime_max)
+
+        was_updating = self._updating_settings
+        self._updating_settings = True
+        try:
+            self.lifetime_mesh_range_slider.setRange(
+                0, int(round(slider_max * factor))
+            )
+            self.lifetime_mesh_range_slider.setValue(
+                (
+                    int(round(lifetime_min * factor)),
+                    int(round(lifetime_max * factor)),
+                )
+            )
+            self.lifetime_mesh_min_edit.setText(f"{lifetime_min:.2f}")
+            self.lifetime_mesh_max_edit.setText(f"{lifetime_max:.2f}")
+        finally:
+            self._updating_settings = was_updating
+
+    def _initialize_lifetime_mesh_range_from_current_data(self):
+        """Fit the lifetime mesh range to the plotted data's lifetimes.
+
+        Needs a frequency; without one the controls are left untouched.
+        """
+        output_type = self._get_selected_output_type()
+        frequency = self._mesh_frequency()
+        pw = self.parent_widget
+        if (
+            pw is None
+            or frequency is None
+            or output_type not in LIFETIME_OUTPUT_TYPES
+        ):
+            return
+        slider_max = lifetime_mesh_upper_bound(frequency)
+        lifetime_range = None
+        features = pw.get_merged_features()
+        if features is not None:
+            lifetime_range = lifetime_mesh_range_from_phasors(
+                output_type, *features, frequency
+            )
+        lifetime_min, lifetime_max = lifetime_range or (0.0, slider_max)
+        self._set_lifetime_mesh_range(lifetime_min, lifetime_max, slider_max)
+        self._persist_lifetime_mesh_range_to_metadata()
+
+    def _restore_lifetime_mesh_range_from_settings(self, settings) -> bool:
+        """Apply the stored range of the selected lifetime type.
+
+        Returns False when there is none, leaving the controls untouched.
+        """
+        output_type = self._get_selected_output_type()
+        if settings is None or output_type not in LIFETIME_OUTPUT_TYPES:
+            return False
+        ranges = settings.get('mesh_lifetime_ranges')
+        stored = ranges.get(output_type) if isinstance(ranges, dict) else None
+        if (
+            not isinstance(stored, (list, tuple))
+            or len(stored) != 2
+            or None in stored
+        ):
+            return False
+        frequency = self._mesh_frequency()
+        slider_max = (
+            lifetime_mesh_upper_bound(frequency)
+            if frequency is not None
+            else None
+        )
+        self._set_lifetime_mesh_range(stored[0], stored[1], slider_max)
+        return True
+
+    def _sync_lifetime_mesh_range(self, settings=None):
+        """Restore the selected lifetime type's mesh range, else fit it."""
+        if self.parent_widget is None:
+            return
+        if settings is None:
+            settings = self._get_current_layer_mapping_settings(create=False)
+        if not self._restore_lifetime_mesh_range_from_settings(settings):
+            self._initialize_lifetime_mesh_range_from_current_data()
+
+    def _persist_lifetime_mesh_range_to_metadata(self):
+        """Save the lifetime mesh range under the selected lifetime type."""
+        if self._updating_settings or self.parent_widget is None:
+            return
+        output_type = self._get_selected_output_type()
+        if output_type not in LIFETIME_OUTPUT_TYPES:
+            return
+        settings = self._get_current_layer_mapping_settings(create=True)
+        if settings is None:
+            return
+        ranges = settings.get('mesh_lifetime_ranges')
+        if not isinstance(ranges, dict):
+            ranges = settings['mesh_lifetime_ranges'] = {}
+        ranges[output_type] = [float(v) for v in self._lifetime_mesh_range()]
+
+    def _on_lifetime_mesh_slider_changed(self, value):
+        """Handle a lifetime mesh range slider change."""
+        if self._updating_settings:
+            return
+        factor = self.lifetime_mesh_range_factor
+        self.lifetime_mesh_min_edit.setText(f"{value[0] / factor:.2f}")
+        self.lifetime_mesh_max_edit.setText(f"{value[1] / factor:.2f}")
+        self._sync_lifetime_mesh_range_to_histogram()
+        self._persist_lifetime_mesh_range_to_metadata()
+        self._refresh_mesh_overlay_if_needed()
+
+    def _on_lifetime_mesh_edits_changed(self):
+        """Handle a lifetime mesh range line edit change."""
+        if self._updating_settings:
+            return
+        try:
+            lifetime_min = float(self.lifetime_mesh_min_edit.text())
+            lifetime_max = float(self.lifetime_mesh_max_edit.text())
+        except ValueError:
+            return
+        # A value typed past the slider's end widens it rather than being
+        # clamped to it.
+        self._set_lifetime_mesh_range(lifetime_min, lifetime_max)
+        self._sync_lifetime_mesh_range_to_histogram()
+        self._persist_lifetime_mesh_range_to_metadata()
+        self._refresh_mesh_overlay_if_needed()
+
+    def _sync_lifetime_mesh_range_to_histogram(self):
+        """Apply the lifetime mesh range to the histogram and output maps.
+
+        The two ranges are linked, as the phase mesh range and the histogram
+        are in Phase mode: the mesh band is the displayed lifetime range, and
+        ``_update_tab_sliders_from_range`` carries the reverse direction.
+        """
+        if self._get_selected_output_type() in LIFETIME_OUTPUT_TYPES:
+            self._sync_range_to_histogram(*self._lifetime_mesh_range())
+
+    def _lifetime_mesh_colormap(self, output_type):
+        """Return ``(cmap, vmin, vmax)`` for the *output_type* lifetime mesh.
+
+        The mesh takes the output layers' own colormap and contrast limits,
+        so a mesh cell and a pixel with the same lifetime share a colour.
+        Without a matching layer (nothing calculated yet, or another lifetime
+        on screen) the default lifetime colormap spans the mesh range.
+        """
+        for layer in self.metric_layers:
+            info = self._mapping_output_info(layer)
+            if (
+                info is None
+                or info[0] != output_type
+                or layer not in self.viewer.layers
+            ):
+                continue
+            with contextlib.suppress(AttributeError, TypeError, ValueError):
+                vmin, vmax = (float(v) for v in layer.contrast_limits)
+                cmap = LinearSegmentedColormap.from_list(
+                    layer.colormap.name, layer.colormap.colors
+                )
+                return cmap, vmin, vmax
+        cmap = resolve_colormap_by_name(
+            self._get_output_colormap_name(output_type)
+        ) or resolve_colormap_by_name("viridis")
+        vmin, vmax = self._lifetime_mesh_range()
+        return cmap, vmin, vmax
+
+    @staticmethod
+    def _lifetime_mesh_field(mesh_grid, output_type, frequency):
+        """Return *mesh_grid*'s lifetime field, cached on the grid entry.
+
+        Only the latest lifetime type/frequency is kept per grid: those
+        change rarely, while the view (and so the grid) changes constantly.
+        """
+        key = (output_type, float(frequency))
+        cached = mesh_grid.get('lifetime')
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        field = compute_lifetime_mesh_field(
+            mesh_grid['p_grid'], mesh_grid['m_grid'], output_type, frequency
+        )
+        mesh_grid['lifetime'] = (key, field)
+        return field
+
+    def _apply_lifetime_mesh(self, output_type: str):
+        """Draw the *output_type* lifetime mesh behind the phasor data.
+
+        Only the mesh is drawn: unlike Phase/Modulation, Lifetime mode does
+        not recolour the phasor data itself. Without the mesh toggle or a
+        frequency the mesh and its colorbar are removed.
+        """
+        if output_type not in LIFETIME_OUTPUT_TYPES:
+            return
+        pw = self.parent_widget
+        if pw is None or getattr(pw, 'plot_type', 'HISTOGRAM2D') == 'NONE':
+            return
+        frequency = self._mesh_frequency()
+        if not self.mesh_overlay_checkbox.isChecked() or frequency is None:
+            self._remove_mesh_overlay()
+            pw._remove_mapping_colorbar()
+            return
+
+        ax = pw.canvas_widget.axes
+        resolution = self._get_mesh_grid_resolution(ax)
+        mesh_grid = self._get_mesh_polar_grid(ax, resolution)
+        p_grid = mesh_grid['p_grid']
+        m_grid = mesh_grid['m_grid']
+        lifetime_grid = self._lifetime_mesh_field(
+            mesh_grid, output_type, frequency
+        )
+
+        semicircle = self._is_semicircle_mode()
+        clip_semicircle = (
+            self.mesh_clip_semicircle_checkbox.isChecked() and semicircle
+        )
+        mesh_mask = compute_phasor_mesh_mask(
+            p_grid,
+            m_grid,
+            semicircle=semicircle,
+            clip_semicircle=clip_semicircle,
+            lifetime_grid=lifetime_grid,
+            lifetime_range=self._lifetime_mesh_range(),
+        )
+        alpha_key = (
+            *self._make_mesh_grid_cache_key(ax, resolution),
+            output_type,
+            float(frequency),
+            *self.lifetime_mesh_range_slider.value(),
+            clip_semicircle,
+        )
+        mesh_alpha_map = self._get_mesh_alpha_map(
+            mesh_mask, alpha_key, self._mesh_alpha(), resolution, ax
+        )
+        cmap, vmin, vmax = self._lifetime_mesh_colormap(output_type)
+
+        self._remove_mesh_overlay()
+        self._mesh_overlay_imshow = draw_phasor_mesh(
+            ax,
+            output_type,
+            semicircle=semicircle,
+            colormap=cmap,
+            alpha_map=mesh_alpha_map,
+            vmin=vmin,
+            vmax=vmax,
+            p_grid=p_grid,
+            m_grid=m_grid,
+            mask=mesh_mask,
+            extent=mesh_grid['extent'],
+            lifetime_grid=lifetime_grid,
+        )
+        if self.mesh_colorbar_checkbox.isChecked():
+            self._update_mapping_colorbar(cmap, vmin, vmax, output_type)
+        else:
+            pw._remove_mapping_colorbar()
+        pw.canvas_widget.figure.canvas.draw_idle()
+
     def _sync_range_to_histogram(self, min_f, max_f):
         """Sync tab slider range changes to HistogramWidget and update layers."""
         # Use HistogramWidget's factor for its slider
@@ -2873,5 +4190,9 @@ class PhasorMappingWidget(QWidget):
                 self.modulation_range_slider.setValue((min_v, max_v))
                 self.modulation_min_edit.setText(f"{min_f:.2f}")
                 self.modulation_max_edit.setText(f"{max_f:.2f}")
+            elif output_type in LIFETIME_OUTPUT_TYPES:
+                self._set_lifetime_mesh_range(min_f, max_f)
         finally:
             self._updating_settings = False
+        if output_type in LIFETIME_OUTPUT_TYPES:
+            self._persist_lifetime_mesh_range_to_metadata()

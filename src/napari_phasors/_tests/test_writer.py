@@ -1114,3 +1114,85 @@ def test_write_ometif_multi_save_via_viewer(make_napari_viewer, tmp_path):
     # Base name matching the layer name -> just "<layer>.ome.tif".
     paths = write_ome_tiff(str(tmp_path / "img1.ome.tif"), l1)
     assert os.path.basename(paths[0]) == "img1.ome.tif"
+
+
+def test_export_csv_skips_a_fully_nan_harmonic(tmp_path):
+    """A harmonic with no finite pixel contributes no rows at all."""
+    import pandas as pd
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_csv
+
+    rng = np.random.default_rng(1)
+    G = rng.random((2, 4, 4))
+    S = rng.random((2, 4, 4))
+    # The second harmonic was never computed for this layer.
+    G[1] = np.nan
+    S[1] = np.nan
+
+    layer = Image(
+        np.ones((4, 4)),
+        name="half_nan",
+        metadata={
+            "G": G,
+            "S": S,
+            "G_original": G.copy(),
+            "S_original": S.copy(),
+            "harmonics": [1, 2],
+        },
+    )
+
+    out = export_layer_as_csv(str(tmp_path / "out.csv"), layer)
+    df = pd.read_csv(out[0])
+
+    assert set(df["harmonic"]) == {1}
+    assert len(df) == 16
+
+
+def test_write_ometif_mapping_filter_stack_roundtrip(tmp_path):
+    """The metric filter stack survives an OME-TIFF roundtrip.
+
+    The stack is what the phasor arrays are derived from, so it has to come
+    back with the file: a reopened layer whose criteria were lost would show
+    pixels the user had filtered out, with nothing on screen to explain it.
+    """
+    from napari_phasors._mapping_filters import (
+        get_filters,
+        new_filter,
+        set_filters,
+    )
+
+    time_constants = [0.1, 1, 10]
+    raw_flim_data = make_raw_flim_data(time_constants=time_constants)
+    harmonic = [1, 2]
+    layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
+
+    stored = set_filters(
+        layer,
+        [
+            new_filter(
+                "Normal Lifetime",
+                0.5,
+                3.25,
+                harmonic=2,
+                params={'frequency': 80.0},
+            ),
+            new_filter("Modulation", 0.1, 0.9, mode="exclude", enabled=False),
+        ],
+    )
+
+    filepath = str(tmp_path / "mapping_filters.ome.tif")
+    write_ome_tiff(filepath, [(layer.data, {"metadata": layer.metadata})])
+
+    reader = napari_get_reader(filepath, harmonics=harmonic)
+    restored_layer = reader(filepath)[0]
+
+    class _Restored:
+        metadata = restored_layer[1]["metadata"]
+
+    restored = get_filters(_Restored())
+    assert restored == stored
+    assert restored[0]['harmonic'] == 2
+    assert restored[0]['params'] == {'frequency': 80.0}
+    assert restored[1]['mode'] == "exclude"
+    assert restored[1]['enabled'] is False

@@ -14,6 +14,10 @@ The statistics table can also display phasor center data for each layer or group
 
 After running an analysis (component, mapping, or FRET), a **Histogram** dock panel opens automatically below the Phasor Plot widget. It shows the distribution of the computed metric values (e.g., lifetime, phase, modulation, or component fraction) across all valid pixels of all selected layers.
 
+The Component, Phasor Mapping, and FRET histograms update when the **Phasor
+Layers** selection changes. Outputs from unchecked source layers are removed
+from the histogram and statistics table until their source is selected again.
+
 ### Histogram display modes
 
 The histogram can be shown in three modes, switched in the **Histogram
@@ -21,7 +25,10 @@ Settings** dialog:
 
 #### Merged
 
-All selected layers' data are pooled and shown as a single curve.
+All selected layers' data are pooled and shown as a single curve. Merging
+pools *layers*, never different quantities: when a tab plots more than one at
+a time — the Components tab with several components checked — each one keeps
+its own curve, pooling only its own layers.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/histogram%20merged.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/histogram%20merged.mp4" type="video/mp4">
@@ -37,21 +44,74 @@ Each selected layer is shown as a separate curve, allowing direct comparison.
 
 #### Grouped
 
-Layers can be assigned to custom groups, and each group's data is pooled and shown as a separate curve.
+Layers can be assigned to custom groups, and each group's data is pooled and shown as a separate curve. Groups are assigned to the analysed layers — the ones listed in *Phasor Layers* — so a layer's group covers every curve derived from it. When a tab plots more than one quantity per layer, each group contributes one curve per quantity (same group colour, different dash pattern) rather than blending them.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/histogram%20grouped.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/histogram%20grouped.mp4" type="video/mp4">
 </video>
 
+#### Groups are shared across tabs
+
+Groups are stored on the analysed image layer itself, not on the derived output
+layer, so a grouping made in one place is the grouping everywhere: the
+Component, Phasor Mapping and FRET histograms, the grouped statistics, and the
+grouped contour and phasor-center modes of the **Plot Settings** tab all show
+the same groups. Because the group lives in the layer's settings it is also
+written to the OME-TIFF when the layer is saved, and comes back when the file
+is re-opened.
+
+#### Group colours and colormaps
+
+Groups keep the same identity across dialogs that offer different styling. A
+group given a colormap in the **Contour Layer Settings** dialog shows up in the
+solid-colour dialogs (histogram, phasor centers) in that colormap's top colour,
+and a group created with a solid colour there is drawn by the contour plot as a
+ramp generated from that colour. Picking a new solid colour for a group that had
+a colormap replaces the colormap with a ramp from the new colour; leaving the
+colour alone keeps the colormap.
+
+### Separating mask labels
+
+When the analysed layers are masked with a labels layer (see {doc}`mask`) and
+more than one label is selected, each label can be analysed on its own instead
+of all of them together. Tick **Separate mask labels**, either in the
+**Histogram Settings** dialog or below the statistics table — both drive the
+same setting — and every masked layer contributes one dataset per label:
+
+- the histogram draws a separate outline for each label, exactly as
+  *Individual layers* does for whole layers (switching the option on from
+  *Merged* selects that mode for you, since one merged curve cannot tell the
+  labels apart);
+- the statistics table shows one row per label, named
+  `<layer> – label <n>`, and its header changes to *Label Statistics*;
+- each curve is drawn in the colour napari paints that label with, so the
+  plot and the labels layer read as the same thing. The colour can still be
+  overridden per curve in the settings dialog.
+
+The option only appears when it applies: a layer with a single label selected,
+an inverted mask (whose analysed region is the complement of the labels, not
+one region per label) or no mask at all has nothing to separate. Layers in the
+selection that are not masked keep their single curve alongside the per-label
+ones.
+
+Grouping is unaffected: groups belong to the analysed layer, so every label of
+a layer stays in that layer's group. Exports follow the display — the histogram
+CSV writes one column of counts per label, and the statistics CSV one row per
+label, including the per-timepoint rows of a time-lapse.
+
 ### Histogram features
 
 - **Range slider**: Drag the handles to clip the display/contrast limits of the colormapped image in real time.
 - **Show standard deviation**: Shades the ±1 SD band around the merged or group curve.
+- **Normalize to maximum**: Divides every curve by its own peak so it reaches 1. Distributions whose pixel counts differ by orders of magnitude can then be compared in the same plot; the y axis is labelled *(normalized)* and the CSV export is scaled the same way.
+- **Logarithmic y axis**: Draws the counts on a log scale so sparse tails stay visible next to a tall peak. Empty bins are drawn on the zero baseline rather than leaving gaps in the curves.
+- **Number of bins**: How many bins the value range is divided into. Changing it recomputes the histogram, its CSV export and the bin-based statistics (center of mass).
 - **Show line**: Overlays a vertical line at the *Center of mass*, *Mean*, or *Median*.
 - **Show legend**: Toggles the curve legend.
 - **White background**: Switches to a white plot background for figures.
 - **Smooth curves**: Applies Gaussian smoothing to improve curve readability.
 - **Layer/group colours**: Picker for per-layer or per-group histogram colours.
+- **Curve colours**: In Merged mode with several quantities on screen, draws each curve either as a gradient in its own layers' colormap or in a solid colour, with a colour picker per curve.
 - **Save Histogram**: Exports the histogram, either as a PNG image (at 300 DPI) or as a CSV of the underlying bin centers and counts (per layer or per group, depending on the current display mode).
 
 ## Statistics Table
@@ -71,12 +131,21 @@ The **Statistics** dock panel, linked to the histogram, displays per-layer (and 
 
 | Column | Description |
 |--------|-------------|
-| Name | Layer or group name |
+| Name | Layer, mask label or group name |
 | Center of Mass | Histogram-weighted center |
 | Mean | Arithmetic mean |
 | Median | 50th percentile |
 | Std Dev | Standard deviation |
 | (Phasor Center) | Center-of-mass coordinate in phasor space (if shown) |
+
+The statistic columns name the quantity they summarise — *FRET efficiency
+Mean*, *Lifetime (ns) Center of Mass*, *Component 1 Median* — so a table, and
+the CSV exported from it, says what was measured. When several quantities are
+plotted at once (two components, say) the table widens rather than repeating
+rows: one row per analysed layer, or per group, and one column block per
+quantity — *Component 1 Center of Mass … Component 2 Center of Mass …*.
+Renaming a component in the Components tab relabels its curve and its columns
+straight away.
 
 Right-clicking on the table provides **Copy**, **Copy with Headers**, and **Select All** options. The entire table can also be exported to CSV via the **Export Table as CSV** button.
 
