@@ -136,6 +136,7 @@ def test_reader_h5_reference_lifetime_setting(monkeypatch):
         ".h5",
         lambda path, reader_options: signal,
     )
+    monkeypatch.setitem(reader_module.iter_index_mapping, ".h5", None)
 
     layer_data_list = reader_module.raw_file_reader("example.h5")
 
@@ -148,6 +149,8 @@ def test_reader_h5_reference_lifetime_setting(monkeypatch):
 
 def test_signal_from_brighteyes_mcs_uses_phasorpy(tmp_path):
     """H5 adapter should use PhasorPy's BrightEyes-MCS reader."""
+    if not reader_module.BRIGHTEYES_MCS_AVAILABLE:
+        pytest.skip("phasorpy>=0.12 required for BrightEyes-MCS support")
     assert (
         reader_module._signal_from_brighteyes_mcs
         is reader_module.io.signal_from_brighteyes_mcs
@@ -2548,3 +2551,62 @@ def test_channel_dialog_theme_fallback(monkeypatch, qtbot):
     unstyled = ChannelSelectionDialog([0, 1])
     qtbot.addWidget(unstyled)
     assert unstyled.styleSheet() == ""
+
+
+def test_h5_support_absent_without_phasorpy_reader(monkeypatch):
+    """A stale phasorpy must cost .h5 support, not the whole plugin."""
+    # The module-level binding used to be a plain attribute access, so an
+    # older phasorpy made importing napari_phasors fail outright.
+    assert reader_module.BRIGHTEYES_MCS_AVAILABLE == (
+        getattr(reader_module.io, "signal_from_brighteyes_mcs", None)
+        is not None
+    )
+    if not reader_module.BRIGHTEYES_MCS_AVAILABLE:
+        assert ".h5" not in reader_module.extension_mapping["raw"]
+        assert "phasorpy>=0.12" in (
+            reader_module.brighteyes_mcs_unavailable_message()
+        )
+
+
+@pytest.mark.parametrize(
+    "filename, expected_stem, expected_extension",
+    [
+        ("sample.h5", "sample", ".h5"),
+        # Dotted acquisition names used to parse as '.mcs.h5' and match no
+        # reader at all, so the file read as unsupported.
+        ("sample.mcs.h5", "sample.mcs", ".h5"),
+        ("2024-05-01.run3.h5", "2024-05-01.run3", ".h5"),
+        ("fov1_calibrated.h5", "fov1_calibrated", ".h5"),
+        # Compound extensions must keep working.
+        ("image.ome.tif", "image", ".ome.tif"),
+        ("image.OME.TIFF", "image", ".ome.tiff"),
+        ("plain.tif", "plain", ".tif"),
+        ("noextension", "noextension", ""),
+    ],
+)
+def test_get_filename_extension_dotted_names(
+    filename, expected_stem, expected_extension
+):
+    """Only compound extensions may swallow more than the last suffix."""
+    stem, extension = reader_module._get_filename_extension(filename)
+    assert (stem, extension) == (expected_stem, expected_extension)
+
+
+@pytest.mark.parametrize(
+    "settings, expected",
+    [
+        (
+            {"h5_dataset": "/raw/spad", "time": 0, "depth": 0},
+            "file [Raw view: raw/spad, T0, Z0]",
+        ),
+        (
+            {"h5_dataset": "/output/apr_001/products/apr_sum", "time": 2},
+            "file [output/apr_001/products/apr_sum, T2]",
+        ),
+        ({"dataset": "irf"}, "file [IRF]"),
+        ({"dataset": "reference"}, "file [Reference]"),
+    ],
+)
+def test_h5_layer_stem(settings, expected):
+    """The h5 selection is described in the stem, not the channel suffix."""
+    assert reader_module._h5_layer_stem("file", settings) == expected

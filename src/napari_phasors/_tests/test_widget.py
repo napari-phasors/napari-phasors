@@ -53,7 +53,8 @@ TEST_FORMATS = [
 
 def test_h5_widget_current_output_default_product(tmp_path):
     """Test current-schema output defaults can point to a non-spad product."""
-    import h5py
+    pytest.importorskip("brighteyes_mcs_reader")
+    h5py = pytest.importorskip("h5py")
 
     file_path = tmp_path / "current_output.h5"
     with h5py.File(file_path, "w") as h5:

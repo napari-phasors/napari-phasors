@@ -51,16 +51,20 @@ from ._fbd import (
     signal_from_fbd,
 )
 from ._reader import (
+    BRIGHTEYES_MCS_AVAILABLE,
     CziMosaic,
     _get_filename_extension,
     _signal_from_brighteyes_mcs,
     _split_widget_reader_options,
+    brighteyes_mcs_unavailable_message,
     czi_mosaic_info,
     describe_file_axes,
     iter_index_mapping,
+    list_h5_datasets,
     napari_get_reader,
     probe_tile_axes,
     raw_file_stack_reader,
+    resolve_h5_dataset,
 )
 from ._update_check import maybe_check_for_update
 from ._utils import (
@@ -168,8 +172,11 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             ".ifli": IfliWidget,
             ".lif": LifWidget,
             ".json": JsonWidget,
-            ".h5": H5Widget,
         }
+        # Offered only when phasorpy ships the BrightEyes-MCS reader, so a
+        # stale phasorpy hides the option instead of failing on use.
+        if BRIGHTEYES_MCS_AVAILABLE:
+            self.reader_options[".h5"] = H5Widget
 
         # Unobtrusive, throttled check for a newer release (see module docs).
         maybe_check_for_update(parent=self)
@@ -3645,23 +3652,22 @@ class H5Widget(AdvancedOptionsWidget):
         super().__init__(viewer, path)
 
     def _read_h5_products(self, path):
-        """Read available BrightEyes-MCS datasets."""
-        try:
-            from brighteyes_mcs_reader import list_datasets
+        """Read available BrightEyes-MCS datasets.
 
-            self.h5_products = [
-                {
-                    "label": info.label,
-                    "path": info.path,
-                    "shape": tuple(info.shape),
-                    "axes": tuple(info.axes),
-                    "default": info.is_default,
-                }
-                for info in list_datasets(path)
-                if info.kind == "data"
-            ]
-        except Exception:  # noqa: BLE001
-            pass
+        Uses the same listing the reader resolves datasets with, so the
+        dialog cannot offer a product the reader would describe differently.
+        """
+        try:
+            self.h5_products = list_h5_datasets(path)
+        except ImportError:
+            # An optional dependency is genuinely absent: fall back quietly
+            # to the dataset every MCS file has.
+            self.h5_products = []
+        except Exception as exc:  # noqa: BLE001
+            # A corrupt file, an unreadable path or a changed upstream API
+            # all used to look identical to "this file has one dataset".
+            self.h5_products = []
+            show_error(f"Could not list HDF5 datasets: {exc}")
 
         if not self.h5_products:
             self.h5_products = [
@@ -3692,8 +3698,6 @@ class H5Widget(AdvancedOptionsWidget):
         """Set time and z counts from selected product metadata."""
         try:
             product = self.h5_products[index]
-        except (IndexError, KeyError, TypeError):
-            product = {}
         except Exception:  # noqa: BLE001
             product = {}
 
@@ -3827,11 +3831,15 @@ class H5Widget(AdvancedOptionsWidget):
 
     def _get_signal_data(self):
         """Get selected HDF5 histogram signal."""
+        if _signal_from_brighteyes_mcs is None:
+            show_error(brighteyes_mcs_unavailable_message())
+            return None
         try:
-            return _signal_from_brighteyes_mcs(
-                self.path,
-                **self.reader_options.copy(),
+            options = self._clean_io_options(self.reader_options.copy())
+            options["dataset"] = resolve_h5_dataset(
+                self.path, options.get("dataset")
             )
+            return _signal_from_brighteyes_mcs(self.path, **options)
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading HDF5 signal: {str(e)}")
             return None
@@ -3842,20 +3850,34 @@ class H5Widget(AdvancedOptionsWidget):
         super()._on_click(path, reader_options, harmonics)
 
     def _on_click_data_and_calibration(self, path, reader_options, harmonics):
-        """Import selected HDF5 data and matching REF or IRF."""
+        """Import selected HDF5 data and matching REF or IRF.
+
+        The two imports are independent reads of the same file, so a missing
+        or unreadable REF/IRF used to raise only after the data layer was
+        already in the viewer, leaving a half-finished import with no
+        explanation. The calibration read is reported instead: the data
+        layer stays, and the user is told what is missing.
+        """
         self._sync_h5_reader_options()
 
         data_options = reader_options.copy()
         data_options["dataset"] = self.product_combo.currentData() or None
         super()._on_click(path, data_options, harmonics)
 
-        calibration_options = reader_options.copy()
-        calibration_options["dataset"] = (
+        calibration = (
             "irf"
             if self.calibration_combo.currentText() == "IRF"
             else "reference"
         )
-        super()._on_click(path, calibration_options, harmonics)
+        calibration_options = reader_options.copy()
+        calibration_options["dataset"] = calibration
+        try:
+            super()._on_click(path, calibration_options, harmonics)
+        except Exception as exc:  # noqa: BLE001
+            show_error(
+                f"Imported the data, but the {calibration.upper()} "
+                f"could not be read: {exc}"
+            )
 
 
 class ProcessedOnlyWidget(AdvancedOptionsWidget):
