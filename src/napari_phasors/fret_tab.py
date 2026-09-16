@@ -16,7 +16,10 @@ from phasorpy.phasor import phasor_center, phasor_nearest_neighbor
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor, QDoubleValidator
 from qtpy.QtWidgets import (
+    QCheckBox,
+    QColorDialog,
     QComboBox,
+    QDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -54,11 +57,19 @@ from ._utils import (
     create_settings_note_label,
     layer_colormap_from_settings,
     make_section,
+    make_slider_spin_row,
     set_settings_note,
     setup_primary_button,
 )
 
 _FRET_OUTPUT_METADATA_KEY = 'phasor_fret_output'
+
+#: Default look of the donor trajectory drawn on the phasor plot.
+DEFAULT_TRAJECTORY_LINEWIDTH = 3.0
+DEFAULT_TRAJECTORY_ALPHA = 1.0
+DEFAULT_TRAJECTORY_DOT_RADIUS = 0.02
+DEFAULT_TRAJECTORY_COLOR = 'dimgray'
+DEFAULT_SHOW_TRAJECTORY_DOTS = True
 
 
 class FretWidget(AutoUpdateMixin, QWidget):
@@ -91,6 +102,11 @@ class FretWidget(AutoUpdateMixin, QWidget):
         self.colormap_density_factor = (
             5  # Controls trajectory colormap detail level
         )
+        self.trajectory_linewidth = DEFAULT_TRAJECTORY_LINEWIDTH
+        self.trajectory_alpha = DEFAULT_TRAJECTORY_ALPHA
+        self.trajectory_dot_radius = DEFAULT_TRAJECTORY_DOT_RADIUS
+        self.trajectory_color = DEFAULT_TRAJECTORY_COLOR
+        self.show_trajectory_dots = DEFAULT_SHOW_TRAJECTORY_DOTS
         self.current_donor_circle = None
         self.current_background_circle = None
         self._updating_settings = False
@@ -362,15 +378,22 @@ class FretWidget(AutoUpdateMixin, QWidget):
         fretting_box_layout.addLayout(form)
         layout.addWidget(fretting_box)
 
-        # Colormap over trajectory toggle
-        self.colormap_checkbox = QToggleSwitch(
-            "Overlay colormap on donor trajectory"
+        # Display settings section ------------------------------------------
+        display_box, display_box_layout = make_section("Display settings")
+        buttons_row = QHBoxLayout()
+        self.trajectory_style_btn = QPushButton("Edit Trajectory Style...")
+        self.trajectory_style_btn.setToolTip(
+            "Edit the colormap, width, transparency and end dots of the "
+            "donor trajectory in the phasor plot."
         )
-        self.colormap_checkbox.onColor = QColor("#27ae60")  # Nice Green
-        self.colormap_checkbox.setChecked(True)
-        self.colormap_checkbox.toggled.connect(
-            self._on_colormap_checkbox_changed
+        self.trajectory_style_btn.clicked.connect(
+            self._open_trajectory_style_dialog
         )
+        buttons_row.addWidget(self.trajectory_style_btn)
+        buttons_row.addStretch()
+        display_box_layout.addLayout(buttons_row)
+        layout.addWidget(display_box)
+        self._build_trajectory_style_dialog()
 
         # Plot button
         self.calculate_fret_efficiency_button = QPushButton(
@@ -397,7 +420,6 @@ class FretWidget(AutoUpdateMixin, QWidget):
             "donor lifetime, frequency, background, fretting proportion, "
             "layer selection, or filtered/calibrated phasor data change.",
         )
-        layout.addWidget(self.colormap_checkbox)
 
         # Filter section -----------------------------------------------------
         # One efficiency criterion, always shown and switched on and off with
@@ -492,6 +514,253 @@ class FretWidget(AutoUpdateMixin, QWidget):
         self.bg_stack.setCurrentIndex(0)
         self._update_background_combobox()
         self._update_donor_lifetime_combobox()
+
+    def _build_trajectory_style_dialog(self):
+        """Create the (hidden) dialog editing the trajectory style."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("FRET Trajectory Style")
+        dialog.setMinimumWidth(380)
+        vbox = QVBoxLayout(dialog)
+
+        self.colormap_checkbox = QToggleSwitch(
+            "Overlay colormap on donor trajectory"
+        )
+        self.colormap_checkbox.onColor = QColor("#27ae60")  # Nice Green
+        self.colormap_checkbox.setChecked(True)
+        self.colormap_checkbox.toggled.connect(
+            self._on_colormap_checkbox_changed
+        )
+        vbox.addWidget(self.colormap_checkbox)
+
+        # Flat color, only meaningful while the colormap overlay is off.
+        self.trajectory_color_row = QWidget()
+        color_layout = QHBoxLayout(self.trajectory_color_row)
+        color_layout.setContentsMargins(0, 0, 0, 0)
+        color_layout.addWidget(QLabel("Color:"))
+        self.trajectory_color_button = QPushButton()
+        self.trajectory_color_button.setMaximumWidth(80)
+        self.trajectory_color_button.setToolTip(
+            "Color of the trajectory line and its end dots."
+        )
+        self.trajectory_color_button.clicked.connect(
+            self._on_trajectory_color_clicked
+        )
+        color_layout.addWidget(self.trajectory_color_button)
+        color_layout.addStretch()
+        vbox.addWidget(self.trajectory_color_row)
+        self._update_trajectory_color_button()
+        self._update_trajectory_color_visibility()
+
+        (
+            width_row,
+            self.trajectory_width_slider,
+            self.trajectory_width_spin,
+        ) = make_slider_spin_row(
+            "Width:",
+            0.5,
+            20.0,
+            self.trajectory_linewidth,
+            1,
+            self._on_trajectory_width_changed,
+            step=0.5,
+        )
+        vbox.addLayout(width_row)
+
+        (
+            transparency_row,
+            self.trajectory_transparency_slider,
+            self.trajectory_transparency_spin,
+        ) = make_slider_spin_row(
+            "Transparency:",
+            0.0,
+            1.0,
+            1.0 - self.trajectory_alpha,
+            2,
+            self._on_trajectory_transparency_changed,
+        )
+        vbox.addLayout(transparency_row)
+
+        self.trajectory_dots_checkbox = QCheckBox("Show start and end dots")
+        self.trajectory_dots_checkbox.setChecked(self.show_trajectory_dots)
+        self.trajectory_dots_checkbox.setToolTip(
+            "Mark the donor (start) and background (end) of the trajectory "
+            "with dots."
+        )
+        self.trajectory_dots_checkbox.toggled.connect(
+            self._on_trajectory_dots_toggled
+        )
+        vbox.addWidget(self.trajectory_dots_checkbox)
+
+        (
+            dot_row,
+            self.trajectory_dot_slider,
+            self.trajectory_dot_spin,
+        ) = make_slider_spin_row(
+            "End dots radius:",
+            0.0,
+            0.1,
+            self.trajectory_dot_radius,
+            3,
+            self._on_trajectory_dot_radius_changed,
+            step=0.005,
+            tooltip="Radius, in phasor coordinates, of the dots marking the "
+            "donor (start) and background (end) of the trajectory.",
+        )
+        vbox.addLayout(dot_row)
+        self._update_trajectory_dot_controls_enabled()
+
+        buttons_layout = QHBoxLayout()
+        reset_button = QPushButton("Reset")
+        reset_button.setToolTip("Restore the default trajectory style.")
+        reset_button.clicked.connect(self._reset_trajectory_style)
+        buttons_layout.addWidget(reset_button)
+        buttons_layout.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        buttons_layout.addWidget(close_button)
+        vbox.addLayout(buttons_layout)
+        self.trajectory_style_reset_button = reset_button
+        self.trajectory_style_dialog = dialog
+
+    def _open_trajectory_style_dialog(self):
+        """Show the trajectory style dialog."""
+        dialog = self.trajectory_style_dialog
+        if dialog.isVisible():
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        dialog.show()
+
+    def _sync_trajectory_style_controls(self):
+        """Show the current trajectory style in the dialog's controls."""
+        pairs = (
+            (
+                self.trajectory_width_slider,
+                self.trajectory_width_spin,
+                self.trajectory_linewidth,
+                10,
+            ),
+            (
+                self.trajectory_transparency_slider,
+                self.trajectory_transparency_spin,
+                1.0 - self.trajectory_alpha,
+                100,
+            ),
+            (
+                self.trajectory_dot_slider,
+                self.trajectory_dot_spin,
+                self.trajectory_dot_radius,
+                1000,
+            ),
+        )
+        for slider, spin, value, factor in pairs:
+            for widget, widget_value in (
+                (slider, int(round(value * factor))),
+                (spin, value),
+            ):
+                widget.blockSignals(True)
+                try:
+                    widget.setValue(widget_value)
+                finally:
+                    widget.blockSignals(False)
+        self.trajectory_dots_checkbox.blockSignals(True)
+        try:
+            self.trajectory_dots_checkbox.setChecked(self.show_trajectory_dots)
+        finally:
+            self.trajectory_dots_checkbox.blockSignals(False)
+        self._update_trajectory_dot_controls_enabled()
+        self._update_trajectory_color_button()
+        self._update_trajectory_color_visibility()
+
+    def _update_trajectory_color_button(self):
+        """Paint the color button with the trajectory color."""
+        self.trajectory_color_button.setStyleSheet(
+            f"background-color: {self.trajectory_color}; "
+            "border: 1px solid black;"
+        )
+
+    def _update_trajectory_color_visibility(self):
+        """Show the color picker only while the colormap overlay is off."""
+        self.trajectory_color_row.setVisible(
+            not self.colormap_checkbox.isChecked()
+        )
+
+    def _update_trajectory_dot_controls_enabled(self):
+        """Enable the dot radius controls only while the dots are shown."""
+        for widget in (self.trajectory_dot_slider, self.trajectory_dot_spin):
+            widget.setEnabled(self.show_trajectory_dots)
+
+    def _on_trajectory_color_clicked(self):
+        """Pick the flat color of the trajectory and its dots."""
+        color = QColorDialog.getColor(
+            QColor(self.trajectory_color), self, "Trajectory color"
+        )
+        if not color.isValid():
+            return
+        self.trajectory_color = color.name()
+        self._update_trajectory_color_button()
+        self._update_fret_setting_in_metadata(
+            'trajectory_color', self.trajectory_color
+        )
+        self.plot_donor_trajectory()
+
+    def _on_trajectory_dots_toggled(self, checked):
+        """Show or hide the dots at both ends of the trajectory."""
+        self.show_trajectory_dots = bool(checked)
+        self._update_trajectory_dot_controls_enabled()
+        self._update_fret_setting_in_metadata(
+            'show_trajectory_dots', self.show_trajectory_dots
+        )
+        self.plot_donor_trajectory()
+
+    def _reset_trajectory_style(self):
+        """Restore the default trajectory style and redraw."""
+        self.trajectory_linewidth = DEFAULT_TRAJECTORY_LINEWIDTH
+        self.trajectory_alpha = DEFAULT_TRAJECTORY_ALPHA
+        self.trajectory_dot_radius = DEFAULT_TRAJECTORY_DOT_RADIUS
+        self.trajectory_color = DEFAULT_TRAJECTORY_COLOR
+        self.show_trajectory_dots = DEFAULT_SHOW_TRAJECTORY_DOTS
+        self.colormap_checkbox.blockSignals(True)
+        try:
+            self.colormap_checkbox.setChecked(True)
+        finally:
+            self.colormap_checkbox.blockSignals(False)
+        self.use_colormap = True
+        self._sync_trajectory_style_controls()
+        for key, value in (
+            ('use_colormap', self.use_colormap),
+            ('trajectory_linewidth', self.trajectory_linewidth),
+            ('trajectory_alpha', self.trajectory_alpha),
+            ('trajectory_dot_radius', self.trajectory_dot_radius),
+            ('trajectory_color', self.trajectory_color),
+            ('show_trajectory_dots', self.show_trajectory_dots),
+        ):
+            self._update_fret_setting_in_metadata(key, value)
+        self.plot_donor_trajectory()
+
+    def _on_trajectory_width_changed(self, value):
+        """Redraw the trajectory with a new line width."""
+        self.trajectory_linewidth = float(value)
+        self._update_fret_setting_in_metadata(
+            'trajectory_linewidth', self.trajectory_linewidth
+        )
+        self.plot_donor_trajectory()
+
+    def _on_trajectory_transparency_changed(self, value):
+        """Redraw the trajectory with a new transparency (0 = opaque)."""
+        self.trajectory_alpha = round(1.0 - float(value), 10)
+        self._update_fret_setting_in_metadata(
+            'trajectory_alpha', self.trajectory_alpha
+        )
+        self.plot_donor_trajectory()
+
+    def _on_trajectory_dot_radius_changed(self, value):
+        """Redraw the trajectory with new end-dot radii."""
+        self.trajectory_dot_radius = float(value)
+        self._update_fret_setting_in_metadata(
+            'trajectory_dot_radius', self.trajectory_dot_radius
+        )
+        self.plot_donor_trajectory()
 
     def _on_donor_source_changed(self, index: int):
         """Switch donor lifetime input mode (Manual | From layer)."""
@@ -713,6 +982,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
     def _on_colormap_checkbox_changed(self, checked=None):
         """Handle colormap checkbox state change."""
         self.use_colormap = self.colormap_checkbox.isChecked()
+        self._update_trajectory_color_visibility()
 
         if (
             not hasattr(self, '_updating_settings')
@@ -1166,8 +1436,8 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 donor_color = colormap(0.0)[:3]
                 background_color = colormap(1.0)[:3]
             else:
-                donor_color = 'dimgray'
-                background_color = 'dimgray'
+                donor_color = self.trajectory_color
+                background_color = self.trajectory_color
 
             trajectory_zorder = 10
             dot_zorder = 11
@@ -1183,13 +1453,18 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 self.current_donor_line = ax.plot(
                     donor_trajectory_real,
                     donor_trajectory_imag,
-                    color='dimgray',
-                    linewidth=3,
+                    color=self.trajectory_color,
+                    linewidth=self.trajectory_linewidth,
+                    alpha=self.trajectory_alpha,
                     label='Donor Trajectory',
                     zorder=trajectory_zorder,
                 )[0]
 
-            circle_radius = 0.02
+            if not self.show_trajectory_dots:
+                self.parent_widget.canvas_widget.canvas.draw_idle()
+                return
+
+            circle_radius = self.trajectory_dot_radius
 
             donor_circle = plt.Circle(
                 (donor_trajectory_real[0], donor_trajectory_imag[0]),
@@ -1197,6 +1472,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 fill=True,
                 facecolor=donor_color,
                 linewidth=1,
+                alpha=self.trajectory_alpha,
                 zorder=dot_zorder,
             )
             self.current_donor_circle = ax.add_patch(donor_circle)
@@ -1207,6 +1483,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 fill=True,
                 facecolor=background_color,
                 linewidth=1,
+                alpha=self.trajectory_alpha,
                 zorder=dot_zorder,
             )
             self.current_background_circle = ax.add_patch(background_circle)
@@ -1264,7 +1541,11 @@ class FretWidget(AutoUpdateMixin, QWidget):
             colors.append(fret_value)
 
         lc = LineCollection(
-            segments, cmap=colormap, linewidths=3, zorder=zorder
+            segments,
+            cmap=colormap,
+            linewidths=self.trajectory_linewidth,
+            alpha=self.trajectory_alpha,
+            zorder=zorder,
         )
         lc.set_array(np.array(colors))
         gamma = getattr(self, 'colormap_gamma', 1.0) or 1.0
@@ -1409,6 +1690,11 @@ class FretWidget(AutoUpdateMixin, QWidget):
             'donor_background': 0.1,
             'donor_fretting_proportion': 1.0,
             'use_colormap': True,
+            'trajectory_linewidth': DEFAULT_TRAJECTORY_LINEWIDTH,
+            'trajectory_alpha': DEFAULT_TRAJECTORY_ALPHA,
+            'trajectory_dot_radius': DEFAULT_TRAJECTORY_DOT_RADIUS,
+            'trajectory_color': DEFAULT_TRAJECTORY_COLOR,
+            'show_trajectory_dots': DEFAULT_SHOW_TRAJECTORY_DOTS,
             'background_positions_by_harmonic': {},
             'colormap_settings': {
                 'colormap_name': 'viridis',
@@ -1497,6 +1783,11 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 'donor_background': self.donor_background,
                 'donor_fretting_proportion': self.donor_fretting_proportion,
                 'use_colormap': self.use_colormap,
+                'trajectory_linewidth': self.trajectory_linewidth,
+                'trajectory_alpha': self.trajectory_alpha,
+                'trajectory_dot_radius': self.trajectory_dot_radius,
+                'trajectory_color': self.trajectory_color,
+                'show_trajectory_dots': self.show_trajectory_dots,
                 'background_positions_by_harmonic': copy.deepcopy(
                     self.background_positions_by_harmonic
                 ),
@@ -1628,6 +1919,29 @@ class FretWidget(AutoUpdateMixin, QWidget):
             if settings.get('use_colormap') is not None:
                 self.use_colormap = settings['use_colormap']
                 self.colormap_checkbox.setChecked(self.use_colormap)
+
+            self.trajectory_linewidth = float(
+                settings.get(
+                    'trajectory_linewidth', DEFAULT_TRAJECTORY_LINEWIDTH
+                )
+            )
+            self.trajectory_alpha = float(
+                settings.get('trajectory_alpha', DEFAULT_TRAJECTORY_ALPHA)
+            )
+            self.trajectory_dot_radius = float(
+                settings.get(
+                    'trajectory_dot_radius', DEFAULT_TRAJECTORY_DOT_RADIUS
+                )
+            )
+            self.trajectory_color = settings.get(
+                'trajectory_color', DEFAULT_TRAJECTORY_COLOR
+            )
+            self.show_trajectory_dots = bool(
+                settings.get(
+                    'show_trajectory_dots', DEFAULT_SHOW_TRAJECTORY_DOTS
+                )
+            )
+            self._sync_trajectory_style_controls()
 
             donor_source = settings.get('donor_source', 'Manual')
             # Support both old single-name format and new list format
@@ -2704,7 +3018,18 @@ def draw_fret_trajectory_overlay(
     colormap_contrast_limits = settings.get("colormap_contrast_limits", (0, 1))
     trajectory_zorder = settings.get("trajectory_zorder", 10)
     dot_zorder = settings.get("dot_zorder", 11)
-    circle_radius = settings.get("circle_radius", 0.02)
+    circle_radius = settings.get(
+        "circle_radius",
+        settings.get("trajectory_dot_radius", DEFAULT_TRAJECTORY_DOT_RADIUS),
+    )
+    linewidth = settings.get(
+        "trajectory_linewidth", DEFAULT_TRAJECTORY_LINEWIDTH
+    )
+    alpha = settings.get("trajectory_alpha", DEFAULT_TRAJECTORY_ALPHA)
+    color = settings.get("trajectory_color", DEFAULT_TRAJECTORY_COLOR)
+    show_dots = settings.get(
+        "show_trajectory_dots", DEFAULT_SHOW_TRAJECTORY_DOTS
+    )
     colormap_density_factor = settings.get("colormap_density_factor", 1.0)
 
     if use_colormap:
@@ -2752,22 +3077,30 @@ def draw_fret_trajectory_overlay(
             colors.append(fret_value)
 
         lc = LineCollection(
-            segments, cmap=colormap, linewidths=3, zorder=trajectory_zorder
+            segments,
+            cmap=colormap,
+            linewidths=linewidth,
+            alpha=alpha,
+            zorder=trajectory_zorder,
         )
         lc.set_array(np.array(colors))
         lc.set_clim(vmin, vmax)
         ax.add_collection(lc)
     else:
-        donor_color = 'dimgray'
-        background_color = 'dimgray'
+        donor_color = color
+        background_color = color
         ax.plot(
             trajectory_real,
             trajectory_imag,
-            color='dimgray',
-            linewidth=3,
+            color=color,
+            linewidth=linewidth,
+            alpha=alpha,
             label='Donor Trajectory',
             zorder=trajectory_zorder,
         )
+
+    if not show_dots:
+        return
 
     donor_circle = plt.Circle(
         (trajectory_real[0], trajectory_imag[0]),
@@ -2775,6 +3108,7 @@ def draw_fret_trajectory_overlay(
         fill=True,
         facecolor=donor_color,
         linewidth=1,
+        alpha=alpha,
         zorder=dot_zorder,
     )
     ax.add_patch(donor_circle)
@@ -2785,6 +3119,7 @@ def draw_fret_trajectory_overlay(
         fill=True,
         facecolor=background_color,
         linewidth=1,
+        alpha=alpha,
         zorder=dot_zorder,
     )
     ax.add_patch(background_circle)

@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
     QApplication,
     QColorDialog,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
@@ -58,9 +59,14 @@ from ._utils import (
     colormap_to_dict,
     create_settings_note_label,
     make_section,
+    make_slider_spin_row,
     set_settings_note,
     setup_primary_button,
 )
+
+#: Default outline of the cursors drawn on the phasor plot.
+DEFAULT_CURSOR_OUTLINE_WIDTH = 2.0
+DEFAULT_CURSOR_OUTLINE_ALPHA = 1.0
 
 #: Settings keys holding the cursors, one list per cursor shape.
 _CURSOR_SETTINGS_KEYS = (
@@ -2847,6 +2853,11 @@ class CursorSelectionWidget(QWidget):
         self._last_clicked_cursor = None
         self._phasors_selected_layer = None
 
+        # Outline style shared by every cursor patch.
+        self.cursor_outline_width = DEFAULT_CURSOR_OUTLINE_WIDTH
+        self.cursor_outline_alpha = DEFAULT_CURSOR_OUTLINE_ALPHA
+        self.cursor_style_dialog = None
+
         # Dragging state
         self._dragging_cursor = None
         self._drag_offset = (0, 0)
@@ -2898,6 +2909,22 @@ class CursorSelectionWidget(QWidget):
         self._editor_box.setVisible(False)
         layout.addWidget(self._editor_box)
 
+        # Display settings section.
+        display_box, display_box_layout = make_section("Display settings")
+        buttons_row = QHBoxLayout()
+        self.cursor_style_button = QPushButton("Edit Cursor Style...")
+        self.cursor_style_button.setToolTip(
+            "Edit the width and transparency of the cursor outlines in the "
+            "phasor plot."
+        )
+        self.cursor_style_button.clicked.connect(
+            self._open_cursor_style_dialog
+        )
+        buttons_row.addWidget(self.cursor_style_button)
+        buttons_row.addStretch()
+        display_box_layout.addLayout(buttons_row)
+        layout.addWidget(display_box)
+
         # Caution shown when calculating would replace other layers' cursors.
         self._settings_note = create_settings_note_label(self)
         layout.addWidget(self._settings_note)
@@ -2938,6 +2965,110 @@ class CursorSelectionWidget(QWidget):
         run_row_layout.addWidget(self.autoupdate_checkbox)
 
         layout.addStretch()
+
+    def _open_cursor_style_dialog(self):
+        """Open the dialog editing the cursor outline style."""
+        if (
+            self.cursor_style_dialog is not None
+            and self.cursor_style_dialog.isVisible()
+        ):
+            self.cursor_style_dialog.raise_()
+            self.cursor_style_dialog.activateWindow()
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Cursor Style")
+        dialog.setMinimumWidth(360)
+        vbox = QVBoxLayout(dialog)
+
+        (
+            width_row,
+            self.cursor_width_slider,
+            self.cursor_width_spin,
+        ) = make_slider_spin_row(
+            "Outline width:",
+            0.5,
+            10.0,
+            self.cursor_outline_width,
+            1,
+            self._on_cursor_outline_width_changed,
+            step=0.5,
+        )
+        vbox.addLayout(width_row)
+
+        (
+            transparency_row,
+            self.cursor_transparency_slider,
+            self.cursor_transparency_spin,
+        ) = make_slider_spin_row(
+            "Transparency:",
+            0.0,
+            1.0,
+            1.0 - self.cursor_outline_alpha,
+            2,
+            self._on_cursor_outline_transparency_changed,
+        )
+        vbox.addLayout(transparency_row)
+
+        buttons_layout = QHBoxLayout()
+        self.cursor_style_reset_button = QPushButton("Reset")
+        self.cursor_style_reset_button.setToolTip(
+            "Restore the default cursor outline style."
+        )
+        self.cursor_style_reset_button.clicked.connect(
+            self._reset_cursor_style
+        )
+        buttons_layout.addWidget(self.cursor_style_reset_button)
+        buttons_layout.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        buttons_layout.addWidget(close_button)
+        vbox.addLayout(buttons_layout)
+
+        self.cursor_style_dialog = dialog
+        dialog.show()
+
+    def _reset_cursor_style(self):
+        """Restore the default cursor outline style."""
+        # The spinboxes drive their sliders and the value handlers.
+        self.cursor_width_spin.setValue(DEFAULT_CURSOR_OUTLINE_WIDTH)
+        self.cursor_transparency_spin.setValue(
+            1.0 - DEFAULT_CURSOR_OUTLINE_ALPHA
+        )
+        self.cursor_outline_width = DEFAULT_CURSOR_OUTLINE_WIDTH
+        self.cursor_outline_alpha = DEFAULT_CURSOR_OUTLINE_ALPHA
+        self._apply_cursor_outline_style()
+
+    def _on_cursor_outline_width_changed(self, value):
+        """Apply a new outline width to every cursor patch."""
+        self.cursor_outline_width = float(value)
+        self._apply_cursor_outline_style()
+
+    def _on_cursor_outline_transparency_changed(self, value):
+        """Apply a new outline transparency (0 = opaque) to every cursor."""
+        self.cursor_outline_alpha = round(1.0 - float(value), 10)
+        self._apply_cursor_outline_style()
+
+    def _apply_cursor_outline_style(self):
+        """Restyle the cursor patches on display without recreating them."""
+        for cursor in self._cursors:
+            patch = cursor.get("patch")
+            if patch is None:
+                continue
+            color = cursor["color"]
+            patch.set_linewidth(self.cursor_outline_width)
+            patch.set_edgecolor(self._cursor_edge_rgba(color))
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _cursor_edge_rgba(self, color):
+        """Return the outline RGBA of a cursor of QColor *color*."""
+        return (
+            color.redF(),
+            color.greenF(),
+            color.blueF(),
+            self.cursor_outline_alpha,
+        )
 
     def _get_next_color(self):
         """Get the next color from the palette based on current harmonic cursors."""
@@ -3889,7 +4020,7 @@ class CursorSelectionWidget(QWidget):
 
         ax = self.parent_widget.canvas_widget.axes
         color = cursor["color"]
-        edge_rgba = (color.redF(), color.greenF(), color.blueF(), 1.0)
+        edge_rgba = self._cursor_edge_rgba(color)
 
         if cursor["type"] == "circular":
             patch = Circle(
@@ -3897,7 +4028,7 @@ class CursorSelectionWidget(QWidget):
                 cursor["radius"],
                 fill=False,
                 edgecolor=edge_rgba,
-                linewidth=2,
+                linewidth=self.cursor_outline_width,
                 zorder=10,
                 picker=True,
             )
@@ -3909,7 +4040,7 @@ class CursorSelectionWidget(QWidget):
                 angle=cursor["angle"],
                 facecolor="none",
                 edgecolor=edge_rgba,
-                linewidth=2,
+                linewidth=self.cursor_outline_width,
                 zorder=10,
                 picker=True,
             )
@@ -3926,7 +4057,7 @@ class CursorSelectionWidget(QWidget):
                 width=width,
                 fill=False,
                 edgecolor=edge_rgba,
-                linewidth=2,
+                linewidth=self.cursor_outline_width,
                 zorder=10,
                 picker=True,
             )

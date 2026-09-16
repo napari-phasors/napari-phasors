@@ -54,7 +54,23 @@ frequency described above:
 | **Donor Background** | The weight of the background signal in the donor channel, relative to the signal of the donor without FRET, in range 0–1. A value of 1 means the background and the FRET-free donor signal contribute equally; 0 means there is no background contribution. Increasing it pulls the whole trajectory toward the background phasor position. |
 | **Background position** | The phasor coordinate (G, S) of the pure background signal, entered manually or averaged from one or more selected background layers (see step 2 above). Combined with **Donor Background**, it anchors where the trajectory is pulled toward. |
 | **Proportion fretting** | The fraction of donor molecules that actually participate in FRET, in range 0–1. A value of 1.0 means every donor molecule has a nearby acceptor and undergoes energy transfer; lower values model a mixed population where some donors have no acceptor and never leave their unquenched (0 % efficiency) position. This shortens the trajectory but does not change its path. |
+
+## Trajectory style
+
+Click **Edit Trajectory Style...** in the **Display settings** section to
+change how the donor trajectory is drawn on the phasor plot. Changes are shown
+immediately and are stored with the layer's FRET settings.
+
+| Option | Description |
+|---|---|
 | **Overlay colormap on donor trajectory** | When enabled, colors the trajectory line by FRET efficiency (0–100 %) instead of drawing it as a single flat color, making it easier to read off the efficiency at a glance. |
+| **Color** | The flat color of the trajectory line and its end dots. Only shown while the colormap overlay is off. |
+| **Width** | The thickness of the trajectory line. |
+| **Transparency** | The transparency of the trajectory line and of its end dots (0 = opaque). |
+| **Show start and end dots** | Show or hide the dots marking the donor (start) and background (end) positions of the trajectory. |
+| **End dots radius** | The radius, in phasor coordinates, of those dots. |
+
+Click **Reset** in the dialog to restore the default style.
 
 ## Donor lifetime types
 

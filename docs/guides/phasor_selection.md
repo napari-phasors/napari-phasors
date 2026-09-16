@@ -24,6 +24,8 @@ A separate labels layer is created for each cursor, color-coded for easy identif
 > [!TIP]
 > Enable the **Autoupdate** toggle to automatically recompute the selection (and any dependent analysis) whenever a cursor changes, instead of clicking **Calculate Selection** each time.
 
+Click **Edit Cursor Style...** in the **Display settings** section to adjust the **Outline width** and **Transparency** (0 = opaque) of the cursor outlines drawn on the phasor plot. The style applies to every cursor and only changes how the cursors look, not the selection they make. **Reset** restores the default style.
+
 ### Circular cursors
 
 **Circular cursors** select a circular region in phasor space, defined by:
