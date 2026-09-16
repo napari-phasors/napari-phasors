@@ -15,7 +15,10 @@ from napari_phasors._mapping_filters import (
     new_filter,
     set_filters,
 )
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._tests.test_plotter import (
+    assert_run_row_is_pinned,
+    create_image_layer_with_phasors,
+)
 from napari_phasors.fret_tab import draw_fret_trajectory_overlay
 from napari_phasors.plotter import PlotterWidget
 
@@ -2857,18 +2860,31 @@ def test_fret_filter_section_is_a_single_card(make_viewer_model, qtbot):
     assert widget.filter_list.filters() == []
 
 
-def test_fret_colormap_toggle_sits_below_the_calculate_button(
+def test_fret_colormap_toggle_sits_above_the_filter_section(
     make_viewer_model, qtbot
 ):
-    """The trajectory colormap toggle follows the Calculate button."""
+    """The trajectory colormap toggle leads into the filter section."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
-    layout = widget.calculate_fret_efficiency_button.parentWidget().layout()
-    button = layout.indexOf(widget.calculate_fret_efficiency_button)
+    layout = widget.colormap_checkbox.parentWidget().layout()
     toggle = layout.indexOf(widget.colormap_checkbox)
-    assert toggle > button
+    assert toggle >= 0
     assert layout.indexOf(widget.filter_box) > toggle
+
+
+def test_fret_calculate_button_is_pinned_under_the_scroll_area(
+    make_viewer_model, qtbot
+):
+    """The primary action stays reachable however long the settings get."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+    assert_run_row_is_pinned(
+        widget,
+        widget.calculate_fret_efficiency_button,
+        widget.autoupdate_container,
+    )
 
 
 def test_fret_filter_cannot_be_switched_on_without_a_trajectory(

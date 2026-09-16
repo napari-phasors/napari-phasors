@@ -1,19 +1,39 @@
 from unittest.mock import MagicMock, patch
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from matplotlib.collections import LineCollection
-from napari.layers import Image
+from napari.layers import Image, Labels
 from phasorpy.component import phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QColorDialog
 
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._mapping_filters import (
+    COMPONENT_FRACTION,
+    MODULATION,
+    get_filters,
+    new_filter,
+    serialize_filter_applies,
+)
+from napari_phasors._tests.test_plotter import (
+    assert_run_row_is_pinned,
+    create_image_layer_with_phasors,
+)
+from napari_phasors._utils import StatisticsTableWidget
 from napari_phasors.components_tab import (
+    COMPONENT_LABELS_TAG,
+    LABELS_DOMINANT,
+    LABELS_PER_COMPONENT,
     CenterFillSlider,
+    ComponentsWidget,
+    _as_hex,
+    _label_color_dict,
+    component_label_map,
+    dominant_component_label_map,
     draw_components_overlay,
     draw_fraction_histogram_overlay,
 )
@@ -1425,8 +1445,9 @@ def test_components_histogram_shows_several_components_at_once(
         stats_table.horizontalHeaderItem(col).text()
         for col in range(stats_table.columnCount())
     ]
+    block = len(StatisticsTableWidget.COLUMNS) - 1
     assert headers[1].startswith(name1)
-    assert headers[5].startswith(name2)
+    assert headers[1 + block].startswith(name2)
 
     # Merged mode pools layers, not components: each component keeps its own
     # curve instead of being averaged into a single meaningless one. This
@@ -5047,3 +5068,1089 @@ def test_components_restore_and_recreate_metadata_removes_extra_components(
     assert comp.components[0].name_edit.text() == "A"
     assert comp.components[1].name_edit.text() == "B"
     assert comp._selected_component is comp.components[0]
+
+
+# --------------------------------------------------------- fraction filters
+
+
+def _components_tab(viewer, layer=None):
+    """Return a plotter showing the Components tab for one analysed layer."""
+    layer = layer if layer is not None else create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    return parent, comp_widget, layer
+
+
+def _enable_fraction_filter(comp_widget, index, minimum, maximum):
+    """Switch on one component's fraction filter over ``[minimum, maximum]``.
+
+    Driven through the card's own widgets, as the user would.
+    """
+    card = comp_widget.filter_list._cards[index]
+    card.min_edit.setText(str(minimum))
+    card.max_edit.setText(str(maximum))
+    card.min_edit.editingFinished.emit()
+    card.enabled_check.setChecked(True)
+    return comp_widget.filter_list._cards[index]
+
+
+def test_component_label_map_paints_only_the_kept_pixels():
+    """A component's labels layer is its own range, not the leftovers."""
+    keep = np.array([[True, False], [True, True]])
+    measurable = np.array([[True, True], [False, True]])
+    labels = component_label_map(2, keep, measurable)
+    assert labels.dtype == np.uint16
+    np.testing.assert_array_equal(labels, [[3, 0], [0, 3]])
+
+
+def test_dominant_component_label_map_names_the_biggest_fraction():
+    """Each surviving pixel is labelled after the component it holds most of."""
+    fractions = {
+        0: np.array([[0.8, 0.2], [np.nan, 0.4]]),
+        1: np.array([[0.2, 0.8], [np.nan, 0.6]]),
+    }
+    keep = {
+        0: np.array([[True, True], [True, True]]),
+        1: np.array([[True, True], [True, False]]),
+    }
+    measurable = np.ones((2, 2), dtype=bool)
+    labels = dominant_component_label_map(fractions, keep, measurable)
+    # (1, 1) is kept by component 1's range but not by component 2's, so no
+    # phasor coordinates are left there to name anything after.
+    np.testing.assert_array_equal(labels, [[1, 2], [0, 0]])
+
+
+def test_dominant_component_label_map_with_nothing_to_label():
+    """No components, or nothing kept, is an empty labels layer."""
+    measurable = np.ones((2, 2), dtype=bool)
+    empty = dominant_component_label_map({}, {}, measurable)
+    np.testing.assert_array_equal(empty, np.zeros((2, 2)))
+    assert dominant_component_label_map({0: None}, {}, measurable).max() == 0
+
+    nothing_kept = dominant_component_label_map(
+        {0: np.ones((2, 2))},
+        {0: np.zeros((2, 2), dtype=bool)},
+        measurable,
+    )
+    np.testing.assert_array_equal(nothing_kept, np.zeros((2, 2)))
+
+
+def test_fraction_filter_cards_follow_the_components(make_viewer_model):
+    """One card per component that the current analysis has a fraction for."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+
+    # Nothing placed yet: nothing to filter on, and the cards say why.
+    assert comp_widget._filterable_components() == []
+    assert "at least two components" in (
+        comp_widget._filter_enable_blocked_reason()
+    )
+
+    _setup_linear_projection(comp_widget)
+    assert comp_widget.analysis_type == "Linear Projection"
+    assert sorted(comp_widget.filter_list._cards) == [0, 1]
+    assert comp_widget._filter_enable_blocked_reason() is None
+
+    # A third component makes it a fit, which has a fraction for each one.
+    comp_widget._add_component()
+    comp_widget.components[2].g_edit.setText("0.5")
+    comp_widget.components[2].s_edit.setText("0.45")
+    comp_widget._on_component_coords_changed(2)
+    assert comp_widget.analysis_type == "Component Fit"
+    assert sorted(comp_widget.filter_list._cards) == [0, 1, 2]
+
+    # Back to a projection, which only ever has two fractions.
+    comp_widget._remove_component(2)
+    assert comp_widget.analysis_type == "Linear Projection"
+    assert sorted(comp_widget.filter_list._cards) == [0, 1]
+
+
+def test_a_fraction_filter_blanks_the_pixels_outside_its_range(
+    make_viewer_model,
+):
+    """A filtered pixel loses its phasor coordinates, as a threshold does."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    card = _enable_fraction_filter(comp_widget, 0, 0.0, 0.4)
+    # What the filters are measured against: the threshold, the median filter
+    # and the mask applied, the criteria not.
+    measurable = comp_widget._reference_pixel_count(layer)
+    assert measurable > 0
+
+    stored = get_filters(layer)
+    assert [f['metric'] for f in stored] == [COMPONENT_FRACTION]
+    assert stored[0]['params']['component_index'] == 0
+    assert stored[0]['params']['analysis_type'] == "Linear Projection"
+
+    kept = int(np.isfinite(layer.data).sum())
+    assert kept < measurable
+    assert np.isnan(layer.metadata['G'][0][np.isnan(layer.data)]).all()
+    assert "keeps" in card.stat_label.text()
+    assert "1 of 1 on" in comp_widget.filter_list.summary_label.text()
+
+    # Switching it off brings back exactly the pixels it had hidden, which
+    # is the whole of the baseline again.
+    comp_widget.filter_list._cards[0].enabled_check.setChecked(False)
+    assert int(np.isfinite(layer.data).sum()) == measurable
+
+
+def test_fraction_filters_combine_with_the_other_tabs(make_viewer_model):
+    """A pixel survives only when every criterion, anywhere, keeps it."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.9)
+    after_fraction = int(np.isfinite(layer.data).sum())
+
+    mapping_tab = parent.phasor_mapping_tab
+    mapping_tab.filter_list.set_current_metric(MODULATION)
+    mapping_tab._sync_filter_ui()
+    mapping_tab.filter_list.add_filter(new_filter(MODULATION, 0.0, 0.5))
+
+    metrics = {f['metric'] for f in get_filters(layer)}
+    assert metrics == {COMPONENT_FRACTION, MODULATION}
+    assert int(np.isfinite(layer.data).sum()) <= after_fraction
+
+    # The fraction criterion is edited where its component is defined, so
+    # the Phasor Mapping tab lists only its own -- without disturbing it.
+    assert [
+        card.entry['metric']
+        for card in mapping_tab.filter_list._cards.values()
+    ] == [MODULATION]
+
+    # The Components tab still shows its own criterion after the other tab
+    # rewrote the shared stack.
+    assert len(comp_widget.filter_list.filters()) == 1
+
+
+def test_removing_a_component_takes_its_filter_with_it(make_viewer_model):
+    """A criterion with no card left would hide pixels nothing accounts for."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
+    comp_widget._add_component()
+    for idx, (g, s) in enumerate(
+        [("0.2", "0.1"), ("0.5", "0.45"), ("0.8", "0.3")]
+    ):
+        comp_widget.components[idx].g_edit.setText(g)
+        comp_widget.components[idx].s_edit.setText(s)
+        comp_widget._on_component_coords_changed(idx)
+    comp_widget._run_analysis()
+
+    _enable_fraction_filter(comp_widget, 2, 0.1, 0.9)
+    assert [
+        f['params']['component_index']
+        for f in get_filters(layer)
+        if f['metric'] == COMPONENT_FRACTION
+    ] == [2]
+
+    comp_widget._remove_component(2)
+
+    assert [
+        f['params']['component_index']
+        for f in get_filters(layer)
+        if f['metric'] == COMPONENT_FRACTION
+    ] == []
+    assert sorted(comp_widget.filter_list._cards) == [0, 1]
+
+
+def test_renaming_a_component_renames_its_filter(make_viewer_model):
+    """The card, the stored criterion and the other tabs all follow."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.9)
+
+    _rename_component(comp_widget, 0, "Free NADH")
+
+    assert comp_widget.filter_list._cards[0].metric_label.text() == "Free NADH"
+    assert [
+        f['params']['component_name']
+        for f in get_filters(layer)
+        if f['metric'] == COMPONENT_FRACTION
+    ] == ["Free NADH"]
+
+
+def test_moving_a_component_moves_its_filter(make_viewer_model):
+    """A filter tests the fraction on screen, not the one it was made with."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.9)
+    assert get_filters(layer)[0]['params']['component_real'] == [0.2, 0.8]
+
+    comp_widget.components[1].g_edit.setText("0.6")
+    comp_widget.components[1].s_edit.setText("0.4")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    assert get_filters(layer)[0]['params']['component_real'] == [0.2, 0.6]
+
+
+def test_statistics_report_the_share_of_pixels_kept(make_viewer_model):
+    """The table says how much of the layer the filters left behind."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    baseline = comp_widget._reference_pixel_count(layer)
+    assert baseline == int(np.isfinite(layer.data).sum())
+
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.5)
+
+    table = parent.components_statistics_dock_widget.layer_stats_table
+    columns = StatisticsTableWidget.COLUMNS
+    pixels = int(table.item(0, columns.index("Pixels")).text())
+    share = table.item(0, columns.index("% Pixels")).text()
+    assert pixels == int(np.isfinite(layer.data).sum())
+    assert share == f"{100.0 * pixels / baseline:.1f}%"
+
+    # The denominator is cached, and forgotten when the layer changes.
+    assert comp_widget._reference_pixel_counts[layer.name] == baseline
+    assert comp_widget._reference_pixel_count(layer) == baseline
+    comp_widget._invalidate_pixel_counts()
+    assert comp_widget._reference_pixel_counts == {}
+
+
+def test_labels_layers_paint_one_layer_per_component(make_viewer_model):
+    """Each component's kept pixels, in that component's own colour."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.5)
+
+    comp_widget.create_labels_checkbox.setChecked(True)
+    assert comp_widget.labels_mode_combobox.isEnabled()
+
+    labels = [lyr for lyr in viewer.layers if isinstance(lyr, Labels)]
+    assert len(labels) == 2
+    names = {lyr.name for lyr in labels}
+    assert names == {
+        f"Component 1 filtered: {layer.name}",
+        f"Component 2 filtered: {layer.name}",
+    }
+    first = viewer.layers[f"Component 1 filtered: {layer.name}"]
+    assert set(np.unique(first.data)) <= {0, 1}
+    assert first.metadata[COMPONENT_LABELS_TAG]['source_layer'] == layer.name
+    assert first.metadata[COMPONENT_LABELS_TAG]['component_index'] == 0
+
+    # Component 1's layer shows exactly the pixels its own range keeps, which
+    # is what its card reports.
+    assert first.data.astype(bool).sum() == int(np.isfinite(layer.data).sum())
+
+    comp_widget.create_labels_checkbox.setChecked(False)
+    assert [lyr for lyr in viewer.layers if isinstance(lyr, Labels)] == []
+
+
+def test_a_single_labels_layer_names_the_dominant_component(
+    make_viewer_model,
+):
+    """The other layout is one layer naming each pixel's main component."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    comp_widget.create_labels_checkbox.setChecked(True)
+    comp_widget.labels_mode_combobox.setCurrentText(LABELS_DOMINANT)
+
+    labels = [lyr for lyr in viewer.layers if isinstance(lyr, Labels)]
+    assert len(labels) == 1
+    combined = labels[0]
+    assert combined.name == f"Dominant component: {layer.name}"
+    assert set(np.unique(combined.data)) <= {0, 1, 2}
+    # Every measurable pixel belongs to one of the two components.
+    assert combined.data.astype(bool).sum() == int(
+        np.isfinite(layer.data).sum()
+    )
+    # A colour per component, plus transparent for the unlabelled pixels.
+    assert {1, 2}.issubset(combined.colormap.color_dict)
+
+    # Switching layout replaces the layers rather than accumulating them.
+    comp_widget.labels_mode_combobox.setCurrentText(LABELS_PER_COMPONENT)
+    assert len([x for x in viewer.layers if isinstance(x, Labels)]) == 2
+
+
+def test_labels_layers_follow_renames(make_viewer_model):
+    """A renamed component or image keeps its labels layer recognisable."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    comp_widget.create_labels_checkbox.setChecked(True)
+
+    _rename_component(comp_widget, 0, "Free NADH")
+    assert f"Free NADH filtered: {layer.name}" in viewer.layers
+
+    old_name = layer.name
+    comp_widget.rename_layer(old_name, "renamed")
+    assert "Free NADH filtered: renamed" in viewer.layers
+    renamed = viewer.layers["Free NADH filtered: renamed"]
+    assert renamed.metadata[COMPONENT_LABELS_TAG]['source_layer'] == "renamed"
+    assert ("renamed", 0) in comp_widget._component_label_layers
+    assert old_name not in comp_widget._reference_pixel_counts
+
+
+def test_labels_layers_are_updated_in_place(make_viewer_model):
+    """Editing a filter refreshes the layer instead of replacing it."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    comp_widget.create_labels_checkbox.setChecked(True)
+    first = viewer.layers[f"Component 1 filtered: {layer.name}"]
+    before = first.data.astype(bool).sum()
+
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.2)
+
+    assert viewer.layers[f"Component 1 filtered: {layer.name}"] is first
+    assert first.data.astype(bool).sum() <= before
+
+
+def test_a_component_labels_colour_can_be_picked_and_given_back(
+    make_viewer_model,
+):
+    """A chosen colour reaches the card, the labels layer and the layer."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    comp_widget.create_labels_checkbox.setChecked(True)
+
+    inherited = _as_hex(comp_widget._component_filter_colors()[0])
+    card = comp_widget.filter_list._cards[0]
+    assert card.accent_color == inherited
+
+    comp_widget._on_component_color_changed(0, "#ff0000")
+
+    # The card, the labels layer and the stored settings all agree.
+    assert comp_widget._component_label_colors == {0: "#ff0000"}
+    assert comp_widget.filter_list._cards[0].accent_color == "#ff0000"
+    assert _as_hex(comp_widget._component_filter_colors()[0]) == "#ff0000"
+    assert (
+        mcolors.to_hex(comp_widget.components[0].dot.get_color()) == "#ff0000"
+    )
+    # A redraw of the plot does not put the inherited colour back.
+    comp_widget._update_component_colors()
+    assert (
+        mcolors.to_hex(comp_widget.components[0].dot.get_color()) == "#ff0000"
+    )
+    painted = viewer.layers[f"Component 1 filtered: {layer.name}"]
+    assert np.allclose(painted.colormap.color_dict[1], (1.0, 0.0, 0.0, 1.0))
+    # The component card now offers to give the inherited colour back.
+    assert comp_widget.components[0].color_reset_button.isHidden() is False
+    stored = layer.metadata['settings']['component_analysis']['components']
+    assert stored['0']['label_color'] == "#ff0000"
+    # Only the component that was picked moves; the other keeps its own.
+    assert _as_hex(comp_widget._component_filter_colors()[1]) != "#ff0000"
+
+    # Picking the same colour again is not a change.
+    assert comp_widget._on_component_color_changed(0, "#ff0000") is None
+
+    # Asking for the component's own colour back removes the override
+    # everywhere rather than freezing the inherited value in its place.
+    comp_widget._on_component_color_changed(0, None)
+    assert comp_widget._component_label_colors == {}
+    assert _as_hex(comp_widget._component_filter_colors()[0]) == inherited
+    assert (
+        mcolors.to_hex(comp_widget.components[0].dot.get_color()) == inherited
+    )
+    assert 'label_color' not in stored['0']
+    assert comp_widget._on_component_color_changed(0, None) is None
+
+
+def test_the_swatch_opens_a_picker_and_a_cancelled_pick_changes_nothing(
+    make_viewer_model,
+):
+    """Clicking the swatch asks for a colour; cancelling leaves it alone."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    comp = comp_widget.components[1]
+
+    with patch.object(
+        QColorDialog, "getColor", return_value=QColor("#123456")
+    ):
+        comp.color_button.click()
+    assert comp_widget._component_label_colors == {1: "#123456"}
+    assert comp_widget.filter_list._cards[1].accent_color == "#123456"
+    assert comp.color_reset_button.isHidden() is False
+
+    # An invalid colour is what a cancelled dialog returns.
+    with patch.object(QColorDialog, "getColor", return_value=QColor()):
+        comp.color_button.click()
+    assert comp_widget._component_label_colors == {1: "#123456"}
+
+    # The reset button beside it goes through the same path.
+    comp.color_reset_button.click()
+    assert comp_widget._component_label_colors == {}
+    assert comp.color_reset_button.isHidden() is True
+
+
+def test_a_picked_colour_stays_with_its_component_and_is_restored(
+    make_viewer_model,
+):
+    """Removing a component shifts the colours of the ones below it."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    comp_widget._add_component()
+    _setup_linear_projection(comp_widget)
+    comp_widget._on_component_color_changed(1, "#00ff00")
+    assert comp_widget._component_label_colors == {1: "#00ff00"}
+
+    comp_widget._remove_component(0)
+    # The component that was second is now first, and kept its colour.
+    assert comp_widget._component_label_colors == {0: "#00ff00"}
+
+    # A colour written onto the layer comes back with it.
+    comp_widget._component_label_colors = {}
+    settings = layer.metadata['settings']['component_analysis']
+    settings['components']['0']['label_color'] = "#0000ff"
+    comp_widget._restore_components_for_harmonic(
+        settings.get('last_analysis_harmonic', 1)
+    )
+    assert comp_widget._component_label_colors == {0: "#0000ff"}
+
+
+def test_one_edit_measures_the_image_once(make_viewer_model):
+    """The baseline and the fractions are derived once, not once per card."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    comp_widget._expire_derived_arrays()
+    first = comp_widget._baseline_for(layer)
+    assert comp_widget._baseline_for(layer) is first
+    # Everything measured on those arrays shares one memo, so the fit behind
+    # a fraction runs once however many cards ask for it.
+    context = comp_widget._context_for(layer)
+    assert comp_widget._context_for(layer) is context
+    maps = comp_widget._component_fraction_maps(layer)
+    assert set(maps) == {0, 1}
+    with patch("napari_phasors.components_tab.compute_metric") as recompute:
+        assert set(comp_widget._component_fraction_maps(layer)) == {0, 1}
+    recompute.assert_not_called()
+
+    # The maps handed out are copies: a caller cannot empty the cache.
+    comp_widget._component_fraction_maps(layer).clear()
+    assert set(comp_widget._component_fraction_maps(layer)) == {0, 1}
+
+
+def test_a_measurement_is_never_served_for_the_wrong_arrays(
+    make_viewer_model,
+):
+    """A changed threshold, or changed components, re-derives everything."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    before = comp_widget._baseline_for(layer)
+    maps_before = comp_widget._component_fraction_maps(layer)
+    layer.metadata['settings']['threshold'] = 1e9
+    after = comp_widget._baseline_for(layer)
+    assert after is not before
+    assert np.isfinite(after[0]).sum() < np.isfinite(before[0]).sum()
+
+    # The arrays the fractions were measured on are gone, so they are too.
+    del layer.metadata['settings']['threshold']
+    comp_widget.components[0].g_edit.setText("0.35")
+    comp_widget._on_component_coords_changed(0)
+    maps_after = comp_widget._component_fraction_maps(layer)
+    assert not np.allclose(maps_after[0], maps_before[0], equal_nan=True)
+
+
+def test_the_derived_arrays_do_not_outlive_the_interaction(
+    make_viewer_model,
+):
+    """They are a scratch pad for one edit, not a memory of the layer."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    comp_widget._baseline_for(layer)
+    comp_widget._component_fraction_maps(layer)
+    assert comp_widget._baseline_cache
+    assert comp_widget._fraction_map_cache
+
+    # Adding and removing layers pumps the event loop, so the expiry can
+    # land in the middle of the edit it was meant to speed up: it waits.
+    comp_widget._applying_mapping_filter = True
+    comp_widget._expire_derived_arrays()
+    assert comp_widget._baseline_cache
+    comp_widget._applying_mapping_filter = False
+
+    comp_widget._expire_derived_arrays()
+    assert comp_widget._baseline_cache == {}
+    assert comp_widget._fraction_map_cache == {}
+    assert comp_widget._metric_context_cache == {}
+    assert comp_widget._derived_cache_expiry_scheduled is False
+
+
+def test_the_redraws_of_one_edit_collapse_into_one(make_viewer_model):
+    """Replacing the fraction layers must not redraw the histogram each time."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    comp_widget._applying_mapping_filter = True
+    with patch.object(ComponentsWidget, 'update_component_histogram') as draw:
+        comp_widget.on_layer_selection_changed()
+        comp_widget.on_layer_selection_changed()
+    draw.assert_not_called()
+    assert comp_widget._deferred_selection_refresh is True
+
+    comp_widget._applying_mapping_filter = False
+    with patch.object(ComponentsWidget, 'update_component_histogram') as draw:
+        comp_widget.on_layer_selection_changed()
+    assert draw.call_count == 1
+    assert comp_widget._deferred_selection_refresh is False
+
+    # An edit answers the postponed refresh itself.
+    comp_widget._deferred_selection_refresh = False
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.5)
+    assert comp_widget._deferred_selection_refresh is False
+
+
+def test_component_filter_colours_fall_back_when_the_line_is_hidden(
+    make_viewer_model,
+):
+    """Greying the plot dots must not collapse every label to one colour."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    colors = comp_widget._component_filter_colors()
+    assert set(colors) == {0, 1}
+
+    comp_widget.show_colormap_line = False
+    fallback = comp_widget._component_filter_colors()
+    assert len(set(map(str, fallback.values()))) == 2
+
+
+def test_component_filter_params_describe_the_analysis(make_viewer_model):
+    """A criterion stores what it takes to reproduce the fraction it tests."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+
+    # Nothing placed: the identifying keys only, so the card stays unusable.
+    bare = comp_widget._component_filter_params(0)
+    assert bare == {
+        'component_index': 0,
+        'component_name': "Component 1",
+        'analysis_type': "Linear Projection",
+    }
+
+    _setup_linear_projection(comp_widget)
+    params = comp_widget._component_filter_params(1)
+    assert params['component_real'] == [0.2, 0.8]
+    assert params['component_imag'] == [0.1, 0.5]
+    assert params['harmonics'] == [1]
+    # A projection has no third fraction to filter on.
+    assert 'component_real' not in comp_widget._component_filter_params(2)
+
+    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
+    fit = comp_widget._component_filter_params(0)
+    assert fit['analysis_type'] == "Component Fit"
+    assert fit['component_real'] == [0.2, 0.8]
+    assert 'component_real' not in comp_widget._component_filter_params(5)
+
+
+def test_component_fraction_maps_cover_every_component(make_viewer_model):
+    """The labels layers measure the same fractions the filters do."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    maps = comp_widget._component_fraction_maps(layer)
+    assert sorted(maps) == [0, 1]
+    np.testing.assert_allclose(maps[0] + maps[1], 1.0)
+    for values in maps.values():
+        assert values.shape == layer.data.shape
+
+    # A layer with no phasor arrays has no fractions and no labels.
+    empty = Image(np.ones((2, 2)), name="plain", metadata={'settings': {}})
+    assert comp_widget._component_fraction_maps(empty) == {}
+    assert comp_widget._component_label_maps(empty, LABELS_DOMINANT) == {}
+
+
+def test_colour_helpers_fall_back_rather_than_raise():
+    """A missing or unusable colour must not stop a card from being drawn."""
+    assert _as_hex(None) is None
+    assert _as_hex("not a colour") is None
+    assert _as_hex((1.0, 0.0, 0.0)) == "#ff0000"
+
+    # A component with no colour of its own still gets a distinct one.
+    colors = _label_color_dict([0, 1], {0: "red"})
+    assert colors[1] == (1.0, 0.0, 0.0, 1.0)
+    assert colors[2] != colors[1]
+    assert colors[None] == (0.0, 0.0, 0.0, 0.0)
+
+
+def test_the_filter_section_copes_with_no_parent_and_no_layers(
+    make_viewer_model,
+):
+    """Every entry point is safe before a layer is selected."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+
+    comp_widget.parent_widget = None
+    assert comp_widget._filter_layers() == []
+    assert comp_widget._primary_filter_layer() is None
+    assert comp_widget._layer_filter_params(None) == {}
+    assert comp_widget._component_filter_colors() == {}
+    comp_widget._apply_filter_stack()
+    comp_widget._sync_filter_ui()
+    assert comp_widget.filter_list.filters() == []
+
+    comp_widget.parent_widget = parent
+
+    # A parent that cannot answer is the same as no layers at all.
+    with patch.object(
+        parent, "get_selected_layers", side_effect=RuntimeError("gone")
+    ):
+        assert comp_widget._filter_layers() == []
+        comp_widget._apply_filter_stack()
+
+
+def test_component_filter_params_give_up_on_incomplete_components(
+    make_viewer_model,
+):
+    """A fit missing a position, or a harmonic, cannot be filtered on."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    # A projection with only one placed component has no line to project on.
+    comp_widget.components[1].dot.remove()
+    comp_widget.components[1].dot = None
+    assert 'component_real' not in comp_widget._component_filter_params(0)
+
+
+def test_component_filter_params_span_the_harmonics_a_fit_needs(
+    make_viewer_model,
+):
+    """Above three components the positions are stored per harmonic."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
+    for _ in range(2):
+        comp_widget._add_component()
+    coords = [("0.2", "0.1"), ("0.4", "0.4"), ("0.6", "0.45"), ("0.8", "0.3")]
+    for idx, (g, s) in enumerate(coords):
+        comp_widget.components[idx].g_edit.setText(g)
+        comp_widget.components[idx].s_edit.setText(s)
+        comp_widget._on_component_coords_changed(idx)
+
+    # Only the first harmonic has been placed, so nothing can be evaluated.
+    assert 'component_real' not in comp_widget._component_filter_params(0)
+    assert "every harmonic" in comp_widget._filter_enable_blocked_reason()
+
+    parent.harmonic_spinbox.setValue(2)
+    for idx, (g, s) in enumerate(coords):
+        comp_widget.components[idx].g_edit.setText(g)
+        comp_widget.components[idx].s_edit.setText(s)
+        comp_widget._on_component_coords_changed(idx)
+
+    params = comp_widget._component_filter_params(0)
+    assert params['harmonics'] == [1, 2]
+    assert len(params['component_real']) == 2
+    assert len(params['component_real'][0]) == 4
+
+
+def test_a_criterion_that_cannot_be_evaluated_warns_and_hides_nothing(
+    make_viewer_model,
+):
+    """A stored criterion the data no longer supports is reported, not applied."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    before = int(np.isfinite(layer.data).sum())
+
+    broken = new_filter(
+        COMPONENT_FRACTION,
+        0.0,
+        0.5,
+        params={
+            'analysis_type': "Component Fit",
+            'component_index': 0,
+            'component_name': "Component 1",
+            # Two harmonics that do not describe the same components: a
+            # fit that cannot be solved, as one read back from a layer whose
+            # components have since changed would be.
+            'component_real': [[0.1, 0.9], [0.2]],
+            'component_imag': [[0.05, 0.45], [0.1]],
+            'harmonics': [1, 2],
+        },
+    )
+    with patch("napari_phasors.components_tab.show_warning") as warn:
+        comp_widget._apply_filter_stack([broken])
+
+    assert warn.called
+    assert "Component 1" in warn.call_args[0][0]
+    assert int(np.isfinite(layer.data).sum()) == before
+
+
+def test_a_fraction_cannot_be_filtered_before_it_is_computed(
+    make_viewer_model,
+):
+    """A filter tests the fractions the analysis produced, so it waits for it."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+
+    # The positions are there, but nothing has computed a fraction from them.
+    assert not comp_widget._has_analysed_fractions()
+    reason = comp_widget._filter_enable_blocked_reason()
+    assert "Run the component analysis" in reason
+    card = comp_widget.filter_list._cards[0]
+    assert not card.enabled_check.isEnabled()
+    assert card.enabled_check.toolTip() == reason
+    assert get_filters(layer) == []
+
+    comp_widget._run_analysis()
+
+    assert comp_widget._has_analysed_fractions()
+    assert comp_widget._filter_enable_blocked_reason() is None
+    assert comp_widget.filter_list._cards[0].enabled_check.isEnabled()
+
+
+def test_criteria_follow_the_analysis_they_were_made_for(make_viewer_model):
+    """Moving a component, or changing how it is fitted, moves its filter."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.9)
+
+    def params():
+        return get_filters(layer)[0]['params']
+
+    assert params()['component_real'] == [0.2, 0.8]
+    assert params()['analysis_type'] == "Linear Projection"
+
+    # A component that moves takes its filter with it, but only once the
+    # analysis it tests has actually been re-run.
+    comp_widget.components[1].g_edit.setText("0.6")
+    comp_widget.components[1].s_edit.setText("0.4")
+    comp_widget._on_component_coords_changed(1)
+    assert params()['component_real'] == [0.2, 0.8]
+    comp_widget._run_analysis()
+    assert params()['component_real'] == [0.2, 0.6]
+
+    # So does a change of method ...
+    comp_widget._add_component()
+    comp_widget.components[2].g_edit.setText("0.5")
+    comp_widget.components[2].s_edit.setText("0.45")
+    comp_widget._on_component_coords_changed(2)
+    comp_widget._run_analysis()
+    assert params()['analysis_type'] == "Component Fit"
+    assert params()['component_real'] == [0.2, 0.6, 0.5]
+
+    # ... and a change of harmonic.
+    parent.harmonic_spinbox.setValue(2)
+    for idx, (g, s) in enumerate(
+        [("0.3", "0.2"), ("0.7", "0.45"), ("0.5", "0.4")]
+    ):
+        comp_widget.components[idx].g_edit.setText(g)
+        comp_widget.components[idx].s_edit.setText(s)
+        comp_widget._on_component_coords_changed(idx)
+    comp_widget._run_analysis()
+    assert params()['harmonics'] == [2]
+    assert params()['component_real'] == [0.3, 0.7, 0.5]
+
+
+def test_criteria_are_not_refreshed_while_they_are_being_applied(
+    make_viewer_model,
+):
+    """Applying the stack re-runs the analysis; that must not re-apply it."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    comp_widget._applying_mapping_filter = True
+    try:
+        assert comp_widget._refresh_component_filter_params() is False
+    finally:
+        comp_widget._applying_mapping_filter = False
+
+
+def test_pixel_counts_ignore_layers_that_cannot_supply_one(
+    make_viewer_model,
+):
+    """A layer with no phasor data, or none at all, contributes no total."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    assert comp_widget._reference_pixel_totals({"x": "no such layer"}) == {}
+    totals = comp_widget._reference_pixel_totals({"x": layer.name})
+    assert totals[layer.name] > 0
+
+    empty = Image(np.ones((2, 2)), name="plain", metadata={'settings': {}})
+    viewer.add_layer(empty)
+    with patch.object(
+        comp_widget, "_baseline_for", return_value=(None, None, None)
+    ):
+        assert comp_widget._reference_pixel_count(empty) is None
+        assert comp_widget._reference_pixel_totals({"x": "plain"}) == {}
+
+
+def test_a_component_with_no_fraction_gets_no_label(make_viewer_model):
+    """A component the analysis cannot place is left out of the labels."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    with patch.object(
+        comp_widget, "_component_filter_params", return_value={}
+    ):
+        assert comp_widget._component_fraction_maps(layer) == {}
+
+    with patch.object(
+        comp_widget, "_baseline_for", return_value=(None, None, None)
+    ):
+        assert comp_widget._component_label_maps(layer, LABELS_DOMINANT) == {}
+
+
+def test_labels_layers_exclude_the_pixels_other_tabs_filtered(
+    make_viewer_model,
+):
+    """A pixel with no phasor coordinates left cannot be labelled."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    comp_widget.create_labels_checkbox.setChecked(True)
+    combined_before = (
+        viewer.layers[f"Component 1 filtered: {layer.name}"]
+        .data.astype(bool)
+        .sum()
+    )
+
+    mapping_tab = parent.phasor_mapping_tab
+    mapping_tab.filter_list.set_current_metric(MODULATION)
+    mapping_tab._sync_filter_ui()
+    mapping_tab.filter_list.add_filter(new_filter(MODULATION, 0.0, 0.5))
+    comp_widget._update_label_layers()
+
+    after = (
+        viewer.layers[f"Component 1 filtered: {layer.name}"]
+        .data.astype(bool)
+        .sum()
+    )
+    assert after < combined_before
+
+
+def test_renaming_a_component_without_a_filter_changes_nothing(
+    make_viewer_model,
+):
+    """Persisting the names is a no-op when there is nothing to rename."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    comp_widget._persist_component_filter_names()
+    assert get_filters(layer) == []
+
+    _setup_linear_projection(comp_widget)
+    comp_widget._persist_component_filter_names()
+    assert get_filters(layer) == []
+
+
+def test_fraction_filter_range_spans_what_a_fit_actually_produces(
+    make_viewer_model,
+):
+    """A component fit is unconstrained: its fractions leave ``[0, 1]``.
+
+    Regression: the cards were fixed to 0-1, so the pixels a fit placed
+    below 0 or above 1 could not be filtered on at all.
+    """
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
+    comp_widget._add_component()
+    for idx, (g, s) in enumerate(
+        [("0.2", "0.1"), ("0.5", "0.45"), ("0.8", "0.3")]
+    ):
+        comp_widget.components[idx].g_edit.setText(g)
+        comp_widget.components[idx].s_edit.setText(s)
+        comp_widget._on_component_coords_changed(idx)
+    comp_widget._run_analysis()
+
+    maps = comp_widget._component_fraction_maps(layer)
+    outside = [
+        index
+        for index, values in maps.items()
+        if np.nanmin(values) < 0 or np.nanmax(values) > 1
+    ]
+    assert outside, "this fixture should produce fractions outside [0, 1]"
+
+    for index in outside:
+        values = maps[index]
+        low, high = comp_widget._component_fraction_bounds(index)
+        assert low == pytest.approx(float(np.nanmin(values)))
+        assert high == pytest.approx(float(np.nanmax(values)))
+        card = comp_widget.filter_list._cards[index]
+        assert card.range_slider.minimum() / card.scale <= low
+        assert card.range_slider.maximum() / card.scale >= high
+
+    # And a range outside [0, 1] really does filter.
+    index = outside[0]
+    values = maps[index]
+    _enable_fraction_filter(comp_widget, index, float(np.nanmin(values)), 0.0)
+    stored = get_filters(layer)[0]
+    assert stored['min'] < 0
+    assert int(np.isfinite(layer.data).sum()) < layer.data.size
+
+
+def test_fraction_bounds_are_unmeasurable_without_a_layer(make_viewer_model):
+    """Nothing to measure is not the same as a range of zero."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    with patch.object(comp_widget, "_primary_filter_layer", return_value=None):
+        assert comp_widget._component_fraction_bounds(0) is None
+        comp_widget._refresh_filter_bounds()
+
+    # A component the analysis has no fraction for cannot be measured.
+    assert comp_widget._component_fraction_bounds(7) is None
+    with patch.object(
+        comp_widget,
+        "_component_fraction_maps",
+        return_value={0: np.full((2, 2), np.nan)},
+    ):
+        assert comp_widget._component_fraction_bounds(0) is None
+
+
+def test_a_nested_filter_apply_runs_once_after_the_first(make_viewer_model):
+    """The second edit wins, and neither rebuild runs inside the other."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    entry = dict(comp_widget.filter_list._entries[0], enabled=True)
+
+    seen = []
+    body = ComponentsWidget._apply_filter_stack.__wrapped__
+
+    def recording_apply(self, filters=None, layers=None):
+        seen.append([f['max'] for f in filters])
+        if len(seen) == 1:
+            # What a queued editingFinished does once the apply, which
+            # re-runs the analysis and rewrites layers, pumps the event loop.
+            comp_widget._apply_filter_stack([dict(entry, max=0.25)])
+        return body(self, filters, layers)
+
+    with patch.object(
+        ComponentsWidget,
+        "_apply_filter_stack",
+        serialize_filter_applies(recording_apply),
+    ):
+        comp_widget._apply_filter_stack([dict(entry, max=0.75)])
+
+    # The interrupting edit ran once, after the first, not inside it.
+    assert seen == [[0.75], [0.25]]
+    assert get_filters(layer)[0]['max'] == pytest.approx(0.25)
+
+
+def test_the_share_is_of_the_pixels_that_were_still_valid(make_viewer_model):
+    """Not of the frame: a pixel another filter removed was never a candidate."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    without_others = comp_widget._reference_pixel_count(layer)
+    assert without_others == int(np.isfinite(layer.data).sum())
+
+    # A criterion owned by another tab shrinks what a fraction is a share of.
+    mapping_tab = parent.phasor_mapping_tab
+    mapping_tab.filter_list.set_current_metric(MODULATION)
+    mapping_tab._sync_filter_ui()
+    mapping_tab.filter_list.add_filter(new_filter(MODULATION, 0.0, 0.6))
+
+    comp_widget._invalidate_pixel_counts()
+    with_others = comp_widget._reference_pixel_count(layer)
+    assert with_others < without_others
+    assert with_others == int(comp_widget._measurable_mask(layer).sum())
+
+
+def test_the_share_is_measured_when_the_analysis_ran(make_viewer_model):
+    """A denominator that moved on ahead would read as more than 100%."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.9)
+    pinned = comp_widget._reference_pixel_count(layer)
+
+    # Another tab narrows the data, but this tab's fractions still come from
+    # the run before it, so the number they are a share of does too.
+    mapping_tab = parent.phasor_mapping_tab
+    mapping_tab.filter_list.set_current_metric(MODULATION)
+    mapping_tab._sync_filter_ui()
+    mapping_tab.filter_list.add_filter(new_filter(MODULATION, 0.0, 0.6))
+    assert comp_widget._reference_pixel_count(layer) == pinned
+
+    # Re-running re-measures both together.
+    comp_widget._run_analysis()
+    assert comp_widget._reference_pixel_count(layer) < pinned
+
+
+def test_statistics_headers_name_the_fraction_range(make_viewer_model):
+    """The table says which pixels it counted, not just how many."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    assert comp_widget._series_range_labels() == {}
+    _enable_fraction_filter(comp_widget, 0, 0.2, 0.8)
+    assert comp_widget._series_range_labels() == {
+        "Component 1": "in 0.2 – 0.8"
+    }
+
+    table = parent.components_statistics_dock_widget.layer_stats_table
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert "Component 1 Pixels in 0.2 – 0.8" in headers
+    assert "Component 1 % in 0.2 – 0.8" in headers
+
+    # Excluding a range says so rather than reading as keeping it.
+    card = comp_widget.filter_list._cards[0]
+    card.mode_combobox.setCurrentIndex(1)
+    assert comp_widget._series_range_labels() == {
+        "Component 1": "outside 0.2 – 0.8"
+    }
+
+    # A filter that is switched off is not a range the counts were taken over.
+    card.enabled_check.setChecked(False)
+    assert comp_widget._series_range_labels() == {}
+
+    with patch.object(comp_widget, "_primary_filter_layer", return_value=None):
+        assert comp_widget._series_range_labels() == {}
+
+
+def test_a_layer_that_cannot_be_re_derived_measures_nothing(
+    make_viewer_model,
+):
+    """A refresh must not raise on a layer whose phasor data is unusable."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+
+    broken = Image(
+        np.random.random((4, 4)),
+        name="broken",
+        metadata={"G": np.array([1]), "S": np.array([1]), "G_original": 1},
+    )
+    assert comp_widget._baseline_for(broken) == (None, None, None)
+    assert comp_widget._measurable_mask(broken) is None
+    assert comp_widget._reference_pixel_count(broken) is None
+    assert comp_widget._component_fraction_maps(broken) == {}
+
+
+def test_the_run_button_is_pinned_under_the_settings(make_viewer_model):
+    """The primary action stays reachable however long the settings get."""
+    viewer = make_viewer_model()
+    parent, comp_widget, _layer = _components_tab(viewer)
+    assert_run_row_is_pinned(
+        comp_widget,
+        comp_widget.calculate_button,
+        comp_widget.autoupdate_container,
+    )

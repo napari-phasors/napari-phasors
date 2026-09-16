@@ -3755,8 +3755,8 @@ class PlotterWidget(QWidget):
                 "threshold_method",
             ],
             # The metric filter stack rides with the Phasor Mapping tab: it
-            # is one ordered object, even when some of its criteria are on
-            # the FRET efficiency.
+            # is one object, even when some of its criteria are on the FRET
+            # efficiency or on a component fraction.
             "phasor_mapping_tab": [
                 "phasor_mapping",
                 "lifetime",
@@ -4453,6 +4453,30 @@ class PlotterWidget(QWidget):
                 continue
             with contextlib.suppress(AttributeError, RuntimeError, ValueError):
                 tab.refresh_for_frame_change()
+
+    def refresh_filter_tabs(self, source=None):
+        """Re-read the shared metric filter stack in every tab that lists it.
+
+        The stack is one object: the Phasor Mapping tab lists every
+        criterion whoever made it, the FRET tab its efficiencies and the
+        Components tab its fractions. A criterion added in one of them
+        changes what the other two should be showing, so they are told to
+        re-read it rather than left to catch up on their next layer change.
+
+        Parameters
+        ----------
+        source : QWidget, optional
+            The tab that made the change; it has already refreshed itself.
+        """
+        for tab_attr in ('phasor_mapping_tab', 'fret_tab', 'components_tab'):
+            tab = getattr(self, tab_attr, None)
+            if tab is None or tab is source:
+                continue
+            sync = getattr(tab, '_sync_filter_ui', None)
+            if sync is None:
+                continue
+            with contextlib.suppress(AttributeError, RuntimeError, ValueError):
+                sync()
 
     def _active_histogram_widget(self):
         """Return the histogram widget of the visible tab, if it has data."""

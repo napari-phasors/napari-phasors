@@ -118,12 +118,7 @@ of the card list:
 - The range offered for a new filter always spans the full data range, never
   the range left over by the filters already applied.
 
-The stack is stored in the layer metadata, so it survives a layer switch, is
-reapplied automatically when a threshold, a mask or a calibration rewrites the
-phasor data, and is preserved when exporting to OME-TIF. It is shared with the
-**FRET** tab: a FRET-efficiency criterion is listed here too (greyed out, but
-still removable), so a pixel that disappeared is always accounted for by a
-visible card.
+The stack is stored in the layer metadata.
 
 ## Arc Overlay Tool
 

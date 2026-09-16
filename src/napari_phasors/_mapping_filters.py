@@ -2,8 +2,9 @@
 
 The Filter tab restricts an image by *intensity*. The filters defined here
 restrict it by any quantity **derived** from the phasor coordinates -- an
-apparent lifetime, the phase or modulation, a FRET efficiency -- by setting
-the phasor coordinates of every pixel outside the requested range to NaN.
+apparent lifetime, the phase or modulation, a FRET efficiency, the fraction
+of a component -- by setting the phasor coordinates of every pixel outside
+the requested range to NaN.
 
 The whole point of this module is that these filters form one **flat,
 declarative stack**, not a chain of edits:
@@ -20,14 +21,18 @@ declarative stack**, not a chain of edits:
   restores exactly the pixels it had hidden.
 
 :class:`MappingFilterList` is the Qt counterpart: one card per criterion, so
-what the data shows and what the user sees listed cannot drift apart. It is
-kept in this module so the two halves are edited together, but every function
-above it is Qt-free and safe to call from a worker thread.
+what the data shows and what the user sees listed cannot drift apart.
+:class:`ComponentFilterList` is the same idea for the Components tab, where
+the criteria are not added one by one but follow the components themselves.
+Both are kept in this module so the halves are edited together, but every
+function above them is Qt-free and safe to call from a worker thread.
 """
 
+import functools
 import uuid
 
 import numpy as np
+from phasorpy.component import phasor_component_fit, phasor_component_fraction
 from phasorpy.lifetime import (
     phasor_from_fret_donor,
     phasor_to_apparent_lifetime,
@@ -60,6 +65,7 @@ NORMAL_LIFETIME = "Normal Lifetime"
 PHASE = "Phase"
 MODULATION = "Modulation"
 FRET_EFFICIENCY = "FRET efficiency"
+COMPONENT_FRACTION = "Component fraction"
 
 #: Metrics that can only be evaluated with an excitation frequency.
 LIFETIME_METRICS = frozenset(
@@ -74,7 +80,7 @@ MAPPING_METRICS = (
     MODULATION,
 )
 #: Every metric a stored criterion may name.
-ALL_METRICS = MAPPING_METRICS + (FRET_EFFICIENCY,)
+ALL_METRICS = MAPPING_METRICS + (FRET_EFFICIENCY, COMPONENT_FRACTION)
 
 #: Unit shown after a criterion's range, per metric ("" when dimensionless).
 METRIC_UNITS = {
@@ -84,6 +90,7 @@ METRIC_UNITS = {
     PHASE: "rad",
     MODULATION: "",
     FRET_EFFICIENCY: "",
+    COMPONENT_FRACTION: "",
 }
 
 #: Range used for a criterion's slider before any data has been measured.
@@ -94,6 +101,7 @@ METRIC_FALLBACK_RANGE = {
     PHASE: (0.0, float(2.0 * np.pi)),
     MODULATION: (0.0, 1.0),
     FRET_EFFICIENCY: (0.0, 1.0),
+    COMPONENT_FRACTION: (0.0, 1.0),
 }
 
 #: Keeps pixels *inside* the range; the opposite punches the range out.
@@ -117,6 +125,25 @@ def metric_fallback_range(metric):
 def requires_frequency(metric):
     """Return whether *metric* can only be computed with a frequency."""
     return metric in LIFETIME_METRICS
+
+
+def filter_display_name(entry):
+    """Return the name a criterion is listed under.
+
+    Every criterion but a component fraction is fully described by its
+    metric. A component fraction is not: three of them on one layer would
+    otherwise all read "Component fraction", so the component's own name is
+    used instead and the quantity is left to the tooltip.
+    """
+    if entry.get('metric') != COMPONENT_FRACTION:
+        return entry.get('metric', "")
+    name = (entry.get('params') or {}).get('component_name')
+    if name:
+        return str(name)
+    index = (entry.get('params') or {}).get('component_index')
+    if index is None:
+        return COMPONENT_FRACTION
+    return f"Component {int(index) + 1}"
 
 
 def format_range(metric, minimum, maximum, mode=KEEP):
@@ -264,6 +291,168 @@ def select_harmonic(real, imag, harmonics, harmonic, mean_ndim):
     return real[index], imag[index]
 
 
+class MetricContext:
+    """The arrays a metric may need beyond the single harmonic plane.
+
+    Most metrics are a function of one ``(real, imag)`` plane alone. A
+    component fraction is not: a component fit consumes the mean image and,
+    above two components, several harmonics at once. Rather than widen
+    :func:`compute_metric` with four more arguments, the caller hands it this
+    little bundle of the baseline arrays.
+
+    It doubles as a per-call memo. One component fit yields *every*
+    component's fraction at once, so filtering a four-component image on
+    three of its fractions has to fit it once, not three times.
+    """
+
+    def __init__(self, mean=None, real=None, imag=None, harmonics=None):
+        self.mean = mean
+        self.real = real
+        self.imag = imag
+        self.harmonics = harmonics
+        self._fractions = {}
+
+    def fractions(self, key, compute):
+        """Return the cached fraction maps for *key*, computing them once."""
+        if key not in self._fractions:
+            self._fractions[key] = compute()
+        return self._fractions[key]
+
+
+def _hashable(value):
+    """Return *value* as something usable in a dict key."""
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        return tuple(_hashable(item) for item in value)
+    return value
+
+
+def has_component_positions(params):
+    """Return whether *params* carries usable component positions.
+
+    Stored settings come back from an OME-TIFF as arrays rather than lists,
+    and a bare truth test on an array raises, so emptiness is measured
+    rather than asked -- and measuring it can raise in its own turn on a
+    hand-edited, ragged value, which is no better than empty.
+    """
+    if not params:
+        return False
+    real = params.get('component_real')
+    imag = params.get('component_imag')
+    if real is None or imag is None:
+        return False
+    try:
+        return bool(np.size(real)) and bool(np.size(imag))
+    except (TypeError, ValueError):
+        # Ragged, or not array-like at all: not positions a fit can use.
+        return False
+
+
+def _component_fit_planes(params, context):
+    """Return ``(mean, real, imag)`` sliced to the harmonics a fit needs.
+
+    ``None`` whenever the layer cannot supply them -- a two-harmonic fit
+    stored on a layer that only carries the first harmonic, say -- so the
+    criterion is skipped instead of blanking the image.
+    """
+    if context is None or context.mean is None:
+        return None
+    mean, real, imag = context.mean, context.real, context.imag
+    if real is None or imag is None:
+        return None
+    wanted = params.get('harmonics') or [params.get('harmonic', 1)]
+    if len(wanted) > 1 and real.ndim <= mean.ndim:
+        return None
+    planes_real = []
+    planes_imag = []
+    for value in wanted:
+        try:
+            harmonic = int(value)
+        except (TypeError, ValueError):
+            return None
+        plane_real, plane_imag = select_harmonic(
+            real, imag, context.harmonics, harmonic, mean.ndim
+        )
+        if plane_real is None or plane_real.shape != mean.shape:
+            return None
+        planes_real.append(plane_real)
+        planes_imag.append(plane_imag)
+    if len(planes_real) == 1:
+        return mean, planes_real[0], planes_imag[0]
+    return mean, np.stack(planes_real), np.stack(planes_imag)
+
+
+def _compute_component_fraction(real, imag, params, context):
+    """Return the fraction map of one component, or ``None``.
+
+    The component positions are read from the criterion's own parameters
+    rather than from the Components tab, so a filter keeps meaning the same
+    thing after the components on screen have been moved -- the same
+    contract the FRET efficiency filter has with its donor trajectory.
+    """
+    if not has_component_positions(params):
+        return None
+    component_real = params['component_real']
+    component_imag = params['component_imag']
+    try:
+        index = int(params.get('component_index', 0))
+    except (TypeError, ValueError):
+        return None
+
+    if params.get('analysis_type') == 'Linear Projection':
+        if real is None or imag is None or index not in (0, 1):
+            return None
+        with np.errstate(divide='ignore', invalid='ignore'):
+            fraction = np.asarray(
+                phasor_component_fraction(
+                    real, imag, component_real, component_imag
+                ),
+                dtype=float,
+            )
+        # The second component of a projection has no fit of its own: what is
+        # left of the pixel once the first component is accounted for is, by
+        # definition, the second.
+        return fraction if index == 0 else 1.0 - fraction
+
+    planes = _component_fit_planes(params, context)
+    if planes is None:
+        return None
+    key = (
+        'fit',
+        _hashable(component_real),
+        _hashable(component_imag),
+        _hashable(params.get('harmonics')),
+    )
+    fractions = context.fractions(
+        key,
+        lambda: _safe_component_fit(*planes, component_real, component_imag),
+    )
+    if fractions is None or index >= len(fractions):
+        return None
+    return np.asarray(fractions[index], dtype=float)
+
+
+def _safe_component_fit(mean, real, imag, component_real, component_imag):
+    """Return every component's fraction map, or ``None`` if the fit fails.
+
+    A stored criterion can outlive the data it was made for (fewer harmonics
+    after a re-read, a component count the arrays no longer support), and a
+    filter that cannot be evaluated must be skipped, not raised through the
+    redraw that triggered it.
+    """
+    try:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            fractions = phasor_component_fit(
+                mean, real, imag, component_real, component_imag
+            )
+    except Exception:  # noqa: BLE001 - see docstring
+        return None
+    if isinstance(fractions, np.ndarray) and fractions.shape == mean.shape:
+        return [fractions]
+    return list(fractions)
+
+
 def compute_metric(
     metric,
     real,
@@ -273,6 +462,7 @@ def compute_metric(
     frequency=None,
     wrap_phase=False,
     params=None,
+    context=None,
 ):
     """Return *metric* evaluated pixel-wise on the ``(real, imag)`` plane.
 
@@ -294,7 +484,11 @@ def compute_metric(
         the full-polar plot mode.
     params : dict, optional
         Extra metric parameters. ``FRET efficiency`` reads its donor
-        trajectory from here.
+        trajectory from here, ``Component fraction`` its component
+        positions.
+    context : MetricContext, optional
+        The baseline arrays a metric may need beyond one harmonic plane.
+        Required by ``Component fraction`` above a linear projection.
 
     Returns
     -------
@@ -345,6 +539,9 @@ def compute_metric(
 
     if metric == FRET_EFFICIENCY:
         return _compute_fret_efficiency(real, imag, harmonic, params)
+
+    if metric == COMPONENT_FRACTION:
+        return _compute_component_fraction(real, imag, params, context)
 
     return None
 
@@ -418,7 +615,9 @@ def range_mask(values, minimum, maximum, mode=KEEP):
     return missing | ~inside
 
 
-def combined_mask(filters, mean, real, imag, harmonics, *, on_error=None):
+def combined_mask(
+    filters, mean, real, imag, harmonics, *, on_error=None, context=None
+):
     """Return the "drop this pixel" mask for the whole stack, or ``None``.
 
     Every enabled criterion is evaluated on the arrays as given -- the
@@ -439,9 +638,15 @@ def combined_mask(filters, mean, real, imag, harmonics, *, on_error=None):
         Called with a message for every criterion that could not be
         evaluated (a lifetime filter with no frequency, say). Those criteria
         are skipped rather than treated as excluding everything.
+    context : MetricContext, optional
+        Context to evaluate the criteria against, so that a caller making
+        several calls over the same arrays -- measuring what each criterion
+        keeps, say -- pays for one component fit rather than one per call.
     """
     if mean is None:
         return None
+    if context is None:
+        context = MetricContext(mean, real, imag, harmonics)
     mask = None
     for entry in filters:
         if not entry['enabled']:
@@ -457,12 +662,13 @@ def combined_mask(filters, mean, real, imag, harmonics, *, on_error=None):
             frequency=entry['params'].get('frequency'),
             wrap_phase=entry['wrap_phase'],
             params=entry['params'],
+            context=context,
         )
         if values is None or values.shape != mean.shape:
             if on_error is not None:
                 on_error(
-                    f"Skipped the {entry['metric']} filter: it cannot be "
-                    "evaluated on this layer."
+                    f"Skipped the {filter_display_name(entry)} filter: it "
+                    "cannot be evaluated on this layer."
                 )
             continue
         entry_mask = range_mask(
@@ -601,13 +807,49 @@ def kept_fraction(mask, mean=None):
     return float((~mask).sum()) / total
 
 
+def serialize_filter_applies(method):
+    """Never run a tab's filter apply inside another of its own.
+
+    Applying a stack re-derives the phasor arrays, re-runs the tab's
+    analysis and adds or removes napari layers, all of which spin the Qt
+    event loop. The user's next edit -- a slider they released, a number
+    they typed -- is then delivered *inside* the apply it interrupted, and
+    the two rebuild the same card lists over each other, leaving a list
+    whose criteria and cards disagree.
+
+    So a nested call is not run: it is remembered and replayed once the
+    outer one has finished, which is both correct (the last edit wins) and
+    cheaper (one rebuild instead of two interleaved). Replay is a loop, not
+    recursion -- the flag is already cleared -- and each pass consumes one
+    pending stack, so it ends as soon as the user stops editing.
+    """
+
+    @functools.wraps(method)
+    def apply_filters(self, filters=None, layers=None):
+        if getattr(self, '_filter_apply_busy', False):
+            self._pending_filter_apply = (filters, layers)
+            return
+        self._filter_apply_busy = True
+        try:
+            method(self, filters, layers)
+        finally:
+            self._filter_apply_busy = False
+        pending = getattr(self, '_pending_filter_apply', None)
+        if pending is not None:
+            self._pending_filter_apply = None
+            apply_filters(self, *pending)
+
+    return apply_filters
+
+
 def describe_filters(filters):
     """Return a one-line summary of the enabled criteria in *filters*."""
     enabled = [f for f in filters if f['enabled']]
     if not enabled:
         return "No filters applied."
     parts = [
-        f"{f['metric']} {format_range(f['metric'], f['min'], f['max'], f['mode'])}"
+        f"{filter_display_name(f)} "
+        f"{format_range(f['metric'], f['min'], f['max'], f['mode'])}"
         for f in enabled
     ]
     return " · ".join(parts)
@@ -670,7 +912,7 @@ _ENABLE_TOOLTIP = (
 )
 
 
-class _FilterCard(QFrame):
+class FilterCard(QFrame):
     """One criterion, shown as an editable card."""
 
     changed = Signal(str)
@@ -724,8 +966,9 @@ class _FilterCard(QFrame):
         self.metric_combobox.setVisible(len(offered) > 1)
         header.addWidget(self.metric_combobox, 1)
 
-        self.metric_label = QLabel(self.entry['metric'])
-        self.metric_label.setStyleSheet("font-weight: 600;")
+        self.metric_label = QLabel(filter_display_name(self.entry))
+        self._accent_color = None
+        self._refresh_metric_label_style()
         self.metric_label.setVisible(len(offered) == 1)
         header.addWidget(self.metric_label, 1)
         self._refresh_metric_tooltip()
@@ -809,12 +1052,36 @@ class _FilterCard(QFrame):
         return self.entry['id']
 
     def _refresh_metric_tooltip(self):
-        """Say on hover which harmonic the metric is measured on."""
+        """Say on hover what is measured, and on which harmonic."""
         tooltip = f"{_METRIC_TOOLTIP}\nMeasured on harmonic {self.entry['harmonic']}."
         self.metric_combobox.setToolTip(tooltip)
-        self.metric_label.setToolTip(
-            f"Measured on harmonic {self.entry['harmonic']}."
-        )
+        measured = f"Measured on harmonic {self.entry['harmonic']}."
+        # A card named after a component says nowhere else that the number it
+        # tests is a fraction.
+        if filter_display_name(self.entry) != self.entry['metric']:
+            measured = f"{self.entry['metric']}. {measured}"
+        self.metric_label.setToolTip(measured)
+
+    def _refresh_metric_label_style(self):
+        """Draw the card's title, tinted with its accent colour if it has one."""
+        style = "font-weight: 600;"
+        if self._accent_color:
+            style += f" color: {self._accent_color};"
+        self.metric_label.setStyleSheet(style)
+
+    def set_accent_color(self, color):
+        """Tint the card's title, or clear the tint with ``None``.
+
+        Used by the Components tab so a fraction filter is recognisable as
+        belonging to the component drawn in that colour on the phasor plot.
+        """
+        self._accent_color = color or None
+        self._refresh_metric_label_style()
+
+    @property
+    def accent_color(self):
+        """Return the colour this card is tinted with, if any."""
+        return self._accent_color
 
     def _refresh_unit(self):
         """Show the current metric's unit after the range, if it has one."""
@@ -861,7 +1128,7 @@ class _FilterCard(QFrame):
             self.metric_combobox.blockSignals(True)
             self.metric_combobox.setCurrentText(self.entry['metric'])
             self.metric_combobox.blockSignals(False)
-            self.metric_label.setText(self.entry['metric'])
+            self.metric_label.setText(filter_display_name(self.entry))
         finally:
             self._updating = False
         self._refresh_unit()
@@ -1072,9 +1339,7 @@ class MappingFilterList(QWidget):
         if not np.isfinite(low) or not np.isfinite(high):
             return
         self._bounds[metric] = (low, high)
-        for entry, card in zip(
-            self._filters, self._ordered_cards(), strict=True
-        ):
+        for entry, card in self._card_pairs():
             if entry['metric'] == metric:
                 card.set_bounds(low, high)
 
@@ -1089,11 +1354,8 @@ class MappingFilterList(QWidget):
         which is where anything too long for one line belongs -- the dock is
         narrow and the figure is what the line exists to show.
         """
-        for entry, card in zip(
-            self._filters, self._ordered_cards(), strict=True
-        ):
-            text = stats.get(entry['id'], "")
-            card.set_stat(text)
+        for entry, card in self._card_pairs():
+            card.set_stat(stats.get(entry['id'], ""))
         if summary:
             self.summary_label.setText(summary)
         tooltip = describe_filters(self.filters())
@@ -1113,9 +1375,7 @@ class MappingFilterList(QWidget):
     def set_editable_metrics(self, metrics):
         """Restrict full editing to *metrics*; others are shown read-only."""
         self._editable_metrics = set(metrics)
-        for entry, card in zip(
-            self._filters, self._ordered_cards(), strict=True
-        ):
+        for entry, card in self._card_pairs():
             card.setEditable(entry['metric'] in self._editable_metrics)
 
     def set_params_provider(self, provider):
@@ -1157,9 +1417,20 @@ class MappingFilterList(QWidget):
         return coerced
 
     # -- internals -------------------------------------------------------
-    def _ordered_cards(self):
-        """Return the cards in stack order."""
-        return [self._cards[f['id']] for f in self._filters]
+    def _card_pairs(self):
+        """Return ``(criterion, card)`` for every criterion that has a card.
+
+        A criterion with no card means the list is part-way through a
+        rebuild -- a refresh that arrived while another was in flight, which
+        applying a stack makes possible because it pumps the event loop. The
+        rebuild ends with a refresh of its own, so the missing card is
+        skipped rather than raised out of the redraw that asked for it.
+        """
+        return [
+            (entry, self._cards[entry['id']])
+            for entry in self._filters
+            if entry['id'] in self._cards
+        ]
 
     def _seed_range(self, metric):
         """Return the range a criterion on *metric* should start with."""
@@ -1215,7 +1486,7 @@ class MappingFilterList(QWidget):
                 if editable_metrics is None
                 else entry['metric'] in editable_metrics
             )
-            card = _FilterCard(
+            card = FilterCard(
                 entry,
                 metrics=self._metrics if editable else None,
                 editable=editable,
@@ -1301,5 +1572,370 @@ class MappingFilterList(QWidget):
         # Any user edit turns the single-mode placeholder into a real filter.
         self._placeholder = False
         self._refresh_chrome()
+        if not self._rebuilding:
+            self.filtersChanged.emit(self.filters())
+
+
+_COMPONENT_LIST_EMPTY = (
+    "Define at least two components and run an analysis to filter on their "
+    "fractions."
+)
+_COMPONENT_ENABLE_TOOLTIP = (
+    "Keep only the pixels whose fraction of this component falls inside the "
+    "range. They lose their phasor coordinates everywhere else, exactly as "
+    "an intensity threshold would."
+)
+
+
+class ComponentFilterList(QWidget):
+    """One fraction-range card per component, feeding the same filter stack.
+
+    Unlike :class:`MappingFilterList` there is nothing to add or to remove:
+    the components are given, and each one gets exactly one card. A card the
+    user has never touched is a *placeholder* -- switched off, and left out
+    of the stack this widget reports -- so merely defining components never
+    writes a filter onto a layer.
+
+    The widget owns no data of its own either: it renders the components and
+    criteria it is given and emits :attr:`filtersChanged` with the edited
+    component criteria, leaving the tab that owns the layer the single
+    writer.
+    """
+
+    filtersChanged = Signal(list)
+    """Emitted with this widget's criteria whenever the user changes one."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        #: ``[(component_index, display_name, colour)]``, in card order.
+        self._components = []
+        #: ``{component_index: criterion}`` for every card on screen.
+        self._entries = {}
+        #: ``{component_index: (low, high)}`` measured data range.
+        self._bounds = {}
+        #: Indices whose card is still an untouched placeholder.
+        self._placeholders = set()
+        self._cards = {}
+        self._params_provider = None
+        self._harmonic_provider = None
+        self._bounds_provider = None
+        self._enable_blocked_reason = None
+        self._rebuilding = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._cards_container = QWidget()
+        self._cards_layout = QVBoxLayout(self._cards_container)
+        self._cards_layout.setContentsMargins(0, 0, 0, 0)
+        self._cards_layout.setSpacing(4)
+        layout.addWidget(self._cards_container)
+
+        self.empty_label = QLabel(_COMPONENT_LIST_EMPTY)
+        self.empty_label.setWordWrap(True)
+        self.empty_label.setObjectName("mappingFilterForeign")
+        layout.addWidget(self.empty_label)
+
+        self.summary_label = QLabel("")
+        self.summary_label.setObjectName("mappingFilterStat")
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
+
+        self._refresh_chrome()
+
+    # -- public API ------------------------------------------------------
+    def components(self):
+        """Return the components currently carrying a card."""
+        return list(self._components)
+
+    def set_components(self, components):
+        """Show one card per entry of *components*.
+
+        Parameters
+        ----------
+        components : sequence of tuple
+            ``(component_index, display_name, colour)``. A component that
+            already has a criterion keeps it, renamed to the name given here
+            so the card follows a rename immediately.
+        """
+        normalized = [
+            (int(index), str(name), color) for index, name, color in components
+        ]
+        # Rebuilding the cards destroys the one the user may be dragging a
+        # handle on, and this is called on every redraw, so an unchanged set
+        # of components must leave the list exactly as it is.
+        if normalized == self._components and all(
+            index in self._entries for index, _name, _color in normalized
+        ):
+            return
+        indices = {index for index, _name, _color in normalized}
+        # A component that is gone takes its criterion with it; leaving it in
+        # the stack would hide pixels with no card left to explain them.
+        for index in list(self._entries):
+            if index not in indices:
+                del self._entries[index]
+                self._placeholders.discard(index)
+        self._components = normalized
+        for index, name, _color in normalized:
+            entry = self._entries.get(index)
+            if entry is None:
+                self._entries[index] = self._new_entry(index, name)
+                self._placeholders.add(index)
+            else:
+                entry['params'] = dict(entry['params'], component_name=name)
+        self._rebuild_cards()
+
+    def set_filters(self, filters):
+        """Adopt the stored component criteria without emitting a change.
+
+        A stack equal to the one on screen is ignored, so the card whose
+        slider is being dragged is not rebuilt under the pointer every time
+        the edit is written back to the layer and read out again.
+        """
+        stored = {}
+        for entry in normalize_filters(filters):
+            if entry['metric'] != COMPONENT_FRACTION:
+                continue
+            index = entry['params'].get('component_index')
+            if index is None:
+                continue
+            stored[int(index)] = entry
+        # A criterion is compared and adopted under the component's *current*
+        # name: a rename that has not reached the layer yet must show on the
+        # card, and must not make the stack look changed on every sync.
+        stored = {
+            index: self._with_name(entry, index)
+            for index, entry in stored.items()
+        }
+        if stored == {
+            index: entry
+            for index, entry in self._entries.items()
+            if index not in self._placeholders
+        }:
+            return
+        self._rebuilding = True
+        try:
+            for index, _name, _color in self._components:
+                entry = stored.get(index)
+                if entry is None:
+                    if index not in self._placeholders:
+                        name = self._name_for(index)
+                        self._entries[index] = self._new_entry(index, name)
+                        self._placeholders.add(index)
+                else:
+                    self._entries[index] = entry
+                    self._placeholders.discard(index)
+            self._rebuild_cards()
+        finally:
+            self._rebuilding = False
+
+    def filters(self):
+        """Return the criteria the user has actually defined, in card order."""
+        return [
+            dict(self._entries[index])
+            for index, _name, _color in self._components
+            if index in self._entries and index not in self._placeholders
+        ]
+
+    def set_filter_stats(self, stats, summary="", detail=""):
+        """Show per-card kept fractions and the whole list's summary line."""
+        for index, card in self._cards.items():
+            entry = self._entries.get(index)
+            card.set_stat(stats.get(entry['id'], "") if entry else "")
+        self.summary_label.setText(summary)
+        tooltip = describe_filters(self.filters())
+        self.summary_label.setToolTip(
+            f"{detail}\n{tooltip}" if detail else tooltip
+        )
+
+    def set_enable_blocked(self, reason):
+        """Forbid switching a filter on while *reason* is set (``None`` clears)."""
+        self._enable_blocked_reason = reason
+        for card in self._cards.values():
+            card.set_enable_blocked(reason)
+
+    def set_params_provider(self, provider):
+        """Set the callable freezing a component's definition into a criterion.
+
+        Called as ``provider(component_index)`` and expected to return a
+        dict: the analysis type, the component positions and the harmonics
+        they were taken on. It is what lets a criterion keep meaning the same
+        thing after the components on screen have moved.
+        """
+        self._params_provider = provider
+
+    def set_harmonic_provider(self, provider):
+        """Set the callable returning the harmonic a new criterion applies to."""
+        self._harmonic_provider = provider
+
+    def set_bounds_provider(self, provider):
+        """Set the callable measuring a component's fraction range.
+
+        Called as ``provider(component_index)``; returns ``(low, high)`` or
+        ``None``. A linear projection's fractions sit in ``[0, 1]``, but a
+        component fit solves a system that is not constrained that way and
+        routinely produces fractions below 0 or above 1. Measuring the range
+        rather than assuming it is what lets those pixels be filtered on at
+        all.
+        """
+        self._bounds_provider = provider
+
+    def bounds_for(self, index):
+        """Return the recorded fraction range of a component, or a fallback."""
+        return self._bounds.get(
+            index, metric_fallback_range(COMPONENT_FRACTION)
+        )
+
+    def set_component_bounds(self, index, low, high):
+        """Record a component's fraction range and widen its card's slider."""
+        if low is None or high is None:
+            return
+        low = float(low)
+        high = float(high)
+        if not np.isfinite(low) or not np.isfinite(high):
+            return
+        self._bounds[index] = (low, high)
+        card = self._cards.get(index)
+        if card is not None:
+            card.set_bounds(low, high)
+
+    def refresh_params(self):
+        """Re-freeze every criterion's parameters from the current components.
+
+        Returns ``True`` when anything changed. A fraction the user can see
+        on screen and a fraction a filter tests must be the same number, so
+        moving a component has to move its filter with it.
+        """
+        changed = False
+        for index, entry in self._entries.items():
+            params = self._seed_params(index)
+            # Positions that cannot be read right now are not an update:
+            # overwriting a working criterion with them would leave it
+            # hiding pixels by a rule it can no longer evaluate.
+            if not has_component_positions(params):
+                continue
+            if entry['params'] == params:
+                continue
+            entry['params'] = params
+            changed = True
+        if changed:
+            self._rebuild_cards()
+        return changed
+
+    # -- internals -------------------------------------------------------
+    def _with_name(self, entry, index):
+        """Return *entry* named after the component at *index*."""
+        return dict(
+            entry,
+            params=dict(entry['params'], component_name=self._name_for(index)),
+        )
+
+    def _name_for(self, index):
+        """Return the display name of the component at *index*."""
+        for candidate, name, _color in self._components:
+            if candidate == index:
+                return name
+        return f"Component {index + 1}"
+
+    def _color_for(self, index):
+        """Return the colour the component at *index* is drawn in."""
+        for candidate, _name, color in self._components:
+            if candidate == index:
+                return color
+        return None
+
+    def _seed_range(self, index):
+        """Return the range a criterion on this component should start with."""
+        if self._bounds_provider is not None:
+            measured = self._bounds_provider(index)
+            if measured is not None:
+                low, high = float(measured[0]), float(measured[1])
+                if np.isfinite(low) and np.isfinite(high):
+                    self._bounds[index] = (low, high)
+                    return low, high
+        return self.bounds_for(index)
+
+    def _seed_params(self, index):
+        """Return the frozen parameters of the component at *index*."""
+        if self._params_provider is None:
+            return {}
+        return dict(self._params_provider(index) or {})
+
+    def _new_entry(self, index, name):
+        """Return a fresh, switched-off criterion over the whole 0-1 range."""
+        harmonic = (
+            self._harmonic_provider()
+            if self._harmonic_provider is not None
+            else 1
+        )
+        params = self._seed_params(index)
+        params.setdefault('component_index', index)
+        params['component_name'] = name
+        low, high = self._seed_range(index)
+        return new_filter(
+            COMPONENT_FRACTION,
+            low,
+            high,
+            harmonic or 1,
+            enabled=False,
+            params=params,
+        )
+
+    def _rebuild_cards(self):
+        """Recreate every card so the list matches the components exactly."""
+        while self._cards_layout.count():
+            item = self._cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._cards = {}
+        for index, _name, color in self._components:
+            entry = self._entries[index]
+            card = FilterCard(entry, metrics=None, removable=False)
+            card.set_bounds(*self.bounds_for(index))
+            card.set_accent_color(color)
+            card.enabled_check.setToolTip(_COMPONENT_ENABLE_TOOLTIP)
+            card.set_enable_blocked(self._enable_blocked_reason)
+            card.changed.connect(self._on_card_changed)
+            self._cards_layout.addWidget(card)
+            self._cards[index] = card
+        self._refresh_chrome()
+
+    def _refresh_chrome(self):
+        """Show the placeholder text only while there is nothing to filter."""
+        has_any = bool(self._components)
+        self.empty_label.setVisible(not has_any)
+        if not has_any:
+            self.summary_label.setText("")
+
+    def _index_of_card(self, filter_id):
+        """Return the component index the card editing *filter_id* belongs to."""
+        for index, entry in self._entries.items():
+            if entry['id'] == filter_id:
+                return index
+        return None
+
+    def _on_card_changed(self, filter_id):
+        """Copy one card's edited values back and publish the new stack."""
+        index = self._index_of_card(filter_id)
+        if index is None:
+            return
+        card = self._cards.get(index)
+        if card is None:
+            return
+        # A criterion created before the analysis ran carries no component
+        # positions yet; it picks them up on its first edit, so the stack the
+        # tab writes back stays identical to the one on screen and the card
+        # being edited is not rebuilt under the pointer.
+        if not has_component_positions(card.entry['params']):
+            params = self._seed_params(index)
+            if params:
+                params['component_index'] = index
+                params['component_name'] = self._name_for(index)
+                card.entry['params'] = params
+        self._entries[index] = dict(card.entry)
+        self._placeholders.discard(index)
         if not self._rebuilding:
             self.filtersChanged.emit(self.filters())

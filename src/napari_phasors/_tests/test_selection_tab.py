@@ -5,9 +5,18 @@ import pytest
 from napari.layers import Labels
 from qtpy.QtCore import QEvent, Qt
 from qtpy.QtGui import QColor, QFocusEvent, QValidator
-from qtpy.QtWidgets import QApplication, QComboBox, QDoubleSpinBox, QLabel
+from qtpy.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDoubleSpinBox,
+    QLabel,
+    QSizePolicy,
+)
 
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._tests.test_plotter import (
+    assert_run_row_is_pinned,
+    create_image_layer_with_phasors,
+)
 from napari_phasors.plotter import PlotterWidget
 from napari_phasors.selection_tab import (
     ClickableFrame,
@@ -3811,3 +3820,40 @@ def test_manual_selection_brush_and_eraser_cursor_persists_after_painting(
         QApplication.processEvents()
         assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
         assert not cw.canvas.cursor().pixmap().isNull()
+
+
+def test_the_selection_run_buttons_are_pinned_under_the_settings(
+    make_viewer_model,
+):
+    """Each mode's own button is pinned, and manual selection has none."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    cursor = widget.cursor_selection_widget
+    assert_run_row_is_pinned(
+        widget, cursor.calculate_button, cursor.autoupdate_checkbox
+    )
+    assert_run_row_is_pinned(
+        widget, widget.automatic_clustering_widget.apply_button
+    )
+
+    # The pinned row follows the mode the tab is showing.
+    assert widget._run_row_stack.currentWidget() is cursor.run_row
+    widget.selection_mode_combobox.setCurrentIndex(1)
+    assert (
+        widget._run_row_stack.currentWidget()
+        is widget.automatic_clustering_widget.run_row
+    )
+    assert widget._run_row_stack.isVisibleTo(widget)
+
+    # Manual selection has nothing to run, so the row takes no space.
+    widget.selection_mode_combobox.setCurrentIndex(2)
+    assert not widget._run_row_stack.isVisibleTo(widget)
+
+    # It is one row of buttons, not a panel: the settings above it keep the
+    # space, as in every other tab.
+    assert (
+        widget._run_row_stack.sizePolicy().verticalPolicy()
+        == QSizePolicy.Fixed
+    )
+    assert widget.layout().stretch(0) == 1

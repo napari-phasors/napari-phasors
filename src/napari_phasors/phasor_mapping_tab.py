@@ -38,9 +38,11 @@ from ._mapping_filters import (
     compute_metric,
     get_filters,
     kept_fraction,
+    normalize_filters,
     rebuild_layer_from_filters,
     requires_frequency,
     select_harmonic,
+    serialize_filter_applies,
     set_filters,
 )
 from ._parallel import parallel_map
@@ -505,6 +507,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         main_widget_layout = QVBoxLayout(self)
         main_widget_layout.addWidget(scroll_area)
         main_widget_layout.setStretch(0, 1)
+        self._main_widget_layout = main_widget_layout
         self.setStyleSheet(analysis_section_stylesheet())
 
         # Output section -----------------------------------------------------
@@ -819,7 +822,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
 
         self.main_layout.addWidget(self.mesh_overlay_group)
 
-        # Add Calculate button in its own row (at the bottom of this tab)
+        # The Calculate button, pinned at the bottom of the tab
         self.calculate_lifetime_button = QPushButton("Calculate Output")
         self.calculate_lifetime_button.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Fixed
@@ -831,10 +834,10 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             ready_tooltip="Calculate and display the selected output for all "
             "selected layers.",
         )
-        self.main_layout.addWidget(self.calculate_lifetime_button)
-
-        self.main_layout.addWidget(
-            self._build_autoupdate_toggle(
+        # Pinned under the scroll area rather than added to it, so it stays
+        # reachable however far the settings above it have grown.
+        self._main_widget_layout.addWidget(
+            self._build_run_row(
                 self.calculate_lifetime_button,
                 self._mapping_validation,
                 self._autoupdate_calculate_output,
@@ -1311,7 +1314,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self.filter_list.set_filters([])
             self.filter_list.set_filter_stats({}, "")
             return
-        self.filter_list.set_filters(get_filters(layer))
+        self.filter_list.set_filters(self._own_filters(get_filters(layer)))
         output_type = self._get_selected_output_type()
         if output_type in MAPPING_METRICS and not self.filter_list.filters():
             # An empty list should offer the quantity the user is looking at.
@@ -1319,6 +1322,19 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         self._refresh_filter_bounds()
         self._refresh_filter_stats()
         self._refresh_filter_add_button()
+
+    @staticmethod
+    def _own_filters(filters):
+        """Return the criteria this tab owns, dropping the other tabs'.
+
+        A FRET efficiency or a component fraction is defined where the
+        quantity it measures is defined, and is listed there. Showing it here
+        as well would offer a second place to switch the same criterion on
+        and off, so the cards here are this tab's own -- the stack itself is
+        still shared, and the criteria left out of this list are carried
+        through every write untouched.
+        """
+        return [f for f in filters if f['metric'] in MAPPING_METRICS]
 
     def _filter_bounds_for(self, metric, arrays=None):
         """Return the ``(low, high)`` data range of *metric*, or ``None``.
@@ -1400,6 +1416,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         """Persist the edited stack and rebuild everything downstream of it."""
         self._apply_filter_stack(filters)
 
+    @serialize_filter_applies
     def _apply_filter_stack(self, filters=None, layers=None):
         """Write *filters* to *layers* and re-derive their phasor data.
 
@@ -1415,12 +1432,20 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             return
         if filters is None:
             filters = self.filter_list.filters()
+        own = self._own_filters(normalize_filters(filters))
 
         problems = []
         self._applying_mapping_filter = True
         try:
             for layer in layers:
-                stored = set_filters(layer, filters)
+                # The other tabs' criteria are not listed here, but they are
+                # part of the same stack and must survive untouched.
+                others = [
+                    f
+                    for f in get_filters(layer)
+                    if f['metric'] not in MAPPING_METRICS
+                ]
+                stored = set_filters(layer, others + own)
                 self._rebuild_layer_from_filters(
                     layer, stored, on_error=problems.append
                 )
@@ -1430,6 +1455,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._applying_mapping_filter = False
 
         self._sync_filter_ui()
+        self.parent_widget.refresh_filter_tabs(self)
         for message in dict.fromkeys(problems):
             show_warning(message)
 

@@ -14,7 +14,8 @@ from matplotlib.colors import (
 )
 from matplotlib.patches import Polygon as MplPolygon
 from matplotlib.transforms import Affine2D
-from napari.layers import Image
+from napari.layers import Image, Labels
+from napari.utils import DirectLabelColormap
 from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
 from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
@@ -24,7 +25,7 @@ from phasorpy.lifetime import (
     phasor_to_normal_lifetime,
 )
 from phasorpy.phasor import phasor_center
-from qtpy.QtCore import QRectF, Qt
+from qtpy.QtCore import QRectF, Qt, QTimer
 from qtpy.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -50,6 +51,25 @@ from qtpy.QtWidgets import (
     QWidgetAction,
 )
 
+from ._mapping_filters import (
+    COMPONENT_FRACTION,
+    EXCLUDE,
+    ComponentFilterList,
+    MetricContext,
+    baseline_arrays,
+    combined_mask,
+    compute_metric,
+    filter_display_name,
+    get_filters,
+    has_component_positions,
+    kept_fraction,
+    normalize_filters,
+    range_mask,
+    rebuild_layer_from_filters,
+    select_harmonic,
+    serialize_filter_applies,
+    set_filters,
+)
 from ._parallel import parallel_map, parallel_rowwise
 from ._timelapse import slice_datasets
 from ._utils import (
@@ -108,6 +128,151 @@ HISTOGRAM_TOGGLE_DISABLED_TOOLTIP = (
     "the histogram and statistics docks."
 )
 
+#: One labels layer per component, painting the pixels that component's own
+#: fraction filter keeps.
+LABELS_PER_COMPONENT = "One layer per component"
+#: A single labels layer naming each surviving pixel's dominant component.
+LABELS_DOMINANT = "Single layer, dominant component"
+#: The two labels layouts, in menu order.
+LABELS_MODES = (LABELS_PER_COMPONENT, LABELS_DOMINANT)
+#: Metadata key tagging a labels layer this tab owns, so it is found again
+#: after the user has renamed it.
+COMPONENT_LABELS_TAG = 'phasor_component_labels'
+#: What the swatch on a component card offers.
+COMPONENT_COLOR_TOOLTIP = (
+    "Colour of this component: the tint of its fraction filter card and the "
+    "colour of the pixels it paints in a labels layer.\n"
+    "Click to choose another one."
+)
+#: What the button beside it offers, once a colour has been chosen.
+COMPONENT_COLOR_RESET_TOOLTIP = (
+    "Reset this component's colour to the one it is drawn in on the phasor "
+    "plot."
+)
+
+
+def _as_hex(color):
+    """Return *color* as a ``#rrggbb`` string, or ``None`` if unusable."""
+    if color is None:
+        return None
+    try:
+        return mcolors.to_hex(color)
+    except (ValueError, TypeError):
+        return None
+
+
+def _params_token(value):
+    """Return *value* as something a cache can be keyed by.
+
+    The parameters are plain settings -- numbers, strings, positions read
+    back as lists or as arrays -- so they only have to be made hashable,
+    dicts included.
+    """
+    if isinstance(value, dict):
+        return tuple(
+            sorted(
+                (str(key), _params_token(item)) for key, item in value.items()
+            )
+        )
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        return tuple(_params_token(item) for item in value)
+    return value
+
+
+def _label_color_dict(indices, colors):
+    """Return the ``{label: RGBA}`` colour map of a labels layer.
+
+    Components keep the label ``index + 1`` whichever layout is drawn, so a
+    component is the same colour in the per-component layers and in the
+    combined one. Unlabelled pixels are transparent rather than black, so
+    the image underneath stays visible.
+    """
+    color_dict = {None: (0.0, 0.0, 0.0, 0.0)}
+    fallback = plt.cm.tab10.colors
+    for position, index in enumerate(indices):
+        color = colors.get(index)
+        if color is None:
+            color = fallback[position % len(fallback)]
+        color_dict[index + 1] = tuple(float(v) for v in mcolors.to_rgba(color))
+    return color_dict
+
+
+def component_label_map(index, keep, measurable):
+    """Return the labels map painting one component's kept pixels.
+
+    Parameters
+    ----------
+    index : int
+        Zero-based component index; the label painted is ``index + 1``, so
+        the value is stable no matter which components are being drawn.
+    keep : np.ndarray
+        Boolean map of the pixels this component's criterion keeps.
+    measurable : np.ndarray
+        Boolean map of the pixels that carry data at all.
+
+    Returns
+    -------
+    np.ndarray
+        ``uint16`` label map; 0 everywhere the component is not kept.
+    """
+    labels = np.zeros(np.shape(measurable), dtype=np.uint16)
+    labels[measurable & keep] = index + 1
+    return labels
+
+
+def dominant_component_label_map(fractions, keep, measurable):
+    """Return the labels map naming each kept pixel's dominant component.
+
+    A pixel is labelled only when *every* criterion keeps it -- the same
+    pixels that still carry phasor coordinates -- and takes the label of the
+    component it holds the most of.
+
+    Parameters
+    ----------
+    fractions : dict
+        ``{component_index: fraction map}``. A component with no fraction
+        map cannot win a pixel and is simply left out.
+    keep : dict
+        ``{component_index: boolean map}`` of the pixels each component's own
+        criterion keeps.
+    measurable : np.ndarray
+        Boolean map of the pixels that carry data at all.
+
+    Returns
+    -------
+    np.ndarray
+        ``uint16`` label map; 0 where no component wins the pixel.
+    """
+    indices = sorted(
+        index for index, data in fractions.items() if data is not None
+    )
+    labels = np.zeros(np.shape(measurable), dtype=np.uint16)
+    if not indices:
+        return labels
+
+    kept = np.array(measurable, dtype=bool)
+    for index in keep:
+        kept = kept & keep[index]
+    if not kept.any():
+        return labels
+
+    stacked = np.stack(
+        [np.asarray(fractions[i], dtype=float) for i in indices]
+    )
+    # A pixel with no fraction for a component cannot be won by it, but must
+    # not drag the whole pixel down either: -inf loses every comparison.
+    with np.errstate(invalid='ignore'):
+        stacked = np.where(np.isfinite(stacked), stacked, -np.inf)
+    winner = np.argmax(stacked, axis=0)
+    # Every fraction missing means nothing to name the pixel after.
+    undecided = ~np.isfinite(stacked).any(axis=0)
+    lookup = np.array([index + 1 for index in indices], dtype=np.uint16)
+    labels[kept] = lookup[winner[kept]]
+    labels[undecided] = 0
+    return labels
+
 
 def _fit_components(mean, real, imag, component_g, component_s):
     """Fit component fractions, splitting a large image across threads.
@@ -146,6 +311,8 @@ class ComponentState:
     name_label: QLabel | None = None
     coords_label: QLabel | None = None
     remove_button: QPushButton | None = None
+    color_button: QPushButton | None = None
+    color_reset_button: QPushButton | None = None
     detail_widget: QWidget | None = None
     histogram_checkbox: QCheckBox | None = None
     ui_elements: dict = field(default_factory=dict)
@@ -444,6 +611,39 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # Flag to track if analysis was attempted
         self._analysis_attempted = False
 
+        # Set while this tab rewrites the phasor arrays from the filter
+        # stack, so the autoupdate machinery does not re-enter the analysis.
+        self._applying_mapping_filter = False
+        #: Whether a selection refresh was postponed while applying a stack.
+        self._deferred_selection_refresh = False
+        # Pixels per analysed layer that a fraction filter is a share of,
+        # i.e. the denominator of the "%" statistics column. Reading it
+        # re-derives the baseline arrays, so it is cached until a sync says
+        # something upstream of it moved.
+        self._reference_pixel_counts = {}
+        #: ``{layer name: (token, originals, arrays)}`` -- the baseline a
+        #: refresh measures on, kept so a burst of refreshes re-derives it
+        #: once instead of once per card.
+        self._baseline_cache = {}
+        #: ``{layer name: (mean, token, maps)}`` -- the fraction maps behind
+        #: the cards, kept for the same reason: one component fit serves the
+        #: bounds, the statistics and the labels layers together.
+        self._fraction_map_cache = {}
+        #: ``{layer name: (mean, MetricContext)}`` -- the memo that makes one
+        #: component fit serve every criterion measured on those arrays.
+        self._metric_context_cache = {}
+        self._derived_cache_expiry_scheduled = False
+        # Labels layers this tab created, keyed by
+        # ``(image layer name, component index or None)``.
+        self._component_label_layers = {}
+        #: ``{component index: '#rrggbb'}`` chosen by the user, overriding
+        #: the colour the component is drawn in on the phasor plot.
+        self._component_label_colors = {}
+        # Guards against re-entering the filter sync, and against pruning a
+        # criterion while the component list is halfway through a removal.
+        self._syncing_filter_ui = False
+        self._removing_component = False
+
         # Dialog / event flags
         self.plot_dialog = None
         self.style_dialog = None
@@ -570,10 +770,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             ready_tooltip="Run the selected analysis method on the defined "
             "components.",
         )
-        layout.addWidget(self.calculate_button)
-
-        layout.addWidget(
-            self._build_autoupdate_toggle(
+        # Pinned under the scroll area, so it is reachable whatever the
+        # settings above it are doing.
+        root_layout.addWidget(
+            self._build_run_row(
                 self.calculate_button,
                 self._components_validation,
                 self._run_analysis,
@@ -582,6 +782,62 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 "filtered/calibrated phasor data change.",
             )
         )
+
+        # Fraction filter section
+        filter_box, filter_box_layout = make_section("Fraction filters")
+        self.filter_box = filter_box
+
+        self.filter_intro_label = QLabel(
+            "Keep only the pixels whose fraction of a component falls inside "
+            "(or outside) of a range."
+        )
+        self.filter_intro_label.setWordWrap(True)
+        self.filter_intro_label.setToolTip(
+            "The fraction a filter tests is recomputed from the component "
+            "positions frozen into it, so a criterion keeps meaning the same "
+            "thing after the components on screen have moved. Criteria "
+            "combine as conditions: a pixel survives only when every one of "
+            "them keeps it, here and in the Phasor Mapping and FRET tabs."
+        )
+        filter_box_layout.addWidget(self.filter_intro_label)
+
+        self.filter_list = ComponentFilterList()
+        self.filter_list.set_params_provider(self._component_filter_params)
+        self.filter_list.set_harmonic_provider(self._current_harmonic)
+        self.filter_list.set_bounds_provider(self._component_fraction_bounds)
+        self.filter_list.filtersChanged.connect(self._on_filters_changed)
+        filter_box_layout.addWidget(self.filter_list)
+
+        labels_row = QHBoxLayout()
+        self.create_labels_checkbox = QCheckBox("Labels layer")
+        self.create_labels_checkbox.setToolTip(
+            "Paint the pixels the filters keep into a labels layer, in the "
+            "components' own colours. The layer follows the filters as they "
+            "are edited; the swatch on each card picks that component's "
+            "colour."
+        )
+        self.create_labels_checkbox.toggled.connect(
+            self._on_create_labels_toggled
+        )
+        labels_row.addWidget(self.create_labels_checkbox)
+
+        self.labels_mode_combobox = QComboBox()
+        self.labels_mode_combobox.addItems(LABELS_MODES)
+        self.labels_mode_combobox.setToolTip(
+            f"{LABELS_PER_COMPONENT}: one layer per component, painting the "
+            "pixels that component's own range keeps.\n"
+            f"{LABELS_DOMINANT}: one layer for all of them, where every "
+            "surviving pixel takes the label of the component it holds the "
+            "most of."
+        )
+        self.labels_mode_combobox.setEnabled(False)
+        self.labels_mode_combobox.currentTextChanged.connect(
+            self._on_labels_mode_changed
+        )
+        labels_row.addWidget(self.labels_mode_combobox, 1)
+        filter_box_layout.addLayout(labels_row)
+
+        layout.addWidget(filter_box)
 
         # Display settings section
         display_box, display_box_layout = make_section("Display settings")
@@ -749,6 +1005,24 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         row2.addWidget(lifetime_edit)
         row2.addStretch()
 
+        # The colour this component is drawn in, and painted with wherever
+        # else it appears: its filter card and its labels layer.
+        color_button = QPushButton()
+        color_button.setObjectName("componentColorBtn")
+        color_button.setFixedSize(18, 18)
+        color_button.setCursor(Qt.PointingHandCursor)
+        color_button.setToolTip(COMPONENT_COLOR_TOOLTIP)
+        color_button.setVisible(False)
+        row2.addWidget(color_button)
+
+        color_reset_button = QPushButton("Reset")
+        color_reset_button.setObjectName("componentColorResetBtn")
+        color_reset_button.setMaximumWidth(52)
+        color_reset_button.setCursor(Qt.PointingHandCursor)
+        color_reset_button.setToolTip(COMPONENT_COLOR_RESET_TOOLTIP)
+        color_reset_button.setVisible(False)
+        row2.addWidget(color_reset_button)
+
         card_layout.addLayout(row2)
 
         # 3. Histogram / statistics toggle row
@@ -780,6 +1054,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             card_frame=card_frame,
             row_frame=card_frame,
             remove_button=remove_button,
+            color_button=color_button,
+            color_reset_button=color_reset_button,
             histogram_checkbox=histogram_checkbox,
             ui_elements={
                 'comp_layout': row2,
@@ -802,6 +1078,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         )
         remove_button.clicked.connect(
             lambda _, c=comp: self._remove_component(c.idx)
+        )
+        color_button.clicked.connect(
+            lambda _, c=comp: self._pick_component_color(c.idx)
+        )
+        color_reset_button.clicked.connect(
+            lambda _, c=comp: self._on_component_color_changed(c.idx, None)
         )
         # Only the card's own labels follow every keystroke; renaming layers,
         # metadata and the histogram is deferred to Enter / focus-out so a
@@ -1075,9 +1357,24 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         if self.parent_widget is not None:
             self._update_lifetime_inputs_visibility()
 
+        self._sync_filter_ui()
         self.request_autoupdate()
 
     def _remove_component(self, idx=None):
+        """Remove a component, then drop the criterion it was filtered by.
+
+        The removal itself fires callbacks that re-read the layer's settings,
+        which still list the component until the very last step, so the
+        filter stack is only consistent once it has finished.
+        """
+        self._removing_component = True
+        try:
+            self._remove_component_impl(idx)
+        finally:
+            self._removing_component = False
+        self._sync_filter_ui()
+
+    def _remove_component_impl(self, idx=None):
         """Remove a component (by default, the last one)."""
         if len(self.components) <= 2:
             self._update_button_states()
@@ -1093,6 +1390,14 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         comp = self.components[idx]
         was_selected = self._selected_component is comp
+        # The components below the removed one shift up by one, so a colour
+        # the user picked has to shift with them or it would end up on
+        # somebody else's card.
+        self._component_label_colors = {
+            (index - 1 if index > idx else index): color
+            for index, color in self._component_label_colors.items()
+            if index != idx
+        }
 
         if comp is not None:
             if comp.dot is not None:
@@ -2177,6 +2482,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self.calculate_button.setText("Run Multi-Component Analysis")
 
         self.draw_line_between_components()
+        # A linear projection only has the first two components' fractions,
+        # so switching method can leave a criterion without a component.
+        self._sync_filter_ui()
         self.request_autoupdate()
 
     def _on_harmonic_changed(self, new_harmonic):
@@ -2263,12 +2571,19 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         harmonic_key = str(harmonic)
 
         components_with_data = set()
+        # A chosen labels colour belongs to the component, not to a harmonic,
+        # so it is restored whether or not this harmonic has coordinates.
+        restored_colors = {}
 
         for idx_str, comp_data in components_data.items():
             idx = int(idx_str)
 
             if idx >= len(self.components) or self.components[idx] is None:
                 continue
+
+            stored_color = _as_hex(comp_data.get('label_color'))
+            if stored_color:
+                restored_colors[idx] = stored_color
 
             comp = self.components[idx]
             gs_harmonics = comp_data.get('gs_harmonics', {})
@@ -2310,6 +2625,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 comp.lifetime_edit.clear()
 
             self._create_component_at_coordinates(idx, g, s)
+
+        self._component_label_colors = restored_colors
 
         for comp in self.components:
             if comp is not None and comp.idx not in components_with_data:
@@ -2601,7 +2918,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         else:
             for comp in self.components:
                 if comp.dot is not None:
-                    comp.dot.set_color(self.default_component_color)
+                    comp.dot.set_color(
+                        self._dot_color(comp.idx, self.default_component_color)
+                    )
 
         components_tab_is_active = (
             self.parent_widget is not None
@@ -2842,6 +3161,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         for comp in self.components:
             if comp is not None:
                 self._update_component_input_styling(comp.idx)
+        self._refresh_component_color_buttons()
 
     def _compute_phasor_from_lifetime(self, lifetime_text, harmonic: int = 1):
         """Compute (G,S) from lifetime string; return tuple or (None,None)."""
@@ -3113,6 +3433,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         else:
             self._create_component_at_coordinates(idx, x, y)
 
+        # Placing a component for the first time is what gives it a fraction
+        # to be filtered on, so the card list follows the plot.
+        self._sync_filter_ui()
         self.request_autoupdate()
 
     def _on_component_name_edited(self, idx: int):
@@ -3167,6 +3490,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 # After the metadata carries the new name, so the selector is
                 # repopulated from the names the rest of the tab now reports.
                 self._refresh_histogram_after_rename(idx, old_name, name)
+                self._persist_component_filter_names()
+                self._sync_filter_ui()
+                self._rename_label_layers_for_component(idx)
 
         if comp.dot is None:
             return
@@ -3348,6 +3674,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         except Exception:  # noqa: BLE001
             color = self.component_colors[idx % len(self.component_colors)]
+        color = self._dot_color(idx, color)
 
         ax = self.parent_widget.canvas_widget.figure.gca()
         comp.dot = ax.plot(
@@ -3858,7 +4185,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     and self.components[comp_idx].dot is not None
                     and i < len(colors)
                 ):
-                    self.components[comp_idx].dot.set_color(colors[i])
+                    self.components[comp_idx].dot.set_color(
+                        self._dot_color(comp_idx, colors[i])
+                    )
         else:
             for comp in self.components:
                 if (
@@ -3866,7 +4195,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     and comp.dot is not None
                     and comp.idx < len(colors)
                 ):
-                    comp.dot.set_color(colors[comp.idx])
+                    comp.dot.set_color(
+                        self._dot_color(comp.idx, colors[comp.idx])
+                    )
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -4807,6 +5138,11 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self._teardown_on_layer_change()
         self._restore_on_layer_change()
         self._refresh_run_button_if_ready()
+        # A different layer means different baselines and, possibly, a
+        # different stored stack.
+        self._invalidate_pixel_counts()
+        self._sync_filter_ui()
+        self._update_label_layers()
 
     def _teardown_on_layer_change(self):
         """Immediate cleanup: remove artists and disconnect signals."""
@@ -4984,6 +5320,941 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             }
         )
 
+    # ------------------------------------------------------- fraction filters
+
+    def _current_harmonic(self):
+        """Return the harmonic a new criterion should be measured on."""
+        return getattr(self.parent_widget, 'harmonic', 1) or 1
+
+    def _filter_layers(self):
+        """Return the layers the filter stack is written to."""
+        if self.parent_widget is None:
+            return []
+        try:
+            return list(self.parent_widget.get_selected_layers())
+        except (AttributeError, RuntimeError):
+            return []
+
+    def _primary_filter_layer(self):
+        """Return the layer whose criteria the cards show, or ``None``."""
+        layers = self._filter_layers()
+        return layers[0] if layers else None
+
+    def _layer_filter_params(self, layer):
+        """Return *layer*'s own intensity filter/threshold parameters."""
+        if self.parent_widget is None:
+            return {}
+        return self.parent_widget._filter_params_from_settings(layer)
+
+    def _baseline_for(self, layer):
+        """Return *layer*'s phasor arrays before any metric filter.
+
+        The intensity threshold, the median/wavelet filter and the mask are
+        applied; the criteria are not. Every criterion is measured against
+        these arrays, which is what keeps the stack a set of independent
+        conditions rather than a chain where each one only sees the leftovers
+        of the last.
+
+        ``(None, None, None)`` for a layer whose phasor data cannot be
+        re-derived: this is reached from plain UI refreshes, so a layer that
+        is not analysable has to read as "nothing to measure" rather than
+        raise out of the redraw that asked.
+        """
+        params = self._layer_filter_params(layer)
+        # Re-deriving the baseline re-runs the median filter over the whole
+        # image, and a single edit refreshes the cards, the bounds, the
+        # statistics and the labels layers in turn. They all measure the
+        # same arrays, so the work is done once and handed to each of them.
+        originals = (
+            layer.metadata.get('original_mean'),
+            layer.metadata.get('G_original'),
+            layer.metadata.get('S_original'),
+        )
+        token = _params_token(params)
+        cached = self._baseline_cache.get(layer.name)
+        if cached is not None:
+            cached_token, cached_originals, arrays = cached
+            # Identity, not equality: the arrays are replaced wholesale when
+            # the data behind them is rewritten (a calibration, a reload),
+            # and comparing them element by element would cost more than
+            # re-deriving the baseline.
+            if cached_token == token and all(
+                current is stored
+                for current, stored in zip(
+                    originals, cached_originals, strict=False
+                )
+            ):
+                return arrays
+        try:
+            arrays = baseline_arrays(layer, params)
+        except Exception:  # noqa: BLE001 - see docstring
+            return None, None, None
+        self._baseline_cache[layer.name] = (token, originals, arrays)
+        self._schedule_derived_cache_expiry()
+        return arrays
+
+    def _schedule_derived_cache_expiry(self):
+        """Drop the derived arrays once the current interaction is over.
+
+        The caches exist to stop one edit re-deriving the same arrays a
+        dozen times, not to remember them. Anything that rewrites the phasor
+        data does so between interactions, so keeping them only until
+        control goes back to the event loop is enough to collapse the
+        redundant work while leaving nothing stale behind.
+        """
+        if self._derived_cache_expiry_scheduled:
+            return
+        self._derived_cache_expiry_scheduled = True
+        QTimer.singleShot(0, self._expire_derived_arrays)
+
+    def _expire_derived_arrays(self):
+        """Forget the baselines, contexts and fraction maps measured so far."""
+        # Applying a stack adds and removes layers, which pumps the event
+        # loop, so this can land in the middle of the very interaction the
+        # caches are there for. Wait for it to finish instead.
+        if self._applying_mapping_filter:
+            QTimer.singleShot(0, self._expire_derived_arrays)
+            return
+        self._derived_cache_expiry_scheduled = False
+        self._baseline_cache.clear()
+        self._fraction_map_cache.clear()
+        self._metric_context_cache.clear()
+
+    def _context_for(self, layer, arrays=None):
+        """Return the measuring context shared by everything on *layer*.
+
+        A :class:`MetricContext` memoises the component fit behind a
+        fraction, so every criterion measured through the same one costs a
+        single fit. Keeping it alive between refreshes is what stops a card
+        edit from re-fitting the image once per criterion, once for the
+        bounds and once more for the labels layers.
+        """
+        mean, real, imag = (
+            arrays if arrays is not None else self._baseline_for(layer)
+        )
+        if mean is None:
+            return None
+        cached = self._metric_context_cache.get(layer.name)
+        if cached is not None and cached[0] is mean:
+            return cached[1]
+        context = MetricContext(
+            mean, real, imag, layer.metadata.get('harmonics')
+        )
+        self._metric_context_cache[layer.name] = (mean, context)
+        return context
+
+    def _measurable_mask(self, layer, arrays=None):
+        """Return the pixels that survive everything *but* the fractions.
+
+        The intensity threshold, the median filter and the mask, plus the
+        criteria the Phasor Mapping and FRET tabs own. This is what a
+        fraction filter is a share of, and the set of pixels a labels layer
+        may paint: a pixel those steps already removed has no phasor
+        coordinates left to belong to a component.
+        """
+        mean, real, imag = (
+            arrays if arrays is not None else self._baseline_for(layer)
+        )
+        if mean is None:
+            return None
+        measurable = np.isfinite(mean)
+        others = [
+            f for f in get_filters(layer) if f['metric'] != COMPONENT_FRACTION
+        ]
+        other_mask = combined_mask(
+            others,
+            mean,
+            real,
+            imag,
+            layer.metadata.get('harmonics'),
+            context=self._context_for(layer, (mean, real, imag)),
+        )
+        if other_mask is not None:
+            measurable = measurable & ~other_mask
+        return measurable
+
+    def _active_component_indices(self):
+        """Return the indices of the components placed on the plot."""
+        return sorted(
+            comp.idx
+            for comp in self.components
+            if comp is not None and comp.dot is not None
+        )
+
+    def _component_filter_colors(self):
+        """Return ``{component index: colour}`` for cards and labels layers.
+
+        The colours the components are drawn in on the phasor plot, so a
+        card, a label and a dot read as the same component. Greying the dots
+        (the "Show colormap line" switch) must not collapse every label to
+        one colour though, so the per-component palette stands in there, and
+        a colour the user picked wins over both.
+        """
+        active = self._active_component_indices()
+        if not active:
+            return {}
+        if self.show_colormap_line:
+            colors = self._get_component_colors_for_count(len(active))
+            if len(active) == 2:
+                return self._with_color_overrides(
+                    {
+                        index: colors[position]
+                        for position, index in enumerate(active)
+                        if position < len(colors)
+                    }
+                )
+            return self._with_color_overrides(
+                {
+                    index: colors[index]
+                    for index in active
+                    if index < len(colors)
+                }
+            )
+        palette = self._get_default_colormap_max_colors(max(active) + 1)
+        return self._with_color_overrides(
+            {index: palette[index] for index in active if index < len(palette)}
+        )
+
+    def _dot_color(self, idx, fallback):
+        """Return the colour component *idx*'s dot is drawn in.
+
+        The colour the user picked for it, if they picked one; otherwise
+        whatever the colormap or the default palette would give it. The dot,
+        the filter card and the labels layer are the same component, so they
+        are the same colour.
+        """
+        return self._component_label_colors.get(idx, fallback)
+
+    def _with_color_overrides(self, colors):
+        """Return *colors* with the colours the user picked substituted in.
+
+        A component's filter card and its labels layer are drawn in the
+        colour it has on the phasor plot, so the three read as one thing --
+        until the user picks a colour for it, which then stays put however
+        the plot's colormap changes.
+        """
+        for index, override in self._component_label_colors.items():
+            if index in colors:
+                colors[index] = override
+        return colors
+
+    def _filterable_components(self):
+        """Return ``[(index, name, colour)]`` for components with a fraction.
+
+        A linear projection only ever produces the first two components'
+        fractions, so only those two can be filtered on; a fit produces one
+        per component.
+        """
+        active = self._active_component_indices()
+        if len(active) < 2:
+            return []
+        if self.analysis_type == "Linear Projection":
+            active = active[:2]
+        colors = self._component_filter_colors()
+        return [
+            (
+                index,
+                self._component_display_name(index),
+                _as_hex(colors.get(index)),
+            )
+            for index in active
+        ]
+
+    def _component_filter_params(self, index):
+        """Return the component definition to freeze into a criterion.
+
+        A criterion has to stay reproducible from what it stores, so it
+        carries the component positions and the harmonics they were taken
+        on rather than reading them back off the tab. Without them (the
+        components are not placed yet, or a fit is missing a harmonic) only
+        the identifying keys are returned and the criterion stays
+        unevaluable until the analysis can run.
+        """
+        params = {
+            'component_index': int(index),
+            'component_name': self._component_display_name(index),
+            'analysis_type': self.analysis_type,
+        }
+        harmonic = self._current_harmonic()
+        active = self._active_component_indices()
+
+        if self.analysis_type == "Linear Projection":
+            if index not in active[:2]:
+                return params
+            coords_g, coords_s, _names = (
+                self._get_component_coords_for_harmonic(harmonic)
+            )
+            if len(coords_g) < 2:
+                return params
+            params['component_real'] = [float(v) for v in coords_g[:2]]
+            params['component_imag'] = [float(v) for v in coords_s[:2]]
+            params['harmonics'] = [int(harmonic)]
+            return params
+
+        count = len(active)
+        if count < 2 or index not in active:
+            return params
+        required = self._get_required_harmonics(count)
+        if required <= 1:
+            coords_g, coords_s, _names = (
+                self._get_component_coords_for_harmonic(harmonic)
+            )
+            if len(coords_g) != count:
+                return params
+            params['component_real'] = [float(v) for v in coords_g]
+            params['component_imag'] = [float(v) for v in coords_s]
+            params['harmonics'] = [int(harmonic)]
+            return params
+
+        harmonics = sorted(self._get_harmonics_with_components())[:required]
+        if len(harmonics) < required:
+            return params
+        component_real = []
+        component_imag = []
+        for value in harmonics:
+            coords_g, coords_s, _names = (
+                self._get_component_coords_for_harmonic(value)
+            )
+            if len(coords_g) != count:
+                return params
+            component_real.append([float(v) for v in coords_g])
+            component_imag.append([float(v) for v in coords_s])
+        params['component_real'] = component_real
+        params['component_imag'] = component_imag
+        params['harmonics'] = [int(value) for value in harmonics]
+        return params
+
+    @staticmethod
+    def _own_filters(filters):
+        """Return the fraction criteria of *filters*; this tab edits no others."""
+        return [f for f in filters if f['metric'] == COMPONENT_FRACTION]
+
+    def _has_analysed_fractions(self):
+        """Return whether the latest run produced fractions to filter on.
+
+        A filter tests the fraction the analysis computed, so until a run
+        has computed one there is nothing to test. Measured from the
+        fraction layers that run created for the layer whose criteria the
+        cards show.
+        """
+        layer = self._primary_filter_layer()
+        if layer is None:
+            return False
+        for _index, name, _color in self._filterable_components():
+            layers_map, _invert = self._resolve_histogram_component(name)
+            if layer.name in layers_map:
+                return True
+        return False
+
+    def _filter_enable_blocked_reason(self):
+        """Return why a fraction filter cannot be switched on, else ``None``."""
+        if not self._filter_layers():
+            return "Select at least one image layer with phasor features."
+        components = self._filterable_components()
+        if not components:
+            return (
+                "Place at least two components before filtering on their "
+                "fractions."
+            )
+        index = components[0][0]
+        if not has_component_positions(self._component_filter_params(index)):
+            return (
+                "Define the component positions on every harmonic the fit "
+                "needs before filtering on a fraction."
+            )
+        if not self._has_analysed_fractions():
+            return (
+                "Run the component analysis before filtering on a fraction: "
+                "a filter tests the fractions it computed."
+            )
+        return None
+
+    def _refresh_filter_enable_state(self):
+        """Explain on the cards themselves when a filter cannot be used yet."""
+        self.filter_list.set_enable_blocked(
+            self._filter_enable_blocked_reason()
+        )
+
+    def _sync_filter_ui(self):
+        """Show the components and the criteria stored on the primary layer.
+
+        A criterion whose component is gone has no card left to account for
+        the pixels it hides, so it is dropped and the pixels come back. That
+        rewrites the layer, which syncs again, hence the guard.
+        """
+        if self._syncing_filter_ui:
+            return
+        self._syncing_filter_ui = True
+        try:
+            orphaned = self._refresh_filter_cards()
+        finally:
+            self._syncing_filter_ui = False
+        if orphaned:
+            self._apply_filter_stack()
+
+    def _refresh_filter_cards(self):
+        """Redraw the cards; return whether a criterion lost its component."""
+        components = self._filterable_components()
+        self.filter_list.set_components(components)
+        self._refresh_component_color_buttons()
+        layer = self._primary_filter_layer()
+        if layer is None:
+            self.filter_list.set_filters([])
+            self.filter_list.set_filter_stats({}, "")
+            self._refresh_filter_enable_state()
+            return False
+        stored = self._own_filters(get_filters(layer))
+        self.filter_list.set_filters(stored)
+        self._refresh_filter_bounds()
+        self._refresh_filter_stats()
+        self._refresh_filter_enable_state()
+        # Only worth acting on while there are components at all: a layer
+        # whose components have not been restored yet, or one caught halfway
+        # through a removal, must keep the stack it was saved with.
+        return (
+            bool(components)
+            and not self._removing_component
+            and len(self.filter_list.filters()) != len(stored)
+        )
+
+    def _component_fraction_bounds(self, index, maps=None):
+        """Return the ``(low, high)`` data range of a component's fraction.
+
+        A linear projection's fractions sit in ``[0, 1]``, but a component
+        fit solves an unconstrained system and routinely lands outside it, so
+        the range a card offers is measured rather than assumed. Measured on
+        the *unfiltered* baseline, so a filter can never shrink the range the
+        next edit is offered.
+        """
+        layer = self._primary_filter_layer()
+        if layer is None:
+            return None
+        if maps is None:
+            maps = self._component_fraction_maps(layer)
+        values = maps.get(index)
+        if values is None:
+            return None
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size == 0:
+            return None
+        return float(finite.min()), float(finite.max())
+
+    def _refresh_filter_bounds(self, maps=None):
+        """Widen each card's slider to the full range of its own fraction."""
+        layer = self._primary_filter_layer()
+        components = self.filter_list.components()
+        if layer is None or not components:
+            return
+        if maps is None:
+            maps = self._component_fraction_maps(layer)
+        for index, _name, _color in components:
+            bounds = self._component_fraction_bounds(index, maps=maps)
+            if bounds is not None:
+                self.filter_list.set_component_bounds(index, *bounds)
+
+    def _refresh_filter_stats(self):
+        """Report what each criterion, and the whole list, keeps."""
+        filters = self.filter_list.filters()
+        layer = self._primary_filter_layer()
+        if layer is None or not filters:
+            self.filter_list.set_filter_stats({}, "")
+            return
+        mean, real, imag = self._baseline_for(layer)
+        harmonics = layer.metadata.get('harmonics')
+        # One context for the whole refresh, and the same one the bounds and
+        # the labels layers measure through: the fit behind the fractions
+        # runs once, not once per criterion and again for the total.
+        context = self._context_for(layer, (mean, real, imag))
+        stats = {}
+        for entry in filters:
+            single = dict(entry, enabled=True)
+            mask = combined_mask(
+                [single], mean, real, imag, harmonics, context=context
+            )
+            prefix = "" if entry['enabled'] else "off · "
+            stats[entry['id']] = (
+                f"{prefix}keeps {kept_fraction(mask, mean):.1%} of the pixels"
+            )
+        total_mask = combined_mask(
+            filters, mean, real, imag, harmonics, context=context
+        )
+        active = sum(1 for f in filters if f['enabled'])
+        kept = kept_fraction(total_mask, mean)
+        # Kept short so it fits the dock on one line; the sentence it stands
+        # for is the tooltip.
+        summary = f"{active} of {len(filters)} on · {kept:.1%} kept"
+        detail = (
+            f"{active} of {len(filters)} fraction filters are active, and "
+            f"together they keep {kept:.1%} of the measured pixels of "
+            f"{layer.name}."
+        )
+        self.filter_list.set_filter_stats(stats, summary, detail=detail)
+
+    def _on_filters_changed(self, filters):
+        """Persist the edited criteria and rebuild everything downstream."""
+        self._apply_filter_stack(filters)
+
+    @serialize_filter_applies
+    def _apply_filter_stack(self, filters=None, layers=None):
+        """Write *filters* to *layers* and re-derive their phasor data.
+
+        Everything on screen -- the phasor plot, the fraction maps, the
+        histogram, the statistics table and the labels layers -- is derived
+        from the layer's G/S arrays, so rebuilding those from the stack is
+        the only step needed to keep all of them in sync.
+        """
+        if self.parent_widget is None:
+            return
+        layers = self._filter_layers() if layers is None else list(layers)
+        if not layers:
+            return
+        if filters is None:
+            filters = self.filter_list.filters()
+        own = self._own_filters(normalize_filters(filters))
+        # Rebuilding re-derives the baseline, which the threshold may have
+        # moved since it was last counted.
+        self._invalidate_pixel_counts()
+
+        problems = []
+        self._applying_mapping_filter = True
+        try:
+            for layer in layers:
+                # The other tabs' criteria are not shown here, but they are
+                # part of the same stack and must survive untouched.
+                others = [
+                    f
+                    for f in get_filters(layer)
+                    if f['metric'] != COMPONENT_FRACTION
+                ]
+                stored = set_filters(layer, others + own)
+                rebuild_layer_from_filters(
+                    layer,
+                    stored,
+                    filter_params=self._layer_filter_params(layer),
+                    on_error=problems.append,
+                )
+            self.parent_widget.refresh_phasor_data()
+            self._recalculate_after_filter_change()
+        finally:
+            self._applying_mapping_filter = False
+
+        # Everything the replaced fraction layers asked for while the stack
+        # was being applied, answered once now that it is.
+        if self._deferred_selection_refresh:
+            self.on_layer_selection_changed()
+        self._sync_filter_ui()
+        self._update_label_layers()
+        self.parent_widget.refresh_filter_tabs(self)
+        for message in dict.fromkeys(problems):
+            show_warning(message)
+
+    def _recalculate_after_filter_change(self):
+        """Re-derive the fraction maps so they match the new stack."""
+        if self._analysis_attempted and self._components_validation() is None:
+            self._run_analysis()
+        else:
+            self.update_component_histogram()
+
+    def _refresh_component_filter_params(self):
+        """Point every criterion at the components that were just analysed.
+
+        The fraction a filter tests and the fraction the user sees have to be
+        the same number, so moving or renaming a component moves its filter
+        with it. Returns whether anything changed.
+        """
+        if self._applying_mapping_filter:
+            return False
+        if not self.filter_list.refresh_params():
+            return False
+        self._apply_filter_stack()
+        return True
+
+    def _persist_component_filter_names(self):
+        """Carry a component rename into the criteria stored on every layer.
+
+        Only the name changes, so the phasor arrays do not have to be
+        rebuilt -- but the Phasor Mapping tab lists these criteria too and
+        must not go on naming them after a component that no longer exists.
+        """
+        names = {
+            index: name
+            for index, name, _color in self._filterable_components()
+        }
+        if not names:
+            return
+        for layer in self._filter_layers():
+            updated = []
+            changed = False
+            for entry in get_filters(layer):
+                index = entry['params'].get('component_index')
+                if (
+                    entry['metric'] == COMPONENT_FRACTION
+                    and index in names
+                    and entry['params'].get('component_name') != names[index]
+                ):
+                    entry = dict(
+                        entry,
+                        params=dict(
+                            entry['params'], component_name=names[index]
+                        ),
+                    )
+                    changed = True
+                updated.append(entry)
+            if changed:
+                set_filters(layer, updated)
+
+    def _rename_label_layers_for_image(self, old_name, new_name):
+        """Follow a renamed source image with its labels layers."""
+        moved = {}
+        for key, layer in list(self._component_label_layers.items()):
+            image_name, index = key
+            if image_name != old_name:
+                continue
+            del self._component_label_layers[key]
+            moved[(new_name, index)] = layer
+            if layer not in self.viewer.layers:
+                continue
+            tag = layer.metadata.get(COMPONENT_LABELS_TAG)
+            if isinstance(tag, dict):
+                tag['source_layer'] = new_name
+            name = self._label_layer_name(new_name, index)
+            if name != layer.name and name not in self.viewer.layers:
+                layer.name = name
+        self._component_label_layers.update(moved)
+
+    def _rename_label_layers_for_component(self, idx):
+        """Rename the labels layers of the component that was just renamed."""
+        for (image_name, index), layer in self._component_label_layers.items():
+            if index != idx or layer not in self.viewer.layers:
+                continue
+            name = self._label_layer_name(image_name, index)
+            if name != layer.name and name not in self.viewer.layers:
+                layer.name = name
+
+    # ----------------------------------------------------- pixel statistics
+
+    def _reference_pixel_count(self, layer):
+        """Return the pixels a fraction filter on *layer* is a share of.
+
+        Everything the intensity threshold, the median filter, the mask and
+        the other tabs' criteria left behind -- not the pixels of the frame.
+        A pixel those steps already removed was never a candidate, so
+        counting it in the denominator would make every filter look worse
+        than it is.
+
+        Measured once per analysis run and held until the next one: the
+        fractions a row counts were computed from the arrays as they stood
+        then, so what they are a share of has to be measured on those same
+        arrays. A denominator that moved on ahead of them would read as more
+        than 100% of a layer.
+        """
+        cached = self._reference_pixel_counts.get(layer.name)
+        if cached is not None:
+            return cached
+        measurable = self._measurable_mask(layer)
+        if measurable is None:
+            return None
+        count = int(measurable.sum())
+        self._reference_pixel_counts[layer.name] = count
+        return count
+
+    def _invalidate_pixel_counts(self):
+        """Forget everything cached from a layer's baseline arrays.
+
+        The pixel counts, the baselines themselves and the fraction maps
+        measured on them all go together: they are the same derivation, and
+        the points that invalidate one have invalidated all of them.
+        """
+        self._reference_pixel_counts.clear()
+        self._baseline_cache.clear()
+        self._fraction_map_cache.clear()
+        self._metric_context_cache.clear()
+
+    def _series_range_labels(self):
+        """Return ``{component name: "in 0.2 - 0.8"}`` for the active filters.
+
+        The statistics table heads its pixel columns with this, so a count
+        says which pixels it counted instead of leaving the reader to guess
+        at the filter behind it. A component with no filter of its own is
+        left out and keeps a plain "Pixels" heading.
+        """
+        layer = self._primary_filter_layer()
+        if layer is None:
+            return {}
+        labels = {}
+        for entry in get_filters(layer):
+            if entry['metric'] != COMPONENT_FRACTION or not entry['enabled']:
+                continue
+            name = filter_display_name(entry)
+            scope = "outside" if entry['mode'] == EXCLUDE else "in"
+            labels[name] = f"{scope} {entry['min']:g} – {entry['max']:g}"
+        return labels
+
+    def _reference_pixel_totals(self, sources):
+        """Return ``{image layer: pixels the fractions are a share of}``."""
+        totals = {}
+        for image_name in set(sources.values()):
+            if image_name not in self.viewer.layers:
+                continue
+            count = self._reference_pixel_count(self.viewer.layers[image_name])
+            if count is not None:
+                totals[image_name] = count
+        return totals
+
+    # --------------------------------------------------------- labels layers
+
+    def _on_create_labels_toggled(self, checked):
+        """Create or remove the labels layers when the toggle is switched."""
+        self.labels_mode_combobox.setEnabled(checked)
+        self._update_label_layers()
+
+    def _on_labels_mode_changed(self, _mode):
+        """Rebuild the labels layers in the newly chosen layout."""
+        if self.create_labels_checkbox.isChecked():
+            self._update_label_layers()
+
+    def _pick_component_color(self, index):
+        """Let the user choose the colour of one component.
+
+        Split out from the dialog call so a test can choose a colour without
+        a modal dialog standing in the way.
+        """
+        current = _as_hex(self._component_filter_colors().get(index))
+        picked = QColorDialog.getColor(
+            QColor(current) if current else QColor(),
+            self,
+            "Component colour",
+        )
+        if picked.isValid():
+            self._on_component_color_changed(index, picked.name())
+
+    def _refresh_component_color_buttons(self):
+        """Paint each card's swatch, and offer a reset only where one applies.
+
+        A component with no position yet is drawn in no colour, so it has no
+        swatch to show either.
+        """
+        colors = self._component_filter_colors()
+        for comp in self.components:
+            if comp is None or comp.color_button is None:
+                continue
+            color = _as_hex(colors.get(comp.idx))
+            comp.color_button.setVisible(bool(color))
+            comp.color_reset_button.setVisible(
+                bool(color) and comp.idx in self._component_label_colors
+            )
+            if color:
+                comp.color_button.setStyleSheet(
+                    "border: 1px solid rgba(255, 255, 255, 0.45);"
+                    " border-radius: 3px;"
+                    f" background-color: {color};"
+                )
+
+    def _on_component_color_changed(self, index, color):
+        """Adopt the colour the user picked for one component's labels.
+
+        *color* is ``None`` when they asked for the component's plot colour
+        back. The choice is remembered on the layer, so it survives a reload
+        rather than being re-picked every session, and the card and the
+        labels layer are repainted together so they never disagree.
+        """
+        index = int(index)
+        hex_color = _as_hex(color) if color else None
+        if hex_color is None:
+            if self._component_label_colors.pop(index, None) is None:
+                return
+        else:
+            if self._component_label_colors.get(index) == hex_color:
+                return
+            self._component_label_colors[index] = hex_color
+        self._update_component_label_color(index, hex_color)
+        self._update_component_colors()
+        self._refresh_component_color_buttons()
+        self._sync_filter_ui()
+        self._update_label_layers()
+
+    def _update_component_label_color(self, idx: int, color):
+        """Persist one component's chosen labels colour on the current layer."""
+        comp_data = self._ensure_component_metadata(idx)
+        if comp_data is None:
+            return
+        if color:
+            comp_data['label_color'] = color
+        else:
+            comp_data.pop('label_color', None)
+
+    def _component_fraction_maps(self, layer, arrays=None):
+        """Return ``{component index: fraction map}`` on *layer*'s baseline.
+
+        Measured on the arrays every criterion is measured against, so a
+        labels layer shows the pixels a card says it keeps rather than the
+        pixels the other cards happened to leave behind.
+        """
+        mean, real, imag = (
+            arrays if arrays is not None else self._baseline_for(layer)
+        )
+        if mean is None:
+            return {}
+        components = self._filterable_components()
+        # A component fit is the most expensive thing a card edit sets off,
+        # and the bounds, the statistics and the labels layers all want the
+        # same fractions. They are keyed by the arrays they were measured on
+        # and by the components they were measured from, so they are reused
+        # only while both are still the ones on screen.
+        token = (
+            self.analysis_type,
+            _params_token(
+                {
+                    index: self._component_filter_params(index)
+                    for index, _name, _color in components
+                }
+            ),
+        )
+        cached = self._fraction_map_cache.get(layer.name)
+        if cached is not None:
+            cached_mean, cached_token, cached_maps = cached
+            if cached_mean is mean and cached_token == token:
+                return dict(cached_maps)
+        harmonics = layer.metadata.get('harmonics')
+        context = self._context_for(layer, (mean, real, imag))
+        maps = {}
+        for index, _name, _color in components:
+            params = self._component_filter_params(index)
+            if not has_component_positions(params):
+                continue
+            harmonic = int(
+                (params.get('harmonics') or [self._current_harmonic()])[0]
+            )
+            plane_real, plane_imag = select_harmonic(
+                real, imag, harmonics, harmonic, mean.ndim
+            )
+            values = compute_metric(
+                COMPONENT_FRACTION,
+                plane_real,
+                plane_imag,
+                harmonic=harmonic,
+                params=params,
+                context=context,
+            )
+            if values is not None and np.shape(values) == mean.shape:
+                maps[index] = np.asarray(values, dtype=float)
+        self._fraction_map_cache[layer.name] = (mean, token, maps)
+        self._schedule_derived_cache_expiry()
+        return dict(maps)
+
+    def _component_label_maps(self, layer, mode):
+        """Return ``{key: (label map, colour dict)}`` for one image layer.
+
+        The key is the component index, or ``None`` for the single combined
+        layer. Pixels hidden by the *other* tabs' criteria are excluded as
+        well: a pixel with no phasor coordinates left cannot be labelled as
+        belonging to anything.
+        """
+        arrays = self._baseline_for(layer)
+        mean = arrays[0]
+        if mean is None:
+            return {}
+        fractions = self._component_fraction_maps(layer, arrays)
+        if not fractions:
+            return {}
+
+        measurable = self._measurable_mask(layer, arrays)
+        if measurable is None:
+            return {}
+
+        stored = get_filters(layer)
+        own = {
+            f['params'].get('component_index'): f
+            for f in stored
+            if f['metric'] == COMPONENT_FRACTION and f['enabled']
+        }
+        keep = {}
+        for index, values in fractions.items():
+            entry = own.get(index)
+            if entry is None:
+                keep[index] = np.ones(mean.shape, dtype=bool)
+            else:
+                keep[index] = ~range_mask(
+                    values, entry['min'], entry['max'], entry['mode']
+                )
+
+        colors = self._component_filter_colors()
+        if mode == LABELS_DOMINANT:
+            data = dominant_component_label_map(fractions, keep, measurable)
+            return {None: (data, _label_color_dict(sorted(fractions), colors))}
+        return {
+            index: (
+                component_label_map(index, keep[index], measurable),
+                _label_color_dict([index], colors),
+            )
+            for index in sorted(fractions)
+        }
+
+    def _label_layer_name(self, image_name, index):
+        """Return the name of one labels layer."""
+        if index is None:
+            return f"Dominant component: {image_name}"
+        return f"{self._component_display_name(index)} filtered: {image_name}"
+
+    def _update_label_layers(self):
+        """Create, refresh or drop the labels layers for the current filters."""
+        if not self.create_labels_checkbox.isChecked():
+            self._remove_label_layers()
+            return
+        mode = self.labels_mode_combobox.currentText()
+        wanted = {}
+        for layer in self._filter_layers():
+            for index, (data, colors) in self._component_label_maps(
+                layer, mode
+            ).items():
+                wanted[(layer.name, index)] = (layer, data, colors)
+
+        for key in list(self._component_label_layers):
+            if key not in wanted:
+                self._remove_label_layer(key)
+        for key, (source, data, colors) in wanted.items():
+            self._apply_label_layer(key, source, data, colors)
+
+    def _apply_label_layer(self, key, source, data, colors):
+        """Add or update the labels layer for one component of one image."""
+        colormap = DirectLabelColormap(
+            color_dict=colors, name="component_filter_colors"
+        )
+        existing = self._component_label_layers.get(key)
+        if existing is not None and existing in self.viewer.layers:
+            existing.data = data
+            existing.colormap = colormap
+            return
+        name = self._label_layer_name(*key)
+        with contextlib.suppress(KeyError, ValueError):
+            self.viewer.layers.remove(self.viewer.layers[name])
+        labels_layer = Labels(
+            data,
+            name=name,
+            scale=source.scale,
+            colormap=colormap,
+            metadata={
+                COMPONENT_LABELS_TAG: {
+                    'source_layer': source.name,
+                    'component_index': key[1],
+                }
+            },
+        )
+        self._component_label_layers[key] = self.viewer.add_layer(labels_layer)
+
+    def _remove_label_layer(self, key):
+        """Remove one labels layer and forget it."""
+        layer = self._component_label_layers.pop(key, None)
+        if layer is not None:
+            with contextlib.suppress(KeyError, ValueError):
+                self.viewer.layers.remove(layer)
+
+    def _remove_label_layers(self):
+        """Remove every labels layer this tab created."""
+        for key in list(self._component_label_layers):
+            self._remove_label_layer(key)
+
     def _run_analysis(self):
         """Run the selected analysis and store component locations in metadata for all selected layers."""
         self._analysis_attempted = True
@@ -5031,6 +6302,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
                     comp_data = settings['components'][idx_str]
 
+                    chosen_color = self._component_label_colors.get(idx)
+                    if chosen_color:
+                        comp_data['label_color'] = chosen_color
+                    else:
+                        comp_data.pop('label_color', None)
+
                     if 'gs_harmonics' not in comp_data:
                         comp_data['gs_harmonics'] = {}
 
@@ -5067,12 +6344,22 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
                 settings['analysis_type'] = self.analysis_type
 
+        self._invalidate_pixel_counts()
         if self.analysis_type == "Linear Projection":
             self._run_linear_projection()
         else:
             self._run_component_fit()
 
         self.on_layer_selection_changed()
+
+        # Re-running the analysis is also where a criterion catches up with
+        # components that have moved since it was made. Skipped while the
+        # filter stack is being applied, since that is what re-ran the
+        # analysis in the first place.
+        if not self._applying_mapping_filter:
+            self._refresh_component_filter_params()
+            self._sync_filter_ui()
+            self._update_label_layers()
 
     def _run_linear_projection(self):
         """Run linear projection for 2-component analysis on all selected layers."""
@@ -5853,6 +7140,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # aware). The current selection is preserved by name.
         self._update_histogram_component_toggles()
 
+        self._rename_label_layers_for_image(old_name, new_name)
+        # The cached pixel count is keyed by layer name.
+        self._reference_pixel_counts.pop(old_name, None)
+
     def _component_display_name_from_tag(self, tag):
         """Return a component's display name from its fraction-layer tag.
 
@@ -6273,6 +7564,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # layer, so every component of an image lands in the same group and
         # the grouping is shared with the other tabs.
         self.histogram_widget.set_dataset_sources(sources)
+        # The denominator of the "% Pixels" column: how much of each analysed
+        # layer was measurable before the fraction filters ran.
+        self.histogram_widget.set_dataset_totals(
+            self._reference_pixel_totals(sources)
+        )
+        self.histogram_widget.set_series_ranges(self._series_range_labels())
         # Merged mode pools the layers of a component, never two components:
         # the average of two different fractions describes neither. Each
         # component's curve is drawn in its own layer colormap.
@@ -6467,10 +7764,21 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         Called by the parent plotter whenever phasor layers are checked or
         unchecked, so the histogram, statistics and fraction layer visibility
         always follow the current selection.
+
+        Applying a filter stack replaces the fraction layers, and every one
+        of them arriving or leaving is a selection change, so this would run
+        a dozen times over a single edit and redraw the histogram for each.
+        It is a refresh of what is on screen, so the calls collapse into the
+        one that runs when the edit is finished.
         """
+        if self._applying_mapping_filter:
+            self._deferred_selection_refresh = True
+            return
+        self._deferred_selection_refresh = False
         self._update_histogram_component_toggles()
         self._sync_fraction_layer_visibility()
         self.update_component_histogram()
+        self._sync_filter_ui()
 
     def _component_colormap(self, comp_name, layers_map, invert):
         """Return ``(colors, contrast_limits, gamma)`` for one component.
@@ -6782,6 +8090,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""
+        # The labels layers are the user's now: forget them rather than
+        # deleting results they may still be looking at.
+        self._component_label_layers.clear()
         # Disconnect parent widget signal if present
         if hasattr(self, 'parent_widget') and self.parent_widget:
             with contextlib.suppress(TypeError, ValueError, AttributeError):

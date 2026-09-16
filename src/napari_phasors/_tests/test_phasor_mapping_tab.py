@@ -32,7 +32,10 @@ from napari_phasors._mapping_filters import (
     new_filter,
     set_filters,
 )
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._tests.test_plotter import (
+    assert_run_row_is_pinned,
+    create_image_layer_with_phasors,
+)
 from napari_phasors._utils import HistogramWidget, apply_filter_and_threshold
 from napari_phasors.phasor_mapping_tab import (
     _DEFAULT_MESH_RESOLUTION,
@@ -3930,30 +3933,33 @@ def test_filter_cards_are_restored_when_the_layer_changes(
     assert len(widget.filter_list.filters()) == 1
 
 
-def test_fret_criteria_are_listed_read_only_in_the_mapping_tab(
+def test_other_tabs_criteria_are_not_listed_but_are_kept(
     make_viewer_model, qtbot
 ):
-    """A FRET filter is visible here, so its hidden pixels are accounted for."""
+    """A FRET filter belongs to the FRET tab, and survives a write here."""
     viewer = make_viewer_model()
     parent, widget, layer = _ready_mapping_widget(viewer)
-    set_filters(
-        layer,
-        [
-            new_filter(
-                "FRET efficiency",
-                0.2,
-                0.8,
-                params={'frequency': 80.0, 'donor_lifetime': 4.2},
-            )
-        ],
+    foreign = new_filter(
+        "FRET efficiency",
+        0.2,
+        0.8,
+        params={'frequency': 80.0, 'donor_lifetime': 4.2},
     )
+    set_filters(layer, [foreign])
     widget._sync_filter_ui()
 
-    (shown,) = widget.filter_list.filters()
-    assert shown['metric'] == "FRET efficiency"
-    card = widget.filter_list._cards[shown['id']]
-    assert not card.range_slider.isEnabled()
-    assert card.remove_button.isEnabled()
+    # It is edited where the quantity it measures is defined, so it is not
+    # offered a second switch here.
+    assert widget.filter_list.filters() == []
+    assert widget.filter_list._cards == {}
+
+    # The stack is still shared: writing this tab's own criteria leaves it be.
+    own = new_filter("Modulation", 0.1, 0.9)
+    widget._apply_filter_stack([own])
+    stored = get_filters(layer)
+    assert [f['metric'] for f in stored] == ["FRET efficiency", "Modulation"]
+    assert stored[0]['min'] == foreign['min']
+    assert widget.filter_list.filters()[0]['metric'] == "Modulation"
 
 
 def test_filter_helpers_survive_a_detached_widget(make_viewer_model, qtbot):
@@ -4205,3 +4211,52 @@ def test_phasor_mapping_combobox_pick_overrides_kept_colormap(
         'Phase'
     ]
     assert entry['colormap_name'] == "plasma"
+
+
+def test_the_calculate_button_is_pinned_under_the_settings(make_viewer_model):
+    """The primary action stays reachable however long the settings get."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+    assert_run_row_is_pinned(
+        widget,
+        widget.calculate_lifetime_button,
+        widget.autoupdate_container,
+    )
+
+
+def test_a_card_list_caught_mid_rebuild_does_not_raise(
+    make_viewer_model, qtbot
+):
+    """Regression for the KeyError raised by two refreshes rebuilding at once.
+
+    Applying a stack pumps the Qt event loop, so a refresh can land between
+    the cards being cleared and being recreated.
+    """
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.filter_list.set_current_metric("Modulation")
+    widget._sync_filter_ui()
+    widget.filter_list.add_filter(new_filter("Modulation", 0.0, 0.9))
+
+    rebuilt = []
+    filter_list = widget.filter_list
+    original_rebuild = filter_list._rebuild_cards
+
+    def rebuild_then_reenter():
+        """Re-enter the sync between clearing and recreating the cards."""
+        rebuilt.append(len(rebuilt))
+        if len(rebuilt) == 1:
+            filter_list._cards = {}
+            widget._sync_filter_ui()
+        return original_rebuild()
+
+    filter_list._rebuild_cards = rebuild_then_reenter
+    try:
+        # Must not raise, and must leave the edited criterion applied.
+        widget._apply_filter_stack([new_filter("Modulation", 0.0, 0.5)])
+    finally:
+        filter_list._rebuild_cards = original_rebuild
+
+    assert rebuilt
+    assert get_filters(layer)[0]['max'] == pytest.approx(0.5)

@@ -5,8 +5,10 @@ import pytest
 from napari.layers import Image
 
 from napari_phasors._mapping_filters import (
+    ALL_METRICS,
     APPARENT_MODULATION_LIFETIME,
     APPARENT_PHASE_LIFETIME,
+    COMPONENT_FRACTION,
     EXCLUDE,
     FRET_EFFICIENCY,
     KEEP,
@@ -14,7 +16,9 @@ from napari_phasors._mapping_filters import (
     MODULATION,
     NORMAL_LIFETIME,
     PHASE,
+    ComponentFilterList,
     MappingFilterList,
+    MetricContext,
     apply_filters_to_arrays,
     apply_layer_filters,
     apply_mask_to_arrays,
@@ -22,6 +26,7 @@ from napari_phasors._mapping_filters import (
     combined_mask,
     compute_metric,
     describe_filters,
+    filter_display_name,
     format_range,
     get_filters,
     has_filters,
@@ -34,6 +39,7 @@ from napari_phasors._mapping_filters import (
     rebuild_layer_from_filters,
     requires_frequency,
     select_harmonic,
+    serialize_filter_applies,
     set_filters,
 )
 
@@ -950,3 +956,763 @@ def test_a_switched_off_card_reads_as_switched_off(qtbot):
     assert card.property("muted") is True
     card.enabled_check.setChecked(False)
     assert card.property("muted") is True
+
+
+# ------------------------------------------------------- component fractions
+
+
+def _projection_params(index=0, **overrides):
+    """Return the parameters of a two-component linear-projection criterion."""
+    params = {
+        'analysis_type': 'Linear Projection',
+        'component_index': index,
+        'component_name': f"Component {index + 1}",
+        'component_real': [0.1, 0.9],
+        'component_imag': [0.05, 0.45],
+        'harmonics': [1],
+    }
+    params.update(overrides)
+    return params
+
+
+def _fit_params(index=0, **overrides):
+    """Return the parameters of a two-component single-harmonic fit."""
+    params = {
+        'analysis_type': 'Component Fit',
+        'component_index': index,
+        'component_name': f"Component {index + 1}",
+        'component_real': [0.1, 0.9],
+        'component_imag': [0.05, 0.45],
+        'harmonics': [1],
+    }
+    params.update(overrides)
+    return params
+
+
+def _arrays(layer):
+    """Return ``(mean, real, imag)`` straight off a test layer."""
+    return (
+        np.asarray(layer.data, dtype=float),
+        layer.metadata['G'],
+        layer.metadata['S'],
+    )
+
+
+def test_component_fraction_is_offered_like_any_other_metric():
+    """The new metric carries the same metadata as the ones before it."""
+    assert COMPONENT_FRACTION in ALL_METRICS
+    assert COMPONENT_FRACTION not in MAPPING_METRICS
+    assert metric_unit(COMPONENT_FRACTION) == ""
+    assert metric_fallback_range(COMPONENT_FRACTION) == (0.0, 1.0)
+    assert not requires_frequency(COMPONENT_FRACTION)
+
+
+def test_a_fraction_criterion_is_listed_under_its_component():
+    """Three fractions on one layer must not all read the same."""
+    assert filter_display_name(new_filter(MODULATION, 0, 1)) == MODULATION
+    named = new_filter(
+        COMPONENT_FRACTION, 0, 1, params={'component_name': "Free NADH"}
+    )
+    assert filter_display_name(named) == "Free NADH"
+    numbered = new_filter(
+        COMPONENT_FRACTION, 0, 1, params={'component_index': 2}
+    )
+    assert filter_display_name(numbered) == "Component 3"
+    bare = new_filter(COMPONENT_FRACTION, 0, 1)
+    assert filter_display_name(bare) == COMPONENT_FRACTION
+    assert filter_display_name({}) == ""
+    assert "Free NADH" in describe_filters([named])
+
+
+def test_linear_projection_fraction_matches_phasorpy():
+    """The metric is phasorpy's own projection, not a re-derivation of it."""
+    from phasorpy.component import phasor_component_fraction
+
+    layer = _layer()
+    _mean, real, imag = _arrays(layer)
+    expected = phasor_component_fraction(real, imag, [0.1, 0.9], [0.05, 0.45])
+    values = compute_metric(
+        COMPONENT_FRACTION, real, imag, params=_projection_params(0)
+    )
+    np.testing.assert_allclose(values, expected)
+
+    # The second component is whatever the first one does not account for.
+    other = compute_metric(
+        COMPONENT_FRACTION, real, imag, params=_projection_params(1)
+    )
+    np.testing.assert_allclose(other, 1.0 - np.asarray(expected))
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        _projection_params(component_real=None),
+        _projection_params(component_imag=[]),
+        _projection_params(component_index="second"),
+        # A projection only ever yields two fractions.
+        _projection_params(index=2),
+    ],
+)
+def test_an_unusable_fraction_criterion_computes_nothing(params):
+    """A criterion that cannot be evaluated is skipped, not guessed at."""
+    layer = _layer()
+    _mean, real, imag = _arrays(layer)
+    assert (
+        compute_metric(COMPONENT_FRACTION, real, imag, params=params) is None
+    )
+
+
+def test_component_fit_fraction_matches_phasorpy():
+    """A fit criterion returns that component's map out of the whole fit."""
+    from phasorpy.component import phasor_component_fit
+
+    layer = _layer()
+    mean, real, imag = _arrays(layer)
+    context = MetricContext(mean, real, imag, layer.metadata['harmonics'])
+    expected = phasor_component_fit(mean, real, imag, [0.1, 0.9], [0.05, 0.45])
+    for index in (0, 1):
+        values = compute_metric(
+            COMPONENT_FRACTION,
+            real,
+            imag,
+            params=_fit_params(index),
+            context=context,
+        )
+        np.testing.assert_allclose(values, expected[index])
+
+    # A component the fit never produced has no map.
+    assert (
+        compute_metric(
+            COMPONENT_FRACTION,
+            real,
+            imag,
+            params=_fit_params(7),
+            context=context,
+        )
+        is None
+    )
+
+
+def test_a_fit_is_computed_once_for_every_component_filtered_on():
+    """One fit yields every fraction, so three criteria must not fit thrice."""
+    import napari_phasors._mapping_filters as module
+
+    layer = _layer()
+    mean, real, imag = _arrays(layer)
+    calls = []
+    original = module.phasor_component_fit
+
+    def counting_fit(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+
+    module.phasor_component_fit = counting_fit
+    try:
+        mask = combined_mask(
+            [
+                new_filter(
+                    COMPONENT_FRACTION, 0.1, 0.9, params=_fit_params(0)
+                ),
+                new_filter(
+                    COMPONENT_FRACTION, 0.1, 0.9, params=_fit_params(1)
+                ),
+            ],
+            mean,
+            real,
+            imag,
+            layer.metadata['harmonics'],
+        )
+    finally:
+        module.phasor_component_fit = original
+
+    assert mask is not None
+    assert len(calls) == 1
+
+
+def test_a_failing_fit_skips_the_criterion():
+    """A fit that cannot run hides no pixels and raises nothing."""
+    import napari_phasors._mapping_filters as module
+
+    layer = _layer()
+    mean, real, imag = _arrays(layer)
+    original = module.phasor_component_fit
+
+    def exploding_fit(*args, **kwargs):
+        raise ValueError("no fit here")
+
+    module.phasor_component_fit = exploding_fit
+    try:
+        problems = []
+        mask = combined_mask(
+            [new_filter(COMPONENT_FRACTION, 0.1, 0.9, params=_fit_params(0))],
+            mean,
+            real,
+            imag,
+            layer.metadata['harmonics'],
+            on_error=problems.append,
+        )
+    finally:
+        module.phasor_component_fit = original
+
+    assert mask is None
+    assert problems and "Component 1" in problems[0]
+
+
+def test_a_single_map_fit_is_read_as_one_component():
+    """phasorpy returning one array, not a sequence, still names component 1."""
+    import napari_phasors._mapping_filters as module
+
+    layer = _layer()
+    mean, real, imag = _arrays(layer)
+    original = module.phasor_component_fit
+    module.phasor_component_fit = lambda m, r, i, cg, cs: np.zeros_like(m)
+    try:
+        values = compute_metric(
+            COMPONENT_FRACTION,
+            real,
+            imag,
+            params=_fit_params(0),
+            context=MetricContext(mean, real, imag, None),
+        )
+    finally:
+        module.phasor_component_fit = original
+    np.testing.assert_allclose(values, np.zeros_like(mean))
+
+
+def test_a_fit_criterion_without_its_arrays_is_skipped():
+    """A fit needs the mean image; a plane on its own is not enough."""
+    layer = _layer()
+    mean, real, imag = _arrays(layer)
+    assert (
+        compute_metric(COMPONENT_FRACTION, real, imag, params=_fit_params(0))
+        is None
+    )
+    assert (
+        compute_metric(
+            COMPONENT_FRACTION,
+            real,
+            imag,
+            params=_fit_params(0),
+            context=MetricContext(None, real, imag, None),
+        )
+        is None
+    )
+    assert (
+        compute_metric(
+            COMPONENT_FRACTION,
+            real,
+            imag,
+            params=_fit_params(0),
+            context=MetricContext(mean, None, None, None),
+        )
+        is None
+    )
+
+
+def test_a_two_harmonic_fit_needs_two_harmonics_in_the_data():
+    """A criterion the layer can no longer support hides nothing."""
+    single = _layer()
+    mean, real, imag = _arrays(single)
+    params = _fit_params(
+        0,
+        harmonics=[1, 2],
+        component_real=[[0.1, 0.9], [0.05, 0.45]],
+        component_imag=[[0.05, 0.45], [0.02, 0.2]],
+    )
+    assert (
+        compute_metric(
+            COMPONENT_FRACTION,
+            real,
+            imag,
+            params=params,
+            context=MetricContext(mean, real, imag, None),
+        )
+        is None
+    )
+    # An unreadable harmonic number is treated the same way.
+    assert (
+        compute_metric(
+            COMPONENT_FRACTION,
+            real,
+            imag,
+            params=_fit_params(0, harmonics=["first"]),
+            context=MetricContext(mean, real, imag, None),
+        )
+        is None
+    )
+
+
+def test_a_two_harmonic_fit_uses_both_planes():
+    """With both harmonics present the criterion evaluates on the stack."""
+    layer = _layer(multi=True)
+    mean, real, imag = _arrays(layer)
+    params = _fit_params(
+        0,
+        harmonics=[1, 2],
+        component_real=[[0.1, 0.9], [0.05, 0.45]],
+        component_imag=[[0.05, 0.45], [0.02, 0.2]],
+    )
+    values = compute_metric(
+        COMPONENT_FRACTION,
+        real[0],
+        imag[0],
+        params=params,
+        context=MetricContext(mean, real, imag, layer.metadata['harmonics']),
+    )
+    assert values is not None
+    assert values.shape == mean.shape
+
+
+def test_a_fraction_criterion_blanks_the_pixels_outside_its_range():
+    """The whole point: filtered pixels lose their phasor coordinates."""
+    layer = _layer()
+    criterion = new_filter(
+        COMPONENT_FRACTION, 0.0, 0.4, params=_projection_params(0)
+    )
+    set_filters(layer, [criterion])
+    mask = rebuild_layer_from_filters(layer)
+    assert mask is not None and mask.any()
+    assert np.isnan(layer.data[mask]).all()
+    assert np.isfinite(layer.data[~mask]).all()
+
+    # Removing it restores exactly the pixels it had hidden.
+    set_filters(layer, [])
+    rebuild_layer_from_filters(layer)
+    assert np.isfinite(layer.data).all()
+
+
+# ------------------------------------------------- the component filter list
+
+
+def _component_list(
+    qtbot,
+    components=((0, "Component 1", "#ff00ff"), (1, "Component 2", "#00ffff")),
+):
+    """Return a list widget already showing *components*."""
+    widget = ComponentFilterList()
+    qtbot.addWidget(widget)
+    widget.set_params_provider(lambda index: _projection_params(index))
+    widget.set_harmonic_provider(lambda: 2)
+    widget.set_components(list(components))
+    return widget
+
+
+def test_an_untouched_component_card_is_not_a_filter(qtbot):
+    """Defining components must not by itself write filters onto a layer."""
+    widget = _component_list(qtbot)
+    assert sorted(widget._cards) == [0, 1]
+    assert widget.filters() == []
+    assert not widget.empty_label.isVisible()
+
+    empty = ComponentFilterList()
+    qtbot.addWidget(empty)
+    empty.set_components([])
+    assert empty.components() == []
+    assert empty.summary_label.text() == ""
+
+
+def test_editing_a_component_card_publishes_the_criterion(qtbot):
+    """A card becomes a real criterion the moment the user touches it."""
+    widget = _component_list(qtbot)
+    published = []
+    widget.filtersChanged.connect(published.append)
+
+    card = widget._cards[1]
+    card.enabled_check.setChecked(True)
+
+    assert len(published) == 1
+    (entry,) = published[-1]
+    assert entry['metric'] == COMPONENT_FRACTION
+    assert entry['harmonic'] == 2
+    assert entry['enabled'] is True
+    assert entry['params']['component_index'] == 1
+    assert entry['params']['component_name'] == "Component 2"
+    assert widget.filters() == published[-1]
+
+    # The other card is still a placeholder.
+    assert len(widget.filters()) == 1
+
+
+def test_a_card_picks_up_its_component_on_its_first_edit(qtbot):
+    """A criterion made before the analysis ran is completed when used."""
+    widget = ComponentFilterList()
+    qtbot.addWidget(widget)
+    provider = {'params': {}}
+    widget.set_params_provider(lambda index: provider['params'])
+    widget.set_components([(0, "Component 1", None)])
+    assert widget._cards[0].entry['params'].get('component_real') is None
+
+    provider['params'] = _projection_params(0)
+    widget._cards[0].enabled_check.setChecked(True)
+    stored = widget.filters()[0]
+    assert stored['params']['component_real'] == [0.1, 0.9]
+    assert stored['params']['component_index'] == 0
+
+
+def test_a_signal_from_a_vanished_card_changes_nothing(qtbot):
+    """A card that has already gone away cannot publish a criterion."""
+    widget = _component_list(qtbot)
+    published = []
+    widget.filtersChanged.connect(published.append)
+    widget._on_card_changed("no-such-card")
+    assert published == []
+
+    # An entry with no card of its own is ignored too.
+    widget._entries[9] = new_filter(COMPONENT_FRACTION, 0, 1)
+    widget._on_card_changed(widget._entries[9]['id'])
+    assert published == []
+
+
+def test_the_list_follows_the_components(qtbot):
+    """Renaming keeps a criterion, removing takes it away."""
+    widget = _component_list(qtbot)
+    widget._cards[0].enabled_check.setChecked(True)
+    assert widget.filters()[0]['params']['component_name'] == "Component 1"
+
+    widget.set_components([(0, "Free NADH", "#ff00ff"), (1, "Bound", "#0f0")])
+    assert widget._cards[0].metric_label.text() == "Free NADH"
+    assert widget.filters()[0]['params']['component_name'] == "Free NADH"
+
+    # An unchanged set of components leaves the cards exactly as they are.
+    card = widget._cards[0]
+    widget.set_components([(0, "Free NADH", "#ff00ff"), (1, "Bound", "#0f0")])
+    assert widget._cards[0] is card
+
+    widget.set_components([(0, "Free NADH", "#ff00ff")])
+    assert sorted(widget._cards) == [0]
+    assert len(widget.filters()) == 1
+
+
+def test_stored_criteria_are_adopted_under_the_current_names(qtbot):
+    """A rename that has not reached the layer yet still shows on the card."""
+    widget = _component_list(qtbot)
+    stored = new_filter(
+        COMPONENT_FRACTION,
+        0.2,
+        0.6,
+        params=_projection_params(1, component_name="Old name"),
+    )
+    widget.set_filters([stored, new_filter(MODULATION, 0, 1)])
+
+    assert widget._cards[1].metric_label.text() == "Component 2"
+    (adopted,) = widget.filters()
+    assert adopted['id'] == stored['id']
+    assert adopted['min'] == 0.2
+    assert adopted['params']['component_name'] == "Component 2"
+
+    # Handing the same stack back is a no-op, so a card being dragged is not
+    # rebuilt under the pointer.
+    card = widget._cards[1]
+    widget.set_filters([stored])
+    assert widget._cards[1] is card
+
+    # A criterion that is gone turns its card back into a placeholder.
+    widget.set_filters([])
+    assert widget.filters() == []
+    assert widget._cards[1] is not card
+
+
+def test_criteria_without_a_component_index_are_ignored(qtbot):
+    """Only a criterion that names its component can be shown on a card."""
+    widget = _component_list(qtbot)
+    widget.set_filters([new_filter(COMPONENT_FRACTION, 0, 1)])
+    assert widget.filters() == []
+
+
+def test_component_card_stats_and_summary(qtbot):
+    """Each card reports what it keeps, and the list what they keep together."""
+    widget = _component_list(qtbot)
+    widget._cards[0].enabled_check.setChecked(True)
+    entry = widget.filters()[0]
+
+    widget.set_filter_stats(
+        {entry['id']: "keeps 40.0% of the pixels"},
+        "1 of 1 on · 40.0% kept",
+        detail="Something longer",
+    )
+    assert widget._cards[0].stat_label.text() == "keeps 40.0% of the pixels"
+    assert widget._cards[1].stat_label.text() == ""
+    assert widget.summary_label.text() == "1 of 1 on · 40.0% kept"
+    assert "Something longer" in widget.summary_label.toolTip()
+
+    widget.set_filter_stats({})
+    assert widget._cards[0].stat_label.text() == ""
+
+
+def test_a_component_filter_can_be_blocked_from_being_switched_on(qtbot):
+    """A criterion that cannot be evaluated says so on the card itself."""
+    widget = _component_list(qtbot)
+    widget.set_enable_blocked("Run the analysis first.")
+    card = widget._cards[0]
+    assert not card.enabled_check.isEnabled()
+    assert card.enabled_check.toolTip() == "Run the analysis first."
+
+    widget.set_enable_blocked(None)
+    assert card.enabled_check.isEnabled()
+
+
+def test_refresh_params_follows_the_components(qtbot):
+    """A criterion tests the fraction the user can see, not an older one."""
+    widget = ComponentFilterList()
+    qtbot.addWidget(widget)
+    current = {'params': _projection_params(0)}
+    widget.set_params_provider(lambda index: current['params'])
+    widget.set_components([(0, "Component 1", None)])
+    widget._cards[0].enabled_check.setChecked(True)
+
+    assert widget.refresh_params() is False
+
+    current['params'] = _projection_params(0, component_real=[0.3, 0.7])
+    assert widget.refresh_params() is True
+    assert widget.filters()[0]['params']['component_real'] == [0.3, 0.7]
+
+    # Without a provider there is nothing to refresh from.
+    widget.set_params_provider(None)
+    assert widget.refresh_params() is False
+
+
+def test_a_component_card_is_tinted_and_cannot_be_removed(qtbot):
+    """The card reads as the component it belongs to, and stays put."""
+    widget = _component_list(qtbot)
+    card = widget._cards[0]
+    assert not card.remove_button.isVisible()
+    assert "#ff00ff" in card.metric_label.styleSheet()
+    assert COMPONENT_FRACTION in card.metric_label.toolTip()
+
+    card.set_accent_color(None)
+    assert "color:" not in card.metric_label.styleSheet()
+
+
+def test_unknown_components_fall_back_to_their_number(qtbot):
+    """A stale index still names something rather than raising."""
+    widget = _component_list(qtbot)
+    assert widget._name_for(7) == "Component 8"
+    assert widget._color_for(7) is None
+    assert widget._color_for(0) == "#ff00ff"
+
+
+def test_component_positions_survive_an_array_round_trip():
+    """Positions read back as arrays key the fit cache just as lists do."""
+    layer = _layer()
+    mean, real, imag = _arrays(layer)
+    params = _fit_params(
+        0,
+        component_real=np.array([0.1, 0.9]),
+        component_imag=np.array([0.05, 0.45]),
+    )
+    values = compute_metric(
+        COMPONENT_FRACTION,
+        real,
+        imag,
+        params=params,
+        context=MetricContext(mean, real, imag, None),
+    )
+    assert values is not None and values.shape == mean.shape
+
+
+def test_a_fit_criterion_on_mismatched_arrays_is_skipped():
+    """Phasor coordinates that are not the shape of the image fit nothing."""
+    mean = np.ones((4, 4))
+    real = np.ones((3, 3))
+    assert (
+        compute_metric(
+            COMPONENT_FRACTION,
+            real,
+            real,
+            params=_fit_params(0),
+            context=MetricContext(mean, real, real, None),
+        )
+        is None
+    )
+
+
+def test_ragged_component_positions_are_no_positions_at_all():
+    """Hand-edited settings must not raise out of the redraw that read them."""
+    from napari_phasors._mapping_filters import has_component_positions
+
+    assert not has_component_positions(None)
+    assert not has_component_positions({})
+    assert not has_component_positions({'component_real': [0.1, 0.9]})
+    assert not has_component_positions(
+        {'component_real': [], 'component_imag': []}
+    )
+    assert not has_component_positions(
+        {
+            'component_real': [[0.1, 0.9], [0.2]],
+            'component_imag': [[0.05, 0.45], [0.1]],
+        }
+    )
+    assert has_component_positions(
+        {'component_real': [0.1, 0.9], 'component_imag': [0.05, 0.45]}
+    )
+
+
+# ------------------------------------------- refreshes during a rebuild
+
+
+def test_a_list_caught_mid_rebuild_refreshes_instead_of_raising(qtbot):
+    """Applying a stack pumps the event loop, so a refresh can land early.
+
+    Regression: a refresh that arrived while the cards were being rebuilt
+    paired criteria with cards that did not exist yet and raised a KeyError
+    out of the redraw that asked for it.
+    """
+    widget = MappingFilterList(MAPPING_METRICS)
+    qtbot.addWidget(widget)
+    widget._on_add_clicked()
+    entry = widget.filters()[0]
+
+    # Exactly the state a rebuild is in between clearing the cards and
+    # recreating them.
+    widget._cards = {}
+
+    assert widget._card_pairs() == []
+    widget.set_filter_stats({entry['id']: "keeps 50.0% of the pixels"}, "1 on")
+    widget.set_metric_bounds(entry['metric'], 0.0, 5.0)
+    widget.set_editable_metrics(MAPPING_METRICS)
+    assert widget.summary_label.text() == "1 on"
+
+    # Once the rebuild finishes the card is paired again.
+    widget._rebuild_cards()
+    assert [e['id'] for e, _card in widget._card_pairs()] == [entry['id']]
+    widget.set_filter_stats({entry['id']: "keeps 50.0% of the pixels"})
+    card = widget._cards[entry['id']]
+    assert card.stat_label.text() == "keeps 50.0% of the pixels"
+
+
+def test_a_nested_apply_is_replayed_rather_than_interleaved():
+    """The user's next edit must not rebuild on top of the one in flight."""
+
+    class Tab:
+        def __init__(self):
+            self.applied = []
+
+        @serialize_filter_applies
+        def _apply_filter_stack(self, filters=None, layers=None):
+            self.applied.append(filters)
+            if filters == "first":
+                # What a queued editingFinished does once the long apply
+                # spins the event loop.
+                self._apply_filter_stack("second")
+                self._apply_filter_stack("third")
+
+    tab = Tab()
+    tab._apply_filter_stack("first")
+    # The outer apply ran once, and only the last interrupting edit was
+    # replayed after it — not both, and not inside it.
+    assert tab.applied == ["first", "third"]
+
+    # Nothing pending leaves the next apply alone.
+    tab.applied.clear()
+    tab._apply_filter_stack("later")
+    assert tab.applied == ["later"]
+
+
+def test_one_context_serves_a_whole_refresh():
+    """Measuring what each criterion keeps must not refit once per criterion."""
+    import napari_phasors._mapping_filters as module
+
+    layer = _layer()
+    mean, real, imag = _arrays(layer)
+    filters = [
+        new_filter(COMPONENT_FRACTION, 0.1, 0.9, params=_fit_params(0)),
+        new_filter(COMPONENT_FRACTION, 0.1, 0.9, params=_fit_params(1)),
+    ]
+    context = MetricContext(mean, real, imag, layer.metadata['harmonics'])
+
+    calls = []
+    original = module.phasor_component_fit
+
+    def counting_fit(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+
+    module.phasor_component_fit = counting_fit
+    try:
+        for entry in filters:
+            combined_mask(
+                [entry],
+                mean,
+                real,
+                imag,
+                layer.metadata['harmonics'],
+                context=context,
+            )
+        combined_mask(
+            filters,
+            mean,
+            real,
+            imag,
+            layer.metadata['harmonics'],
+            context=context,
+        )
+    finally:
+        module.phasor_component_fit = original
+
+    assert len(calls) == 1
+
+
+# --------------------------------------------- component fraction ranges
+
+
+def test_a_component_card_opens_on_the_measured_fraction_range(qtbot):
+    """A fit is unconstrained, so 0-1 is an assumption, not a fact."""
+    widget = ComponentFilterList()
+    qtbot.addWidget(widget)
+    widget.set_params_provider(lambda index: _fit_params(index))
+    widget.set_bounds_provider(lambda index: (-1.4, 2.1))
+    widget.set_components([(0, "Component 1", None)])
+
+    assert widget.bounds_for(0) == (-1.4, 2.1)
+    entry = widget._entries[0]
+    assert entry['min'] == pytest.approx(-1.4)
+    assert entry['max'] == pytest.approx(2.1)
+    card = widget._cards[0]
+    assert card.range_slider.minimum() / card.scale == pytest.approx(-1.4)
+    assert card.range_slider.maximum() / card.scale == pytest.approx(2.1)
+
+
+def test_component_card_bounds_can_be_widened_after_the_fact(qtbot):
+    """A re-run that moves the fractions moves the range they are picked from."""
+    widget = ComponentFilterList()
+    qtbot.addWidget(widget)
+    widget.set_components([(0, "Component 1", None)])
+    # Nothing measured: the 0-1 fallback, as a projection would give.
+    assert widget.bounds_for(0) == (0.0, 1.0)
+
+    widget.set_component_bounds(0, -0.5, 1.8)
+    card = widget._cards[0]
+    assert widget.bounds_for(0) == (-0.5, 1.8)
+    assert card.range_slider.minimum() / card.scale == pytest.approx(-0.5)
+    assert card.range_slider.maximum() / card.scale == pytest.approx(1.8)
+
+    # Unmeasurable bounds are ignored rather than collapsing the slider.
+    widget.set_component_bounds(0, None, 1.0)
+    widget.set_component_bounds(0, np.nan, np.inf)
+    widget.set_component_bounds(9, 0.0, 1.0)
+    assert widget.bounds_for(0) == (-0.5, 1.8)
+
+    # A provider that cannot measure falls back to what was recorded.
+    widget.set_bounds_provider(lambda index: None)
+    assert widget._seed_range(0) == (-0.5, 1.8)
+    widget.set_bounds_provider(lambda index: (np.nan, 1.0))
+    assert widget._seed_range(0) == (-0.5, 1.8)
+
+
+def test_refresh_params_keeps_a_criterion_it_cannot_re_read(qtbot):
+    """Positions that cannot be read now must not overwrite working ones."""
+    widget = ComponentFilterList()
+    qtbot.addWidget(widget)
+    current = {'params': _projection_params(0)}
+    widget.set_params_provider(lambda index: current['params'])
+    widget.set_components([(0, "Component 1", None)])
+    widget._cards[0].enabled_check.setChecked(True)
+    assert widget.filters()[0]['params']['component_real'] == [0.1, 0.9]
+
+    # The components are gone from the tab, so the provider can only report
+    # the identifying keys. Adopting those would leave the criterion hiding
+    # pixels by a rule it could no longer evaluate.
+    current['params'] = {'component_index': 0, 'component_name': "Component 1"}
+    assert widget.refresh_params() is False
+    assert widget.filters()[0]['params']['component_real'] == [0.1, 0.9]

@@ -18,6 +18,7 @@ from napari_phasors._timelapse import (
     combine_frames,
     stack_axes,
 )
+from napari_phasors._utils import StatisticsTableWidget
 from napari_phasors.plotter import PlotterWidget
 
 N_FRAMES = 4
@@ -904,13 +905,9 @@ def test_statistics_table_lists_every_frame(make_viewer_model):
 
         assert table.rowCount() == N_FRAMES
         # The statistic columns name the quantity they summarise.
-        assert _table_column_names(table) == [
-            "Frame",
-            "Name",
-            "Lifetime (ns) Center of Mass",
-            "Lifetime (ns) Mean",
-            "Lifetime (ns) Median",
-            "Lifetime (ns) Std Dev",
+        assert _table_column_names(table) == ["Frame", "Name"] + [
+            f"Lifetime (ns) {column}"
+            for column in StatisticsTableWidget.COLUMNS[1:]
         ]
         assert [row[0] for row in _table_rows(table)] == [
             str(frame) for frame in range(N_FRAMES)
