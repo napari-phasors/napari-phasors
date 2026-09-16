@@ -2467,7 +2467,7 @@ def test_lifetime_mesh_range_is_kept_per_lifetime_type(
     assert mapping_widget.lifetime_mesh_max_edit.text() == "3.00"
 
     layer = parent.viewer.layers[parent.get_primary_layer_name()]
-    ranges = layer.metadata['settings']['phasor_mapping'][
+    ranges = parent.layer_settings(layer)['phasor_mapping'][
         'mesh_lifetime_ranges'
     ]
     assert ranges == {
@@ -3310,11 +3310,13 @@ def test_mesh_transparency_is_stored_as_alpha(make_viewer_model, qtbot):
     mapping_widget.mesh_transparency_spinbox.setValue(0.3)
     assert mapping_widget._mesh_alpha() == pytest.approx(0.7)
 
-    settings = layer.metadata['settings']['phasor_mapping']
+    # Changed after the run: an unsaved setting until the next Calculate.
+    settings = parent.layer_settings(layer)['phasor_mapping']
     assert settings['mesh_alpha'] == pytest.approx(0.7)
 
     # Restoring the stored alpha shows its complement in the control.
-    settings['mesh_alpha'] = 0.25
+    parent.settings_store.discard_drafts([layer])
+    layer.metadata['settings']['phasor_mapping']['mesh_alpha'] = 0.25
     mapping_widget._restore_lifetime_settings_from_metadata()
     assert mapping_widget.mesh_transparency_spinbox.value() == pytest.approx(
         0.75

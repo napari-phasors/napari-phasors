@@ -36,5 +36,5 @@ lifetime (ns) and solvent for each reference. The values are taken from
 ## Notes
 
 - The reference image must have been acquired with the same laser frequency, detector settings, and number of time bins as the sample
-- Calibration parameters are stored in the layer metadata and preserved when exporting to OME-TIF
+- Calibration parameters, together with the reference layer, reference lifetime and frequency they were computed from, are stored in the layer metadata and preserved when exporting to OME-TIF
 - You can uncalibrate a layer to return to the raw phasor coordinates

@@ -364,6 +364,34 @@ _PRIMARY_BUTTON_BLOCKED_QSS = (
 )
 
 
+#: Text colour of the notes warning that a run replaces stored settings.
+SETTINGS_NOTE_COLOR = "#e67e22"
+
+
+def create_settings_note_label(parent=None):
+    """Return a hidden, word-wrapped label for settings cautions.
+
+    Tabs place it next to their run button and fill it through
+    :func:`set_settings_note`, e.g. with "running will overwrite the
+    parameters stored in ..." when several layers are selected.
+    """
+    label = QLabel(parent)
+    label.setObjectName("settings_note")
+    label.setWordWrap(True)
+    label.setStyleSheet(f"color: {SETTINGS_NOTE_COLOR};")
+    label.setHidden(True)
+    return label
+
+
+def set_settings_note(label, messages):
+    """Show *messages* (empty ones skipped) in *label*, or hide it."""
+    messages = [message for message in messages if message]
+    label.setText("\n".join(f"⚠ {message}" for message in messages))
+    # An unparented label would pop up as its own window.
+    if label.parentWidget() is not None:
+        label.setHidden(not messages)
+
+
 def emphasize_primary_button(button):
     """Style ``button`` as a tab's prominent primary action (green outline).
 

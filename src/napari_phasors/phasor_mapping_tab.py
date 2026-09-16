@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import warnings
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,7 @@ from ._mapping_filters import (
     set_filters,
 )
 from ._parallel import parallel_map
+from ._settings_store import chain_merges, merge_keyed_path
 from ._timelapse import slice_datasets
 from ._utils import (
     LIFETIME_OUTPUT_TYPES,
@@ -51,14 +53,15 @@ from ._utils import (
     HistogramWidget,
     analysis_section_stylesheet,
     create_mpl_colormap_from_qcolor,
+    create_settings_note_label,
     layer_colormap_from_settings,
     layer_colormap_to_settings,
     make_section,
     populate_colormap_combobox,
     resolve_colormap_by_name,
     resolve_napari_layer_colormap,
+    set_settings_note,
     setup_primary_button,
-    update_frequency_in_metadata,
 )
 
 if TYPE_CHECKING:
@@ -819,6 +822,10 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
 
         self.main_layout.addWidget(self.mesh_overlay_group)
 
+        # Cautions about settings and frequencies a Calculate would change.
+        self._settings_note = create_settings_note_label(self)
+        self.main_layout.addWidget(self._settings_note)
+
         # Add Calculate button in its own row (at the bottom of this tab)
         self.calculate_lifetime_button = QPushButton("Calculate Output")
         self.calculate_lifetime_button.setSizePolicy(
@@ -1210,6 +1217,13 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         frequency = self._parse_positive_frequency(
             self.frequency_input.text().strip()
         )
+        if layer is not None and hasattr(
+            self.parent_widget, 'layer_frequency'
+        ):
+            # A non-primary layer is measured at its own stored frequency.
+            own = self.parent_widget.layer_frequency(layer, frequency)
+            if own is not None:
+                return own
         if frequency is not None:
             return frequency
         if layer is not None:
@@ -1967,53 +1981,180 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         pw.canvas_widget.figure.canvas.draw_idle()
 
     def _get_phasor_mapping_settings(self, layer, create: bool = False):
-        """Return mapping settings, migrating legacy metadata when needed."""
-        if 'settings' not in layer.metadata:
-            if not create:
-                return None
-            layer.metadata['settings'] = {}
+        """Return *layer*'s mapping settings, including unsaved edits.
 
-        settings_container = layer.metadata['settings']
+        Read-only: edits go through :meth:`_stage_mapping_values`, a run
+        through :meth:`_commit_mapping_settings`. Layers written before the
+        ``phasor_mapping`` key existed keep them under ``lifetime``. With
+        ``create``, a layer without any gets a fresh default dict (which is
+        not stored).
+        """
+        if layer is None:
+            return None
+        if self.parent_widget is not None and hasattr(
+            self.parent_widget, 'layer_settings'
+        ):
+            settings_container = self.parent_widget.layer_settings(layer)
+        else:
+            settings_container = layer.metadata.get('settings') or {}
         mapping_settings = settings_container.get('phasor_mapping')
-        legacy_settings = settings_container.get('lifetime')
-
-        if mapping_settings is None and legacy_settings is not None:
-            mapping_settings = legacy_settings.copy()
-            settings_container['phasor_mapping'] = mapping_settings
-
+        if mapping_settings is None:
+            mapping_settings = settings_container.get('lifetime')
         if mapping_settings is None and create:
             mapping_settings = self._get_default_lifetime_settings()
-            settings_container['phasor_mapping'] = mapping_settings
-
-        # Keep legacy key populated for backward compatibility.
-        if mapping_settings is not None:
-            settings_container['lifetime'] = mapping_settings
-
         return mapping_settings
 
+    def _stage_mapping_values(self, updates):
+        """Keep *updates* as unsaved mapping settings of the primary layer.
+
+        They are stored in the layers when Calculate runs (see
+        :meth:`_commit_mapping_settings`).
+        """
+        if self.parent_widget is None:
+            return
+        primary = self.parent_widget.get_primary_layer()
+        if primary is None:
+            return
+        block = copy.deepcopy(
+            self._get_phasor_mapping_settings(primary, create=True)
+        )
+        block.update(updates)
+        self.parent_widget.stage_setting('phasor_mapping', block)
+
     def _update_lifetime_setting_in_metadata(self, key, value):
-        """Update a specific lifetime setting in the current layer's metadata."""
+        """Keep an edited mapping setting as the primary's unsaved setting."""
         if self._updating_settings:
             return
 
-        layer_name = self.parent_widget.get_primary_layer_name()
-        if layer_name and layer_name in self.viewer.layers:
-            layer = self.viewer.layers[layer_name]
-            mapping_settings = self._get_phasor_mapping_settings(
-                layer, create=True
+        updates = {key: value}
+        if key == 'output_type':
+            if value in LIFETIME_OUTPUT_TYPES:
+                updates['lifetime_type'] = value
+        elif key == 'range_min':
+            updates['lifetime_range_min'] = value
+        elif key == 'range_max':
+            updates['lifetime_range_max'] = value
+        self._stage_mapping_values(updates)
+
+    def _collect_mapping_settings(self):
+        """Return the mapping settings a Calculate would store.
+
+        The primary layer's settings (with its unsaved edits) completed by
+        what the controls show, so a layer that never had any gets the
+        parameters it is actually analysed with.
+        """
+        primary = (
+            self.parent_widget.get_primary_layer()
+            if self.parent_widget is not None
+            else None
+        )
+        block = copy.deepcopy(
+            self._get_phasor_mapping_settings(primary, create=True)
+            if primary is not None
+            else self._get_default_lifetime_settings()
+        )
+        output_type = self._get_selected_output_type()
+        block['output_type'] = output_type
+        if output_type in LIFETIME_OUTPUT_TYPES:
+            block['lifetime_type'] = output_type
+        block['mesh_overlay_enabled'] = bool(
+            self.mesh_overlay_checkbox.isChecked()
+        )
+        block['mesh_alpha'] = self._mesh_alpha()
+        block['mesh_clip_semicircle_enabled'] = bool(
+            self.mesh_clip_semicircle_checkbox.isChecked()
+        )
+        block['mesh_colorbar_enabled'] = bool(
+            self.mesh_colorbar_checkbox.isChecked()
+        )
+        return block
+
+    @staticmethod
+    def _mapping_merge_rule(output_type):
+        """Return how a run for *output_type* merges into stored settings.
+
+        Ranges and colormaps are kept per output type; a run only replaces
+        the entries of the output it computed.
+        """
+        return chain_merges(
+            *(
+                merge_keyed_path((key,), [output_type])
+                for key in (
+                    'output_ranges',
+                    'output_colormaps',
+                    'mesh_lifetime_ranges',
+                )
             )
-            mapping_settings[key] = value
-            if key == 'output_type':
-                if value in {
-                    "Apparent Phase Lifetime",
-                    "Apparent Modulation Lifetime",
-                    "Normal Lifetime",
-                }:
-                    mapping_settings['lifetime_type'] = value
-            elif key == 'range_min':
-                mapping_settings['lifetime_range_min'] = value
-            elif key == 'range_max':
-                mapping_settings['lifetime_range_max'] = value
+        )
+
+    @staticmethod
+    def _sync_legacy_alias(layers):
+        """Point the legacy ``lifetime`` key at ``phasor_mapping``."""
+        for layer in layers:
+            settings = layer.metadata.get('settings') or {}
+            if 'phasor_mapping' in settings:
+                settings['lifetime'] = settings['phasor_mapping']
+
+    def _commit_mapping_settings(self, layers):
+        """Store the run's mapping settings in every analysed layer."""
+        if self.parent_widget is None or not layers:
+            return
+        for layer in layers:
+            # Layers from before the ``phasor_mapping`` key: merge into the
+            # settings they have under the legacy name.
+            settings = layer.metadata.get('settings') or {}
+            if 'phasor_mapping' not in settings and isinstance(
+                settings.get('lifetime'), dict
+            ):
+                settings['phasor_mapping'] = settings['lifetime']
+        block = self._collect_mapping_settings()
+        self.parent_widget.commit_analysis_settings(
+            {'phasor_mapping': block},
+            layers=layers,
+            merge={
+                'phasor_mapping': self._mapping_merge_rule(
+                    block['output_type']
+                )
+            },
+        )
+        self._sync_legacy_alias(layers)
+
+    def _analysed_layers(self):
+        """Return the source layers of the output layers on display."""
+        layers = []
+        for output_layer in self.metric_layers:
+            info = self._mapping_output_info(output_layer)
+            if info is None or info[1] not in self.viewer.layers:
+                continue
+            source = self.viewer.layers[info[1]]
+            if source not in layers:
+                layers.append(source)
+        return layers
+
+    def _refresh_settings_note(self):
+        """Caution about settings and frequencies a Calculate would change."""
+        note = getattr(self, '_settings_note', None)
+        if note is None or self.parent_widget is None:
+            return
+        if getattr(self, '_needs_update', False):
+            # The controls still show another layer; refreshed on restore.
+            return
+        block = self._collect_mapping_settings()
+        rule = self._mapping_merge_rule(block['output_type'])
+        messages = [
+            self.parent_widget.settings_overwrite_message(
+                'phasor_mapping_tab',
+                values={'phasor_mapping': block, 'lifetime': block},
+                merge={'phasor_mapping': rule, 'lifetime': rule},
+                keys=['phasor_mapping', 'lifetime'],
+                action="Calculating",
+            )
+        ]
+        if self._output_requires_frequency(block['output_type']):
+            messages += self.parent_widget.frequency_note_messages(
+                self.frequency_input.text()
+            )
+        set_settings_note(note, messages)
 
     def _restore_combobox_colormaps(self, settings):
         """Show the stored Phase / Modulation colormaps in the combobox.
@@ -2057,26 +2198,15 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
 
         layer = self.viewer.layers[layer_name]
 
-        if 'settings' in layer.metadata:
-            if 'frequency' in layer.metadata['settings']:
-                frequency = layer.metadata['settings']['frequency']
-                self._updating_settings = True
-                try:
-                    self.frequency_input.setText(str(frequency))
-                finally:
-                    self._updating_settings = False
+        frequency = self.parent_widget.layer_settings(layer).get('frequency')
+        self._updating_settings = True
+        try:
+            if frequency is not None:
+                self.frequency_input.setText(str(frequency))
             else:
-                self._updating_settings = True
-                try:
-                    self.frequency_input.clear()
-                finally:
-                    self._updating_settings = False
-        else:
-            self._updating_settings = True
-            try:
                 self.frequency_input.clear()
-            finally:
-                self._updating_settings = False
+        finally:
+            self._updating_settings = False
 
         settings = self._get_phasor_mapping_settings(layer, create=False)
         if settings is None:
@@ -2246,12 +2376,6 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._updating_linked_layers = False
 
         if not self._updating_settings:
-            self._update_lifetime_setting_in_metadata(
-                'range_min', min_lifetime
-            )
-            self._update_lifetime_setting_in_metadata(
-                'range_max', max_lifetime
-            )
             self._store_output_range(min_lifetime, max_lifetime)
 
         self._apply_lifetime_range_change(min_val, max_val)
@@ -2288,9 +2412,17 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         harmonic = self.parent_widget.harmonic
         requires_frequency = self._output_requires_frequency(output_type)
         semicircle_mode = self._is_semicircle_mode()
-        effective_frequency = (
-            base_frequency * harmonic if requires_frequency else None
-        )
+        # Each layer is analysed at the frequency it was acquired with: the
+        # primary at the entered one, the others at their stored one.
+        layer_frequencies = {}
+        if requires_frequency:
+            for layer in selected_layers:
+                layer_frequency = (
+                    self.parent_widget.layer_frequency(layer, base_frequency)
+                    if hasattr(self.parent_widget, 'layer_frequency')
+                    else base_frequency
+                )
+                layer_frequencies[layer.name] = layer_frequency * harmonic
 
         def compute_output(layer):
             """Return one layer's output map, or ``None``.
@@ -2298,6 +2430,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             Pure array work (NumPy's error state is thread-local), so this is
             safe to run in a worker thread.
             """
+            effective_frequency = layer_frequencies.get(layer.name)
             g_array = layer.metadata.get("G")
             s_array = layer.metadata.get("S")
             harmonics = layer.metadata.get("harmonics")
@@ -2760,16 +2893,22 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         return entry if isinstance(entry, dict) else None
 
     def _store_output_colormap(self, source_layer, output_type, output_layer):
-        """Save *output_layer*'s colormap into *source_layer*'s settings."""
-        if self._updating_settings:
+        """Save *output_layer*'s colormap into *source_layer*'s settings.
+
+        The colormap belongs to an output that already exists, so it is
+        stored right away rather than kept as an unsaved edit.
+        """
+        if self._updating_settings or self.parent_widget is None:
             return
-        settings = self._get_phasor_mapping_settings(source_layer, create=True)
-        colormaps = settings.get('output_colormaps')
-        if not isinstance(colormaps, dict):
-            colormaps = settings['output_colormaps'] = {}
-        colormaps[output_type] = layer_colormap_to_settings(
-            output_layer.colormap, output_layer.gamma
+        self.parent_widget.settings_store.update_committed(
+            [source_layer],
+            'phasor_mapping',
+            ('output_colormaps', output_type),
+            layer_colormap_to_settings(
+                output_layer.colormap, output_layer.gamma
+            ),
         )
+        self._sync_legacy_alias([source_layer])
 
     def create_lifetime_layer(self):
         """Backward-compatible alias for output layer creation."""
@@ -2933,6 +3072,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         # with the frequency already filled from metadata) instead of keeping a
         # stale blocked (grey) style.
         self._refresh_action_buttons()
+        self._refresh_settings_note()
 
     def _on_mapping_input_changed(self):
         """Re-evaluate the Calculate button after an input changed."""
@@ -3007,6 +3147,18 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._clear_current_output_display()
             return False
 
+        if not self._updating_settings:
+            # What was just computed becomes the analysed layers' settings,
+            # before the output layers are built from them.
+            analysed_layers = [
+                layer
+                for layer in selected_layers
+                if layer.name in self.per_layer_metric_data
+            ]
+            self._commit_mapping_settings(analysed_layers)
+            if self._output_requires_frequency(output_type):
+                self.parent_widget.commit_frequency(analysed_layers, frequency)
+
         self._update_lifetime_range_slider()
         self.create_output_layers()
         settings = self._get_current_layer_mapping_settings(create=False)
@@ -3024,16 +3176,6 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._clear_2d_coloring()
             self._refresh_mesh_overlay_if_needed()
 
-        # Update frequency in metadata for frequency-dependent outputs
-        if not self._updating_settings and self._output_requires_frequency(
-            output_type
-        ):
-            try:
-                frequency_float = float(frequency)
-                for layer in selected_layers:
-                    update_frequency_in_metadata(layer, frequency_float)
-            except ValueError:
-                pass
         return bool(self.metric_layers)
 
     def _schedule_active_output_refresh(self):
@@ -3098,20 +3240,29 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         ``range_min``/``range_max`` are a single slot shared by every output,
         so on their own they let one output's range clip another's map. The
         per-output copy kept here is what the restore reads back.
+
+        The range applies to the output layers of every analysed layer, so
+        it is stored in all of them right away.
         """
-        layer_name = self.parent_widget.get_primary_layer_name()
-        if not layer_name or layer_name not in self.viewer.layers:
+        layers = self._analysed_layers()
+        if not layers or self.parent_widget is None:
             return
-        layer = self.viewer.layers[layer_name]
-        settings = self._get_phasor_mapping_settings(layer, create=True)
-        ranges = settings.get('output_ranges')
-        if not isinstance(ranges, dict):
-            ranges = {}
-            settings['output_ranges'] = ranges
-        ranges[self._get_selected_output_type()] = [
-            float(min_value),
-            float(max_value),
-        ]
+        store = self.parent_widget.settings_store
+        min_value, max_value = float(min_value), float(max_value)
+        store.update_committed(
+            layers,
+            'phasor_mapping',
+            ('output_ranges', self._get_selected_output_type()),
+            [min_value, max_value],
+        )
+        for key, value in (
+            ('range_min', min_value),
+            ('range_max', max_value),
+            ('lifetime_range_min', min_value),
+            ('lifetime_range_max', max_value),
+        ):
+            store.update_committed(layers, 'phasor_mapping', (key,), value)
+        self._sync_legacy_alias(layers)
 
     def _saved_range_for_current_output(self, settings):
         """Return the stored ``(min, max)`` for the current output, or None.
@@ -4001,9 +4152,9 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         if settings is None:
             return
         ranges = settings.get('mesh_lifetime_ranges')
-        if not isinstance(ranges, dict):
-            ranges = settings['mesh_lifetime_ranges'] = {}
+        ranges = dict(ranges) if isinstance(ranges, dict) else {}
         ranges[output_type] = [float(v) for v in self._lifetime_mesh_range()]
+        self._stage_mapping_values({'mesh_lifetime_ranges': ranges})
 
     def _on_lifetime_mesh_slider_changed(self, value):
         """Handle a lifetime mesh range slider change."""

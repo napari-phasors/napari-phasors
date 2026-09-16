@@ -1636,10 +1636,12 @@ def test_metadata_storage_manual_values(make_viewer_model, qtbot):
     widget._on_fretting_slider_changed()
     widget._on_colormap_checkbox_changed()
 
-    # Check metadata
-    fret_settings = test_layer.metadata['settings']['fret']
+    # Edits are unsaved settings of the layer until FRET is calculated.
+    assert 'fret' not in test_layer.metadata.get('settings', {})
+    settings = parent.layer_settings(test_layer)
+    fret_settings = settings['fret']
     assert fret_settings['donor_lifetime'] == 2.5
-    assert test_layer.metadata['settings']['frequency'] == 85.0
+    assert settings['frequency'] == 85.0
     assert fret_settings['donor_background'] == 0.3
     assert fret_settings['donor_fretting_proportion'] == 0.75
     assert fret_settings['use_colormap'] is False
@@ -1681,8 +1683,8 @@ def test_metadata_storage_background_positions_by_harmonic(
     widget.background_imag_edit.setText("0.6")
     widget._on_background_position_changed()
 
-    # Check metadata
-    fret_settings = test_layer.metadata['settings']['fret']
+    # Check the layer's (unsaved) settings
+    fret_settings = parent.layer_settings(test_layer)['fret']
     bg_positions = fret_settings['background_positions_by_harmonic']
 
     assert 1 in bg_positions
@@ -1726,8 +1728,8 @@ def test_metadata_storage_from_layer_mode(make_viewer_model, qtbot):
     widget._on_bg_source_changed(1)
     widget.background_image_combobox.setCheckedItems(["bg_layer"])
 
-    # Check metadata
-    fret_settings = donor_layer.metadata['settings']['fret']
+    # Check the layer's (unsaved) settings
+    fret_settings = parent.layer_settings(donor_layer)['fret']
     assert fret_settings['donor_source'] == 'From layer(s)'
     assert fret_settings['donor_layer_names'] == ['donor_layer']
     assert fret_settings['donor_lifetime_type'] == 'Normal Lifetime'

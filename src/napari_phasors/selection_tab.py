@@ -50,13 +50,23 @@ from ._canvas import (
     DEFAULT_MANUAL_COLORS,
     _make_selector_icon,
 )
+from ._settings_store import format_layer_list, settings_equal
 from ._utils import (
     CurrentPageStackedWidget,
     active_selection_region,
     analysis_section_stylesheet,
     colormap_to_dict,
+    create_settings_note_label,
     make_section,
+    set_settings_note,
     setup_primary_button,
+)
+
+#: Settings keys holding the cursors, one list per cursor shape.
+_CURSOR_SETTINGS_KEYS = (
+    "circular_cursors",
+    "elliptical_cursors",
+    "polar_cursors",
 )
 
 
@@ -307,6 +317,10 @@ class SelectionWidget(QWidget):
         )
 
     EYE_COLOR = "white"
+
+    def _refresh_settings_note(self):
+        """Refresh the cursor mode's note about overwritten cursors."""
+        self.cursor_selection_widget._refresh_settings_note()
 
     def _build_selection_input_widget(self):
         """Build the manual-selection controls programmatically.
@@ -2855,6 +2869,10 @@ class CursorSelectionWidget(QWidget):
         self._editor_box.setVisible(False)
         layout.addWidget(self._editor_box)
 
+        # Caution shown when calculating would replace other layers' cursors.
+        self._settings_note = create_settings_note_label(self)
+        layout.addWidget(self._settings_note)
+
         # Prominent "Calculate" button — the primary action of the tab.
         self.calculate_button = QPushButton("Calculate Selection")
         self.calculate_button.setToolTip(
@@ -3937,6 +3955,58 @@ class CursorSelectionWidget(QWidget):
         refresh = getattr(self, "_refresh_calculate_button", None)
         if refresh is not None:
             refresh()
+        self._refresh_settings_note()
+
+    def _current_cursor_settings(self):
+        """Return the cursors on display as they are stored in settings."""
+        values = {key: [] for key in _CURSOR_SETTINGS_KEYS}
+        for cursor in self._current_harmonic_cursors():
+            key = {
+                "circular": "circular_cursors",
+                "elliptic": "elliptical_cursors",
+            }.get(cursor["type"], "polar_cursors")
+            values[key].append(self._cursor_metadata_params(cursor))
+        return values
+
+    def _refresh_settings_note(self):
+        """Name the selected layers whose stored cursors a run replaces.
+
+        Calculating the selection stores the cursors on display in every
+        selected layer; the note lists the non-primary ones storing others.
+        """
+        note = getattr(self, "_settings_note", None)
+        parent = self.parent_widget
+        if note is None or parent is None:
+            return
+        if not hasattr(parent, "get_primary_layer"):
+            return
+        primary = parent.get_primary_layer()
+        others = [
+            layer
+            for layer in parent.get_selected_layers()
+            if layer is not primary
+        ]
+        message = None
+        if others:
+            current = self._current_cursor_settings()
+            overwritten = []
+            for layer in others:
+                stored = (layer.metadata.get("settings") or {}).get(
+                    "selections"
+                ) or {}
+                stored_cursors = {
+                    key: stored.get(key) or [] for key in _CURSOR_SETTINGS_KEYS
+                }
+                if any(stored_cursors.values()) and not settings_equal(
+                    stored_cursors, current
+                ):
+                    overwritten.append(layer.name)
+            if overwritten:
+                message = (
+                    "Calculating the selection will overwrite the cursors "
+                    f"stored in: {format_layer_list(overwritten)}."
+                )
+        set_settings_note(note, [message])
 
     def _on_calculate_clicked(self):
         """Handle Calculate button click."""
@@ -4084,6 +4154,7 @@ class CursorSelectionWidget(QWidget):
             selections["circular_cursors"] = circular_params
             selections["elliptical_cursors"] = elliptical_params
             selections["polar_cursors"] = polar_params
+        self._refresh_settings_note()
 
         # Only visible cursors contribute to the selection (and to the
         # label-id / color mapping); hidden cursors behave as if absent.
@@ -4255,6 +4326,7 @@ class CursorSelectionWidget(QWidget):
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
+        self._refresh_settings_note()
 
     def _connect_drag_events(self):
         """Connect matplotlib events for dragging cursors."""

@@ -1,4 +1,5 @@
 import contextlib
+import copy
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -41,6 +42,7 @@ from ._mapping_filters import (
     set_filters,
 )
 from ._parallel import parallel_map
+from ._settings_store import merge_keyed_path
 from ._timelapse import slice_datasets
 from ._utils import (
     AutoUpdateMixin,
@@ -48,10 +50,11 @@ from ._utils import (
     CurrentPageStackedWidget,
     HistogramWidget,
     analysis_section_stylesheet,
+    create_settings_note_label,
     layer_colormap_from_settings,
     make_section,
+    set_settings_note,
     setup_primary_button,
-    update_frequency_in_metadata,
 )
 
 _FRET_OUTPUT_METADATA_KEY = 'phasor_fret_output'
@@ -379,6 +382,9 @@ class FretWidget(AutoUpdateMixin, QWidget):
             ready_tooltip="Calculate FRET efficiency for the selected "
             "layer(s).",
         )
+        # Cautions about settings and frequencies a Calculate would change.
+        self._settings_note = create_settings_note_label(content_widget)
+        layout.addWidget(self._settings_note)
         layout.addWidget(self.calculate_fret_efficiency_button)
 
         layout.addWidget(
@@ -615,26 +621,10 @@ class FretWidget(AutoUpdateMixin, QWidget):
                     self.current_harmonic
                 ] = {'real': real, 'imag': imag}
 
-                layer_name = self.parent_widget.get_primary_layer_name()
-                if (
-                    layer_name
-                    and layer_name in self.viewer.layers
-                    and (
-                        not hasattr(self, '_updating_settings')
-                        or not self._updating_settings
-                    )
-                ):
-                    current_layer = self.viewer.layers[layer_name]
-                    if 'settings' not in current_layer.metadata:
-                        current_layer.metadata['settings'] = {}
-                    if 'fret' not in current_layer.metadata['settings']:
-                        current_layer.metadata['settings'][
-                            'fret'
-                        ] = self._get_default_fret_settings()
-
-                    current_layer.metadata['settings']['fret'][
-                        'background_positions_by_harmonic'
-                    ] = self.background_positions_by_harmonic.copy()
+                self._update_fret_setting_in_metadata(
+                    'background_positions_by_harmonic',
+                    self.background_positions_by_harmonic.copy(),
+                )
             except ValueError:
                 pass
 
@@ -1432,29 +1422,143 @@ class FretWidget(AutoUpdateMixin, QWidget):
             'background_layer_names': [],
         }
 
+    def _has_settings_store(self):
+        """Return whether the parent keeps per-layer settings."""
+        return self.parent_widget is not None and hasattr(
+            self.parent_widget, 'settings_store'
+        )
+
     def _update_fret_setting_in_metadata(self, key_path, value):
-        """Update a specific FRET setting in the current layer's metadata."""
-        if self._updating_settings:
+        """Keep an edited FRET setting as the primary's unsaved setting.
+
+        It is stored in the layers when Calculate runs (see
+        :meth:`_commit_fret_settings`). Colormap settings describe the FRET
+        layers already on display instead, so they are stored right away in
+        every layer that has one.
+        """
+        if self._updating_settings or not self._has_settings_store():
             return
 
-        layer_name = self.parent_widget.get_primary_layer_name()
-        if not layer_name or layer_name not in self.viewer.layers:
+        path = tuple(key_path.split('.'))
+        store = self.parent_widget.settings_store
+        if path[0] == 'colormap_settings':
+            layers = self._fret_analysed_layers()
+            if layers:
+                store.update_committed(layers, 'fret', path, value)
             return
 
-        layer = self.viewer.layers[layer_name]
+        primary = self.parent_widget.get_primary_layer()
+        if primary is None:
+            return
+        store.set_draft_path(
+            primary,
+            'fret',
+            path,
+            value,
+            default_factory=self._get_default_fret_settings,
+        )
 
-        if 'settings' not in layer.metadata:
-            layer.metadata['settings'] = {}
-        if 'fret' not in layer.metadata['settings']:
-            layer.metadata['settings']['fret'] = {}
+    def _fret_analysed_layers(self):
+        """Return the source layers of the FRET layers on display."""
+        return [
+            self.viewer.layers[name]
+            for name in self._fret_output_layers()
+            if name in self.viewer.layers
+        ]
 
-        keys = key_path.split('.')
-        settings = layer.metadata['settings']['fret']
-        for key in keys[:-1]:
-            if key not in settings:
-                settings[key] = {}
-            settings = settings[key]
-        settings[keys[-1]] = value
+    def _collect_fret_settings(self):
+        """Return the FRET settings a Calculate would store.
+
+        The primary layer's settings (with its unsaved edits) completed by
+        what the controls show. A donor lifetime or background position read
+        from other layers is stored as its value, so the analysis can be
+        repeated without those layers.
+        """
+        block = self._get_default_fret_settings()
+        primary = (
+            self.parent_widget.get_primary_layer()
+            if self._has_settings_store()
+            else None
+        )
+        if primary is not None:
+            stored = self.parent_widget.layer_settings(primary).get('fret')
+            if isinstance(stored, dict):
+                block.update(copy.deepcopy(stored))
+        try:
+            donor_lifetime = float(self.donor_line_edit.text())
+        except ValueError:
+            donor_lifetime = block.get('donor_lifetime')
+        manual_donor = self.donor_source_selector.currentIndex() == 0
+        manual_background = self.bg_source_selector.currentIndex() == 0
+        block.update(
+            {
+                'donor_lifetime': donor_lifetime,
+                'donor_background': self.donor_background,
+                'donor_fretting_proportion': self.donor_fretting_proportion,
+                'use_colormap': self.use_colormap,
+                'background_positions_by_harmonic': copy.deepcopy(
+                    self.background_positions_by_harmonic
+                ),
+                'donor_source': 'Manual' if manual_donor else 'From layer(s)',
+                'donor_layer_names': list(
+                    self.donor_lifetime_combobox.checkedItems()
+                ),
+                'donor_lifetime_type': (
+                    self.lifetime_type_combobox.currentText()
+                ),
+                'background_source': (
+                    'Manual' if manual_background else 'From layer(s)'
+                ),
+                'background_layer_names': list(
+                    self.background_image_combobox.checkedItems()
+                ),
+            }
+        )
+        return block
+
+    def _fret_merge_rule(self):
+        """Return how a run merges into other layers' stored settings.
+
+        Background positions are kept per harmonic; a run only replaces the
+        one of the harmonic it used.
+        """
+        harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        return {
+            'fret': merge_keyed_path(
+                ('background_positions_by_harmonic',), [harmonic]
+            )
+        }
+
+    def _commit_fret_settings(self, layers):
+        """Store the run's FRET settings in every analysed layer."""
+        if not layers or not self._has_settings_store():
+            return
+        self.parent_widget.commit_analysis_settings(
+            {'fret': self._collect_fret_settings()},
+            layers=layers,
+            merge=self._fret_merge_rule(),
+        )
+
+    def _refresh_settings_note(self):
+        """Caution about settings and frequencies a Calculate would change."""
+        note = getattr(self, '_settings_note', None)
+        if note is None or not self._has_settings_store():
+            return
+        if self._needs_update:
+            # The controls still show another layer; refreshed on restore.
+            return
+        messages = [
+            self.parent_widget.settings_overwrite_message(
+                'fret_tab',
+                values={'fret': self._collect_fret_settings()},
+                merge=self._fret_merge_rule(),
+                action="Calculating",
+            )
+        ]
+        messages += self.parent_widget.frequency_note_messages(
+            self.frequency_input.text()
+        )
+        set_settings_note(note, messages)
 
     def _restore_fret_settings_from_metadata(self):
         """Restore all FRET settings from the current layer's metadata."""
@@ -1464,16 +1568,15 @@ class FretWidget(AutoUpdateMixin, QWidget):
             return
 
         layer = self.viewer.layers[layer_name]
-        if (
-            'settings' not in layer.metadata
-            or 'fret' not in layer.metadata['settings']
-        ):
+        # Includes the unsaved edits made while the layer was primary.
+        layer_settings = self.parent_widget.layer_settings(layer)
+        if not isinstance(layer_settings.get('fret'), dict):
             self.background_positions_by_harmonic = {}
             return
 
         self._updating_settings = True
         try:
-            settings = layer.metadata['settings']['fret']
+            settings = layer_settings['fret']
 
             # Initialize or restore background positions by harmonic
             if settings.get('background_positions_by_harmonic'):
@@ -1493,7 +1596,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 self.donor_lifetime = settings['donor_lifetime']
                 self.donor_line_edit.setText(str(self.donor_lifetime))
 
-            frequency = layer.metadata['settings'].get('frequency', None)
+            frequency = layer_settings.get('frequency')
             if frequency is not None:
                 self.frequency_input.setText(str(frequency))
                 self.frequency = frequency * self.parent_widget.harmonic
@@ -1605,10 +1708,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
         layer_name = self.parent_widget.get_primary_layer_name()
         if layer_name and layer_name in self.viewer.layers:
             layer = self.viewer.layers[layer_name]
-            if (
-                'settings' in layer.metadata
-                and 'fret' in layer.metadata['settings']
-            ):
+            if 'fret' in self.parent_widget.layer_settings(layer):
 
                 if self.donor_line_edit.text() and self.frequency_input.text():
                     self._updating_settings = True
@@ -2259,6 +2359,8 @@ class FretWidget(AutoUpdateMixin, QWidget):
             self._previous_layer_name = None
             self._sync_filter_ui()
 
+        self._refresh_settings_note()
+
     def calculate_fret_efficiency(self):
         """Calculate FRET efficiency based on donor intensities."""
         if not self.donor_line_edit.text().strip():
@@ -2317,14 +2419,6 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 pass
 
             if primary_layer_name:
-                primary_layer = self.viewer.layers[primary_layer_name]
-                if 'settings' not in primary_layer.metadata:
-                    primary_layer.metadata['settings'] = {}
-                if 'fret' not in primary_layer.metadata['settings']:
-                    primary_layer.metadata['settings'][
-                        'fret'
-                    ] = self._get_default_fret_settings()
-
                 self._update_fret_setting_in_metadata(
                     'donor_background', self.donor_background
                 )
@@ -2371,11 +2465,39 @@ class FretWidget(AutoUpdateMixin, QWidget):
         # because it comes from a Qt spinbox.
         harmonic = self.parent_widget.harmonic
 
+        # Each layer is compared with the donor trajectory at the frequency
+        # it was acquired with: the primary at the entered one, the others
+        # at their stored one.
+        entered_frequency = float(self.frequency_input.text().strip())
+        trajectories = {}
+        layer_trajectories = {}
+        for layer in selected_layers:
+            frequency = (
+                self.parent_widget.layer_frequency(layer, entered_frequency)
+                if hasattr(self.parent_widget, 'layer_frequency')
+                else entered_frequency
+            )
+            if np.isclose(frequency, entered_frequency):
+                layer_trajectories[layer.name] = (neighbor_real, neighbor_imag)
+                continue
+            if frequency not in trajectories:
+                trajectories[frequency] = phasor_from_fret_donor(
+                    frequency=frequency * harmonic,
+                    donor_lifetime=self.donor_lifetime,
+                    fret_efficiency=self._fret_efficiencies,
+                    donor_background=self.donor_background,
+                    background_real=self.background_real,
+                    background_imag=self.background_imag,
+                    donor_fretting=self.donor_fretting_proportion,
+                )
+            layer_trajectories[layer.name] = trajectories[frequency]
+
         def compute_efficiency(layer):
             """Return one layer's FRET efficiency map, or ``None``.
 
             Pure array work, safe to run in a worker thread.
             """
+            trajectory_real, trajectory_imag = layer_trajectories[layer.name]
             g_array = layer.metadata.get("G")
             s_array = layer.metadata.get("S")
             harmonics = layer.metadata.get("harmonics")
@@ -2400,14 +2522,29 @@ class FretWidget(AutoUpdateMixin, QWidget):
             return phasor_nearest_neighbor(
                 real,
                 imag,
-                neighbor_real,
-                neighbor_imag,
+                trajectory_real,
+                trajectory_imag,
                 values=self._fret_efficiencies,
             )
 
         efficiencies = parallel_map(
             compute_efficiency, selected_layers, on_error="collect"
         )
+
+        if not self._updating_settings and self._has_settings_store():
+            # The run's parameters become every analysed layer's settings.
+            analysed_layers = [
+                layer
+                for layer, efficiency in zip(
+                    selected_layers, efficiencies, strict=True
+                )
+                if efficiency is not None
+                and not isinstance(efficiency, BaseException)
+            ]
+            self._commit_fret_settings(analysed_layers)
+            self.parent_widget.commit_frequency(
+                analysed_layers, entered_frequency
+            )
 
         # Process each selected layer
         for layer, fret_efficiency in zip(
@@ -2480,15 +2617,6 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 self.fret_colormap = fret_layer.colormap.colors
                 self.colormap_contrast_limits = fret_layer.contrast_limits
                 self.colormap_gamma = fret_layer.gamma
-
-            try:
-                frequency_float = float(self.frequency_input.text().strip())
-                update_frequency_in_metadata(
-                    layer,
-                    frequency_float,
-                )
-            except ValueError:
-                pass
 
         self._set_fret_layers(self._fret_output_layers().values())
 
