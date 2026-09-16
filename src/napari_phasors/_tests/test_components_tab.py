@@ -5443,6 +5443,11 @@ def test_a_component_labels_colour_can_be_picked_and_given_back(
     assert np.allclose(painted.colormap.color_dict[1], (1.0, 0.0, 0.0, 1.0))
     # The component card now offers to give the inherited colour back.
     assert comp_widget.components[0].color_reset_button.isHidden() is False
+    # Like a rename, the choice is a draft until the analysis runs...
+    draft = comp_widget._read_component_settings(layer)['components']
+    assert draft['0']['label_color'] == "#ff0000"
+    # ...and the run stores it on the layer.
+    comp_widget._run_analysis()
     stored = layer.metadata['settings']['component_analysis']['components']
     assert stored['0']['label_color'] == "#ff0000"
     # Only the component that was picked moves; the other keeps its own.
@@ -5459,7 +5464,8 @@ def test_a_component_labels_colour_can_be_picked_and_given_back(
     assert (
         mcolors.to_hex(comp_widget.components[0].dot.get_color()) == inherited
     )
-    assert 'label_color' not in stored['0']
+    draft = comp_widget._read_component_settings(layer)['components']
+    assert 'label_color' not in draft['0']
     assert comp_widget._on_component_color_changed(0, None) is None
 
 
@@ -5506,10 +5512,11 @@ def test_a_picked_colour_stays_with_its_component_and_is_restored(
     # The component that was second is now first, and kept its colour.
     assert comp_widget._component_label_colors == {0: "#00ff00"}
 
-    # A colour written onto the layer comes back with it.
+    # A colour stored with the component's settings comes back with them.
     comp_widget._component_label_colors = {}
-    settings = layer.metadata['settings']['component_analysis']
+    settings = comp_widget._edit_component_settings(layer)
     settings['components']['0']['label_color'] = "#0000ff"
+    comp_widget._component_settings_edited(layer)
     comp_widget._restore_components_for_harmonic(
         settings.get('last_analysis_harmonic', 1)
     )
@@ -6149,6 +6156,39 @@ def test_a_layer_that_cannot_be_re_derived_measures_nothing(
     assert comp_widget._measurable_mask(broken) is None
     assert comp_widget._reference_pixel_count(broken) is None
     assert comp_widget._component_fraction_maps(broken) == {}
+
+
+def test_every_criterion_follows_the_same_analysis_run(make_viewer_model):
+    """One run, one method: the criteria never split across two of them."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    _enable_fraction_filter(comp_widget, 0, 0.2, 0.8)
+    _enable_fraction_filter(comp_widget, 1, 0.2, 0.8)
+
+    stored = get_filters(layer)
+    assert {f['params']['analysis_type'] for f in stored} == {
+        "Linear Projection"
+    }
+
+    # A third component forces a fit. Until it has run, the criteria keep
+    # testing the fractions the projection produced.
+    comp_widget._add_component()
+    comp_widget.components[2].g_edit.setText("0.5")
+    comp_widget.components[2].s_edit.setText("0.45")
+    comp_widget._on_component_coords_changed(2)
+    assert {f['params']['analysis_type'] for f in get_filters(layer)} == {
+        "Linear Projection"
+    }
+    # And the fraction the fit has not computed yet cannot be filtered on.
+    assert comp_widget._filter_enable_blocked_reason() is not None
+
+    # The run moves all of them at once, so they are never mixed.
+    comp_widget._run_analysis()
+    stored = get_filters(layer)
+    assert len(stored) == 2
+    assert {f['params']['analysis_type'] for f in stored} == {"Component Fit"}
+    assert len({tuple(f['params']['harmonics']) for f in stored}) == 1
 
 
 def test_the_run_button_is_pinned_under_the_settings(make_viewer_model):
