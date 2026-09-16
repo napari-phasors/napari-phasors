@@ -136,6 +136,8 @@ The **Statistics** dock panel, linked to the histogram, displays per-layer (and 
 | Mean | Arithmetic mean |
 | Median | 50th percentile |
 | Std Dev | Standard deviation |
+| Pixels *(in range)* | How many pixels the row summarises. Once a filter is on, the header names the range too — *Component 1 Pixels in 0.2 – 0.8* |
+| % Pixels *(in range)* | What share of the still-valid pixels of the layer those are |
 | (Phasor Center) | Center-of-mass coordinate in phasor space (if shown) |
 
 The statistic columns name the quantity they summarise — *FRET efficiency
@@ -146,6 +148,10 @@ rows: one row per analysed layer, or per group, and one column block per
 quantity — *Component 1 Center of Mass … Component 2 Center of Mass …*.
 Renaming a component in the Components tab relabels its curve and its columns
 straight away.
+
+The **Pixels** and **% Pixels** columns report the amount of valid data for each row alongside the active range. A pixel count is always displayed. To ensure context, the column header dynamically updates to include the active range as soon as a filter is applied—for example, *Component 1 Pixels in 0.2 – 0.8*, or *outside 0.2 – 0.8* when using an excluded range.
+
+The denominator for the percentage calculation includes only the pixels that were **still valid** when the analysis ran—specifically, those retained after applying the intensity threshold, median filter, image mask, and any active criteria from the **Phasor Mapping** and **FRET** tabs. Group rows display the sum of pixel counts for the pooled layers.
 
 Right-clicking on the table provides **Copy**, **Copy with Headers**, and **Select All** options. The entire table can also be exported to CSV via the **Export Table as CSV** button.
 

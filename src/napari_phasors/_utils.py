@@ -3,6 +3,7 @@ This module contains utility functions used by other modules.
 
 """
 
+import contextlib
 import os
 import re
 import warnings
@@ -484,6 +485,26 @@ class AutoUpdateMixin:
         self.autoupdate_container = container
         return container
 
+    def _build_run_row(self, run_button, validator, action, tooltip):
+        """Return the row a tab pins under its scroll area.
+
+        The tab's primary button, with the "Autoupdate" switch beside it on
+        the right. Kept outside the scrolling content so the action that
+        runs the analysis is where it can be reached without scrolling,
+        whatever the tab's settings are doing above it.
+        """
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(run_button, 1)
+        row.addWidget(
+            self._build_autoupdate_toggle(
+                run_button, validator, action, tooltip
+            )
+        )
+        return container
+
     def _on_autoupdate_toggled(self, checked):
         """Handle the Autoupdate switch changing state."""
         self._autoupdate_enabled = bool(checked)
@@ -912,8 +933,44 @@ def layer_colormap_from_settings(entry):
     return Colormap(colors=colors, name=name or "custom")
 
 
+#: Rendered colormap icons, keyed by size and by the colours they show.
+#: Building one samples the colormap once per pixel column, and the combo
+#: boxes that show them are repopulated whenever the layer list changes, so
+#: the same few dozen icons would otherwise be redrawn hundreds of times in
+#: a single edit.
+_COLORMAP_ICON_CACHE = {}
+#: How many icons to keep before starting over, so a session that keeps
+#: defining colormaps cannot grow the cache without bound.
+_COLORMAP_ICON_CACHE_MAX = 512
+
+
+def _colormap_icon_key(cmap_name, width, height):
+    """Return a cache key identifying the icon *cmap_name* would render to.
+
+    A napari colormap is keyed by its colours rather than by its name: the
+    registry is writable, so a name can come back meaning something else,
+    and an icon that no longer matches its layer is worse than a redraw.
+    Matplotlib's registered colormaps do not change under their name.
+    """
+    from napari.utils import colormaps as napari_colormaps
+
+    napari_cmap = napari_colormaps.ALL_COLORMAPS.get(cmap_name)
+    colors = None
+    if napari_cmap is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            colors = np.asarray(napari_cmap.colors, dtype=float).tobytes()
+    return (width, height, cmap_name, colors)
+
+
 def create_colormap_icon(cmap_name, width=25, height=10):
     """Create a QIcon representing the colormap."""
+    key = None
+    if isinstance(cmap_name, str):
+        key = _colormap_icon_key(cmap_name, width, height)
+        cached = _COLORMAP_ICON_CACHE.get(key)
+        if cached is not None:
+            return cached
+
     pixmap = QPixmap(width, height)
     pixmap.fill(Qt.transparent)
 
@@ -937,7 +994,12 @@ def create_colormap_icon(cmap_name, width=25, height=10):
     finally:
         painter.end()
 
-    return QIcon(pixmap)
+    icon = QIcon(pixmap)
+    if key is not None:
+        if len(_COLORMAP_ICON_CACHE) >= _COLORMAP_ICON_CACHE_MAX:
+            _COLORMAP_ICON_CACHE.clear()
+        _COLORMAP_ICON_CACHE[key] = icon
+    return icon
 
 
 def populate_colormap_combobox(
@@ -3837,6 +3899,11 @@ class HistogramWidget(QWidget):
         # {label: source image layer name}; grouping is stored on the source
         # layer so every tab and the plot settings share one set of groups.
         self._dataset_sources = {}
+        # {dataset label or source layer: pixels it was drawn from}; see
+        # :meth:`set_dataset_totals`.
+        self._dataset_totals = {}
+        # {series name or None: "in 0.2 - 0.8"}; see :meth:`set_series_ranges`.
+        self._series_ranges = {}
         # {label: series name} plus optional per-series colors. A series is a
         # family of datasets that may be pooled together in Merged mode (e.g.
         # every layer analysed for one component); datasets of different
@@ -4357,6 +4424,116 @@ class HistogramWidget(QWidget):
             to being their own source.
         """
         self._dataset_sources = dict(sources or {})
+
+    def set_dataset_totals(self, totals: dict) -> None:
+        """Say how many pixels each dataset was drawn from.
+
+        The statistics table reports how many pixels a row holds and what
+        share of its layer that is. The count it holds is in the data; what
+        it is a share *of* is not, because the pixels a filter removed are
+        simply not there any more. A tab that filters its data records the
+        unfiltered counts here so the share can be worked out.
+
+        Parameters
+        ----------
+        totals : dict
+            ``{dataset label or source layer name: pixel count}``. Keying by
+            source layer is usually what is wanted: every quantity derived
+            from one layer is a share of that same layer.
+        """
+        self._dataset_totals = dict(totals or {})
+
+    def set_series_ranges(self, ranges: dict) -> None:
+        """Say what range each quantity's pixels were counted over.
+
+        The statistics table heads its pixel columns with it, so a count
+        reads as "pixels in 0.2 - 0.8" rather than a bare number whose
+        meaning depends on a filter the table does not show.
+
+        Parameters
+        ----------
+        ranges : dict
+            ``{series name or None: "in 0.2 - 0.8"}``. A quantity left out
+            keeps a plain "Pixels" heading.
+        """
+        self._series_ranges = dict(ranges or {})
+
+    def series_ranges(self) -> dict:
+        """Return the ranges the pixel counts were taken over."""
+        return dict(self._series_ranges)
+
+    def dataset_total(self, label):
+        """Return the reference pixel count for *label*, or ``None``.
+
+        A label with no count of its own falls back to its source layer's,
+        so a tab need only record one count per analysed layer.
+        """
+        if label in self._dataset_totals:
+            return self._dataset_totals[label]
+        return self._dataset_totals.get(self._source_for(label))
+
+    def _pooled_total(self, labels):
+        """Return the reference count of *labels* pooled, or ``None``.
+
+        Each source is counted once -- two quantities derived from one layer
+        share its pixels -- and a single unknown makes the whole sum
+        unknown, since a partial denominator would overstate the share.
+        """
+        totals = {}
+        for label in labels:
+            total = self.dataset_total(label)
+            if total is None:
+                return None
+            totals[self._source_for(label)] = total
+        return sum(totals.values()) if totals else None
+
+    def statistics_totals(self):
+        """Return ``{dataset label: reference count}`` for the plain table."""
+        return {
+            label: total
+            for label in self._datasets
+            if (total := self.dataset_total(label)) is not None
+        }
+
+    def series_statistics_totals(self):
+        """Return ``{row: {series: reference count}}`` for the wide table."""
+        rows = {}
+        for label in self._datasets:
+            total = self.dataset_total(label)
+            if total is None:
+                continue
+            rows.setdefault(self.statistics_row_name(label), {})[
+                self._dataset_series.get(label)
+            ] = total
+        return rows
+
+    def grouped_series_statistics_totals(self):
+        """Return ``{group: {series: reference count}}`` for the wide table."""
+        curves, _unassigned = self._grouped_series_curves(self._datasets)
+        rows = {}
+        for group_id, series_name, members in curves:
+            total = self._pooled_total([label for label, _ in members])
+            if total is None:
+                continue
+            label = self._group_names.get(group_id, f"Group {group_id}")
+            rows.setdefault(label, {})[series_name] = total
+        return rows
+
+    def grouped_dataset_totals(self):
+        """Return ``{curve label: reference count}``, one per drawn curve."""
+        curves, _unassigned = self._grouped_series_curves(self._datasets)
+        multiple_series = len(self._series_members(self._datasets)) > 1
+        totals = {}
+        for group_id, series_name, members in curves:
+            total = self._pooled_total([label for label, _ in members])
+            if total is None:
+                continue
+            totals[
+                self._grouped_curve_label(
+                    group_id, series_name, multiple_series
+                )
+            ] = total
+        return totals
 
     def set_dataset_series(
         self, series: dict, colors: dict = None, colormaps: dict = None
@@ -6135,7 +6312,9 @@ def active_selection_region(canvas_widget):
     return region_contains
 
 
-def compute_dataset_statistics(data, bin_centers=None, bin_edges=None):
+def compute_dataset_statistics(
+    data, bin_centers=None, bin_edges=None, reference_count=None
+):
     """Summarise a scalar dataset the way the statistics table displays it.
 
     Shared by :class:`StatisticsTableWidget` and the CSV exporters so the
@@ -6152,23 +6331,38 @@ def compute_dataset_statistics(data, bin_centers=None, bin_edges=None):
         Bin edges used for the centre-of-mass computation. When either
         binning argument is missing, the centre of mass falls back to the
         mean.
+    reference_count : int, optional
+        Pixels the dataset is a subset of -- what the layer held before a
+        filter narrowed it down. It is the denominator of ``"% Pixels"``,
+        which is NaN without it, since "a percentage of what?" has no
+        answer the data itself can supply.
 
     Returns
     -------
     dict
-        Keys ``"Center of Mass"``, ``"Mean"``, ``"Median"`` and
-        ``"Std Dev"``, all floats (NaN when there is no valid data).
+        Keys ``"Center of Mass"``, ``"Mean"``, ``"Median"``, ``"Std Dev"``,
+        ``"Pixels"`` and ``"% Pixels"``, all floats (NaN when there is no
+        valid data, ``"Pixels"`` excepted -- an empty dataset really does
+        hold zero pixels).
     """
     flat = np.asarray(data).ravel()
     valid = flat[~np.isnan(flat) & np.isfinite(flat)]
+    count = int(len(valid))
 
-    if len(valid) == 0:
+    if reference_count:
+        share = 100.0 * count / float(reference_count)
+    else:
+        share = float("nan")
+
+    if count == 0:
         nan = float("nan")
         return {
             "Center of Mass": nan,
             "Mean": nan,
             "Median": nan,
             "Std Dev": nan,
+            "Pixels": 0,
+            "% Pixels": 0.0 if reference_count else nan,
         }
 
     mean_val = float(np.mean(valid))
@@ -6189,6 +6383,8 @@ def compute_dataset_statistics(data, bin_centers=None, bin_edges=None):
         "Mean": mean_val,
         "Median": median_val,
         "Std Dev": std_val,
+        "Pixels": count,
+        "% Pixels": share,
     }
 
 
@@ -6243,13 +6439,28 @@ class StatisticsTableWidget(QTableWidget):
         Parent widget.
     """
 
-    COLUMNS = ["Name", "Center of Mass", "Mean", "Median", "Std Dev"]
+    COLUMNS = [
+        "Name",
+        "Center of Mass",
+        "Mean",
+        "Median",
+        "Std Dev",
+        "Pixels",
+        "% Pixels",
+    ]
+    #: Columns that count pixels rather than measure the quantity. They are
+    #: formatted as a whole number and a percentage, and a percentage with
+    #: nothing to be a percentage *of* is shown as a dash.
+    COUNT_COLUMNS = ("Pixels", "% Pixels")
+    #: The word each count column is headed with once the range it counted
+    #: over is known; see :meth:`set_range_labels`.
+    COUNT_COLUMN_STEMS = {"Pixels": "Pixels", "% Pixels": "%"}
     #: Column layout used when one row is shown per time-lapse frame.
     FRAME_COLUMNS = ["Frame", *COLUMNS]
     #: Starting width per column; anything unlisted uses
     #: :data:`DEFAULT_COLUMN_WIDTH`. Names are the widest content, frames
     #: the narrowest, and the last column stretches over the remainder.
-    COLUMN_WIDTHS = {"Name": 140, "Frame": 60}
+    COLUMN_WIDTHS = {"Name": 140, "Frame": 60, "Pixels": 80, "% Pixels": 80}
     #: Starting width for the numeric statistic columns. The defaults add
     #: up to a table that fits a narrow dock without a horizontal
     #: scrollbar, and the stretching last column absorbs any extra width.
@@ -6263,6 +6474,9 @@ class StatisticsTableWidget(QTableWidget):
         # Name of the quantity summarised, prefixed onto the statistic
         # columns so a table or its export says what was measured.
         self._quantity_label = None
+        # {quantity: "in 0.2 - 0.8"} naming the range each quantity's pixels
+        # were counted over; see :meth:`set_range_labels`.
+        self._range_labels = {}
         #: Widths the user set by dragging, keyed by column name so they
         #: survive the switch between ``COLUMNS`` and ``FRAME_COLUMNS``.
         self._user_column_widths = {}
@@ -6293,6 +6507,26 @@ class StatisticsTableWidget(QTableWidget):
         )
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+    @classmethod
+    def format_statistic(cls, column, value):
+        """Return the text one statistic is shown as.
+
+        A pixel count is a whole number and a share is a percentage, while a
+        measurement of the quantity keeps four decimals. A share with no
+        reference to measure against is drawn as a dash: ``nan`` there would
+        read as "no data" when the data is fine and only the denominator is
+        missing.
+        """
+        if column == "Pixels":
+            return "" if value is None else f"{int(value)}"
+        if column == "% Pixels":
+            if value is None or not np.isfinite(value):
+                return "—"
+            return f"{value:.1f}%"
+        if value is None:
+            return ""
+        return f"{value:.4f}"
 
     def keyPressEvent(self, event):
         """Handle Ctrl+C / Ctrl+A keyboard shortcuts."""
@@ -6359,7 +6593,9 @@ class StatisticsTableWidget(QTableWidget):
         elif action == select_all_action:
             self.selectAll()
 
-    def update_statistics(self, datasets, bin_centers=None, bin_edges=None):
+    def update_statistics(
+        self, datasets, bin_centers=None, bin_edges=None, totals=None
+    ):
         """Update table rows from a ``{name: 1-D array}`` mapping.
 
         Parameters
@@ -6370,20 +6606,47 @@ class StatisticsTableWidget(QTableWidget):
             Bin centres for center-of-mass computation.
         bin_edges : np.ndarray, optional
             Bin edges for center-of-mass computation.
+        totals : dict, optional
+            ``{label: pixel count}`` the rows are a subset of, i.e. the
+            denominator of the ``% Pixels`` column. A row with no entry
+            shows a dash there.
         """
+        totals = totals or {}
         self._apply_columns(self.COLUMNS)
         self.setRowCount(len(datasets))
         for row, (name, data) in enumerate(datasets.items()):
-            stats = compute_dataset_statistics(data, bin_centers, bin_edges)
+            stats = compute_dataset_statistics(
+                data, bin_centers, bin_edges, totals.get(name)
+            )
 
-            # Columns: [Name, Center of Mass, Mean, Median, Std Dev]
             self.setItem(row, 0, QTableWidgetItem(str(name)))
             for col, column_name in enumerate(self.COLUMNS[1:], start=1):
                 self.setItem(
                     row,
                     col,
-                    QTableWidgetItem(f"{stats[column_name]:.4f}"),
+                    QTableWidgetItem(
+                        self.format_statistic(column_name, stats[column_name])
+                    ),
                 )
+
+    def set_range_labels(self, labels):
+        """Name the range each quantity's pixels were counted over.
+
+        ``{quantity name or None: "in 0.2 - 0.8"}``. A pixel count means
+        nothing without the range it counted, so the range goes in the
+        header next to it -- where the CSV export picks it up too, which a
+        tooltip would not.
+        """
+        self._range_labels = dict(labels or {})
+
+    def _count_column_label(self, column, quantity=None):
+        """Return a count column's header, naming the range it counted over."""
+        if column not in self.COUNT_COLUMNS:
+            return column
+        scope = self._range_labels.get(quantity)
+        if not scope:
+            return column
+        return f"{self.COUNT_COLUMN_STEMS[column]} {scope}"
 
     def set_quantity_label(self, label):
         """Name the quantity summarised, or None to keep generic columns.
@@ -6395,19 +6658,23 @@ class StatisticsTableWidget(QTableWidget):
 
     def _display_headers(self, columns):
         """Return *columns* with the quantity prefixed onto the statistics."""
-        if not self._quantity_label:
-            return list(columns)
-        return [
-            (
-                column
-                if column in ("Name", "Frame")
-                else f"{self._quantity_label} {column}"
-            )
-            for column in columns
-        ]
+        quantity = self._quantity_label
+        headers = []
+        for column in columns:
+            if column in ("Name", "Frame"):
+                headers.append(column)
+                continue
+            named = self._count_column_label(column, quantity)
+            headers.append(f"{quantity} {named}" if quantity else named)
+        return headers
 
     def update_series_statistics(
-        self, rows, series_names, bin_centers=None, bin_edges=None
+        self,
+        rows,
+        series_names,
+        bin_centers=None,
+        bin_edges=None,
+        totals=None,
     ):
         """Show one row per name and one column block per quantity.
 
@@ -6420,9 +6687,13 @@ class StatisticsTableWidget(QTableWidget):
             Quantities to lay out, in column order.
         bin_centers, bin_edges : np.ndarray, optional
             Binning used for the centre of mass.
+        totals : dict, optional
+            ``{row_label: {series_name: pixel count}}`` the cells are a
+            subset of, i.e. the denominator of each ``% Pixels`` cell.
         """
+        totals = totals or {}
         columns = ["Name"] + [
-            f"{series} {column}"
+            f"{series} {self._count_column_label(column, series)}"
             for series in series_names
             for column in self.COLUMNS[1:]
         ]
@@ -6432,16 +6703,22 @@ class StatisticsTableWidget(QTableWidget):
         for row, (name, per_series) in enumerate(rows.items()):
             self.setItem(row, 0, QTableWidgetItem(str(name)))
             col = 1
+            row_totals = totals.get(name) or {}
             for series in series_names:
                 data = per_series.get(series)
                 stats = (
-                    compute_dataset_statistics(data, bin_centers, bin_edges)
+                    compute_dataset_statistics(
+                        data,
+                        bin_centers,
+                        bin_edges,
+                        row_totals.get(series),
+                    )
                     if data is not None
                     else None
                 )
                 for column_name in self.COLUMNS[1:]:
                     text = (
-                        f"{stats[column_name]:.4f}"
+                        self.format_statistic(column_name, stats[column_name])
                         if stats is not None
                         else ""
                     )
@@ -6524,7 +6801,10 @@ class StatisticsTableWidget(QTableWidget):
                 highlight_row = row_index
 
             values = [str(row["Frame"]), str(row["Name"])]
-            values += [f"{row[column]:.4f}" for column in self.COLUMNS[1:]]
+            values += [
+                self.format_statistic(column, row.get(column))
+                for column in self.COLUMNS[1:]
+            ]
 
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
@@ -6548,6 +6828,7 @@ class StatisticsTableWidget(QTableWidget):
         group_names=None,
         bin_centers=None,
         bin_edges=None,
+        totals=None,
     ):
         """Update table rows with per-group pooled statistics.
 
@@ -6570,13 +6851,23 @@ class StatisticsTableWidget(QTableWidget):
         # into the first group would silently corrupt its statistics.
         groups, _unassigned = split_items_by_group(datasets, group_assignments)
 
+        totals = totals or {}
         pooled_datasets = {}
+        pooled_totals = {}
         for gid in sorted(groups):
             pooled = np.concatenate([data for _, data in groups[gid]])
             name = group_names.get(gid, f"Group {gid}")
             pooled_datasets[name] = pooled
+            # A group is the sum of its layers, so its reference count is
+            # too -- but only when every member contributes one, since a
+            # partial sum would quietly inflate the share.
+            members = [totals.get(label) for label, _ in groups[gid]]
+            if members and all(count is not None for count in members):
+                pooled_totals[name] = sum(members)
 
-        self.update_statistics(pooled_datasets, bin_centers, bin_edges)
+        self.update_statistics(
+            pooled_datasets, bin_centers, bin_edges, pooled_totals
+        )
 
 
 class HistogramDockWidget(QWidget):
@@ -6753,8 +7044,10 @@ class StatisticsDockWidget(QWidget):
         # Say what was measured in the column headers rather than leaving a
         # bare "Mean" that could be a lifetime, a fraction or an efficiency.
         quantity = hw.statistics_quantity_label()
-        self.layer_stats_table.set_quantity_label(quantity)
-        self.group_stats_table.set_quantity_label(quantity)
+        ranges = hw.series_ranges()
+        for table in (self.layer_stats_table, self.group_stats_table):
+            table.set_quantity_label(quantity)
+            table.set_range_labels(ranges)
 
         if self._shows_per_frame_rows():
             rows, _centers, _edges = self._frame_statistics_rows()
@@ -6789,11 +7082,18 @@ class StatisticsDockWidget(QWidget):
             series_rows, series_names = hw.series_statistics_datasets()
             if series_rows:
                 self.layer_stats_table.update_series_statistics(
-                    series_rows, series_names, hw.bin_centers, hw.bin_edges
+                    series_rows,
+                    series_names,
+                    hw.bin_centers,
+                    hw.bin_edges,
+                    hw.series_statistics_totals(),
                 )
             else:
                 self.layer_stats_table.update_statistics(
-                    hw._datasets, hw.bin_centers, hw.bin_edges
+                    hw._datasets,
+                    hw.bin_centers,
+                    hw.bin_edges,
+                    hw.statistics_totals(),
                 )
             self.layer_stats_section.setVisible(True)
 
@@ -6808,19 +7108,25 @@ class StatisticsDockWidget(QWidget):
                         series_names,
                         hw.bin_centers,
                         hw.bin_edges,
+                        hw.grouped_series_statistics_totals(),
                     )
                 else:
                     self.group_stats_table.update_statistics(
                         hw.grouped_dataset_statistics(),
                         hw.bin_centers,
                         hw.bin_edges,
+                        hw.grouped_dataset_totals(),
                     )
                 self.group_stats_section.setVisible(True)
             else:
                 self.group_stats_section.setVisible(False)
         elif has_single:
+            pooled = hw._pooled_total(hw._datasets)
             self.layer_stats_table.update_statistics(
-                {"Data": hw._raw_valid_data}, hw.bin_centers, hw.bin_edges
+                {"Data": hw._raw_valid_data},
+                hw.bin_centers,
+                hw.bin_edges,
+                {"Data": pooled} if pooled is not None else None,
             )
             self.layer_stats_section.setVisible(True)
             self.group_stats_section.setVisible(False)
@@ -6907,7 +7213,10 @@ class StatisticsDockWidget(QWidget):
                     "Frame": "all",
                     "Name": name,
                     **compute_dataset_statistics(
-                        data, bin_centers=bin_centers, bin_edges=bin_edges
+                        data,
+                        bin_centers=bin_centers,
+                        bin_edges=bin_edges,
+                        reference_count=hw.dataset_total(name),
                     ),
                 }
                 for name, data in datasets.items()

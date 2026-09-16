@@ -39,6 +39,7 @@ from ._mapping_filters import (
     kept_fraction,
     normalize_filters,
     rebuild_layer_from_filters,
+    serialize_filter_applies,
     set_filters,
 )
 from ._parallel import parallel_map
@@ -385,17 +386,16 @@ class FretWidget(AutoUpdateMixin, QWidget):
         # Cautions about settings and frequencies a Calculate would change.
         self._settings_note = create_settings_note_label(content_widget)
         layout.addWidget(self._settings_note)
-        layout.addWidget(self.calculate_fret_efficiency_button)
 
-        layout.addWidget(
-            self._build_autoupdate_toggle(
-                self.calculate_fret_efficiency_button,
-                self._fret_validation,
-                self.calculate_fret_efficiency,
-                "Recalculate the FRET efficiency automatically whenever the "
-                "donor lifetime, frequency, background, fretting proportion, "
-                "layer selection, or filtered/calibrated phasor data change.",
-            )
+        # The button itself is pinned under the scroll area, at the end of
+        # this method, so it is reachable without scrolling.
+        self._run_row = self._build_run_row(
+            self.calculate_fret_efficiency_button,
+            self._fret_validation,
+            self.calculate_fret_efficiency,
+            "Recalculate the FRET efficiency automatically whenever the "
+            "donor lifetime, frequency, background, fretting proportion, "
+            "layer selection, or filtered/calibrated phasor data change.",
         )
         layout.addWidget(self.colormap_checkbox)
 
@@ -485,6 +485,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
         # Set the scroll area as the main layout
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(scroll_area)
+        main_layout.addWidget(self._run_row)
 
         # Initialize selectors and comboboxes
         self.donor_stack.setCurrentIndex(0)
@@ -2211,6 +2212,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
         """Persist the edited stack and rebuild everything downstream of it."""
         self._apply_filter_stack(filters)
 
+    @serialize_filter_applies
     def _apply_filter_stack(self, filters=None, layers=None):
         """Write *filters* to *layers* and re-derive their phasor data."""
         if self.parent_widget is None:
@@ -2254,6 +2256,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
             self._applying_mapping_filter = False
 
         self._sync_filter_ui()
+        self.parent_widget.refresh_filter_tabs(self)
         for message in dict.fromkeys(problems):
             show_warning(message)
 

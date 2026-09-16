@@ -311,6 +311,23 @@ class SelectionWidget(QWidget):
         # === Manual Selection Mode Widget (index 2) ===
         self.stacked_widget.addWidget(self.manual_selection_widget)
 
+        # The run row of whichever mode is showing, pinned under the scroll
+        # area rather than scrolling away with the mode's own settings.
+        self._run_row_stack = CurrentPageStackedWidget()
+        self._run_row_stack.addWidget(self.cursor_selection_widget.run_row)
+        self._run_row_stack.addWidget(self.automatic_clustering_widget.run_row)
+        # Manual selection has no analysis to run.
+        self._run_row_stack.addWidget(QWidget())
+        # A stacked widget grows into whatever space is going; this one is a
+        # single row of buttons, so it is pinned to its own height and the
+        # scroll area above it keeps the rest.
+        self._run_row_stack.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Fixed
+        )
+        layout.addWidget(self._run_row_stack)
+        layout.setStretch(0, 1)
+        self._sync_run_row(0)
+
         # Connect mode change
         self.selection_mode_combobox.currentIndexChanged.connect(
             self._on_selection_mode_changed
@@ -1047,9 +1064,16 @@ class SelectionWidget(QWidget):
                 show_manual=self.is_manual_selection_mode()
             )
 
+    def _sync_run_row(self, index):
+        """Show the pinned run row belonging to the mode at *index*."""
+        self._run_row_stack.setCurrentIndex(index)
+        # Manual selection has nothing to run, so the row takes no space.
+        self._run_row_stack.setVisible(index != 2)
+
     def _on_selection_mode_changed(self, index):
         """Handle selection mode change."""
         self.stacked_widget.setCurrentIndex(index)
+        self._sync_run_row(index)
 
         if index == 2:  # Manual selection mode
             self.cursor_selection_widget.clear_all_patches()
@@ -1897,7 +1921,12 @@ class AutomaticClusteringWidget(QWidget):
             self._apply_clustering,
             ready_tooltip="Run automatic clustering on the selected layer(s).",
         )
-        layout.addWidget(self.apply_button)
+        # Pinned under the tab's scroll area, beside nothing -- this mode has
+        # no autoupdate of its own.
+        self.run_row = QWidget()
+        run_row_layout = QHBoxLayout(self.run_row)
+        run_row_layout.setContentsMargins(0, 0, 0, 0)
+        run_row_layout.addWidget(self.apply_button, 1)
 
         # Table for clusters
         self.cluster_table = QTableWidget()
@@ -2885,8 +2914,6 @@ class CursorSelectionWidget(QWidget):
             self._on_calculate_clicked,
             ready_tooltip="Compute the selection from the current cursors.",
         )
-        layout.addWidget(self.calculate_button)
-
         # Autoupdate toggle.
         self.autoupdate_checkbox = QWidget()
         autoupdate_layout = QHBoxLayout(self.autoupdate_checkbox)
@@ -2899,7 +2926,16 @@ class CursorSelectionWidget(QWidget):
         )
         self.autoupdate_check.toggled.connect(self._on_autoupdate_changed)
         autoupdate_layout.addWidget(self.autoupdate_check)
-        layout.addWidget(self.autoupdate_checkbox)
+
+        # The button and the switch beside it are not part of the scrolling
+        # content: the tab pins them under it, where they stay reachable
+        # however many cursors are listed above.
+        self.run_row = QWidget()
+        run_row_layout = QHBoxLayout(self.run_row)
+        run_row_layout.setContentsMargins(0, 0, 0, 0)
+        run_row_layout.setSpacing(8)
+        run_row_layout.addWidget(self.calculate_button, 1)
+        run_row_layout.addWidget(self.autoupdate_checkbox)
 
         layout.addStretch()
 
