@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from napari.layers import Image
+from napari.layers import Image, Labels
 from napari.utils.notifications import show_error, show_info
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator, QIntValidator
@@ -3746,7 +3746,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.main_layout.addSpacing(10)
 
         self.main_layout.addWidget(
-            QLabel("Select Image Layer(s) to be Exported: ")
+            QLabel("Select Image/Labels Layer(s) to be Exported: ")
         )
 
         # Create horizontal layout for combobox and All/None controls
@@ -4016,10 +4016,12 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.mask_checkbox.setVisible(any_masked)
 
     def _populate_combobox(self):
-        """Populate combobox with image layers."""
+        """Populate combobox with image and labels layers."""
         self.export_layer_combobox.clear()
         image_layers = [
-            layer for layer in self.viewer.layers if isinstance(layer, Image)
+            layer
+            for layer in self.viewer.layers
+            if isinstance(layer, (Image, Labels))
         ]
         for layer in image_layers:
             self.export_layer_combobox.addItem(layer.name)

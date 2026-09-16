@@ -17,16 +17,22 @@ in the selection dropdown.
 
 The Primary Layer acts as the "source of truth" for the user interface:
 
-- **Settings Display**: The parameters shown in the **Calibration**, **Filter**,
-  and **Analysis** tabs always reflect the metadata and current configuration
-  of the Primary Layer.
-- **Workflow Focus**: When you adjust a setting (such as changing the laser
-  frequency), the UI uses the Primary Layer as the active reference for
-  updates. Any batch analysis performed will then sync these parameters across
-  all other selected layers.
+- **Settings Display**: The parameters shown in the **Calibration**,
+  **Filter**, and **Analysis** tabs are the Primary Layer's. Edits made there
+  are kept for the Primary Layer, and come back if you switch the primary
+  layer away and back, but they are not stored in the layer metadata until
+  the analysis runs.
+- **Running an analysis**: Clicking **Calculate**, **Apply**, **Run** or
+  **Calibrate** (or an automatic update) stores that analysis' parameters in
+  **every selected layer**, replacing the parameters of the same analysis
+  stored in them before. The parameters of the other analyses stored in
+  those layers are left untouched.
+- **Plot settings**: The phasor plot is redrawn for every selected layer, so
+  changing a plot setting stores it in all selected layers right away.
 
-This batch-processing capability ensures consistency across datasets and
-significantly streamlines the workflow for experimental series.
+Every analysed layer therefore records the parameters it was analysed with,
+and it can be reproduced from its own metadata (or from the OME-TIF it is
+exported to).
 
 > [!TIP]
 > You can quickly select or deselect all layers using the **All** and **None**
