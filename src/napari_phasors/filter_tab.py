@@ -22,16 +22,22 @@ from qtpy.QtWidgets import (
 )
 from superqt import QRangeSlider, QToggleSwitch
 
+from ._settings_store import ANALYSIS_SETTINGS_KEYS
 from ._utils import (
     analysis_section_stylesheet,
     apply_filter_and_threshold_to_layers,
+    create_settings_note_label,
     make_section,
+    set_settings_note,
     setup_primary_button,
     threshold_li,
     threshold_otsu,
     threshold_yen,
     validate_harmonics_for_wavelet,
 )
+
+#: Settings keys stored by the Filter tab.
+FILTER_SETTINGS_KEYS = ANALYSIS_SETTINGS_KEYS["filter_tab"]
 
 
 class FilterWidget(QWidget):
@@ -83,6 +89,9 @@ class FilterWidget(QWidget):
         self._offscreen_threshold_upper = None
         self._dragging_line = None
         self._canvas = None
+        # Set while the widgets are filled from a layer's settings, so that
+        # filling them is not mistaken for an edit (see _stage_ui_settings).
+        self._restoring_settings = False
         self._histogram_needs_update = (
             False  # Track if histogram needs updating
         )
@@ -147,6 +156,18 @@ class FilterWidget(QWidget):
         self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self._on_image_layer_changed
         )
+        # Edits stay unsaved settings of the primary layer until Apply
+        # stores them in every selected layer.
+        for signal in (
+            self.threshold_slider.valueChanged,
+            self.threshold_method_combobox.currentTextChanged,
+            self.filter_method_combobox.currentTextChanged,
+            self.median_filter_spinbox.valueChanged,
+            self.median_filter_repetition_spinbox.valueChanged,
+            self.wavelet_sigma_spinbox.valueChanged,
+            self.wavelet_levels_spinbox.valueChanged,
+        ):
+            signal.connect(self._stage_ui_settings)
 
     def setup_ui(self):
         """Setup the user interface elements."""
@@ -262,6 +283,10 @@ class FilterWidget(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setWidget(scroll_content)
         layout.addWidget(scroll_area)
+
+        # Caution shown when Apply would replace other layers' settings.
+        self._settings_note = create_settings_note_label(self)
+        layout.addWidget(self._settings_note)
 
         # Apply button (not inside scroll area). Styled / wired in
         # ``_connect_signals`` as a validated primary action.
@@ -490,6 +515,19 @@ class FilterWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback function when the image layer selection is changed."""
+        self._restoring_settings = True
+        try:
+            self._restore_from_selection()
+        finally:
+            self._restoring_settings = False
+        self._refresh_settings_note()
+
+    def _restore_from_selection(self):
+        """Fit the histogram to the selection and show the primary's settings.
+
+        The settings shown include the primary layer's unsaved edits, so an
+        edit survives switching the primary layer away and back.
+        """
         self._refresh_apply_button()
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
@@ -498,8 +536,11 @@ class FilterWidget(QWidget):
             return
 
         # Use primary layer metadata for settings restoration
-        primary_layer = selected_layers[0]
+        primary_layer = self.parent_widget.get_primary_layer()
+        if primary_layer not in selected_layers:
+            primary_layer = selected_layers[0]
         layer_metadata = primary_layer.metadata
+        settings = self.parent_widget.layer_settings(primary_layer)
 
         # Calculate min and max mean values across all selected layers.
         # The minimum is used to bound the slider so the lower-threshold line
@@ -545,9 +586,7 @@ class FilterWidget(QWidget):
 
         self._updating_threshold = True
 
-        if "settings" in layer_metadata:
-            settings = layer_metadata["settings"]
-
+        if settings:
             if "threshold_method" in settings:
                 self.threshold_method_combobox.setCurrentText(
                     settings["threshold_method"]
@@ -608,7 +647,7 @@ class FilterWidget(QWidget):
                 )
 
             if "filter" in settings:
-                filter_settings = settings["filter"]
+                filter_settings = settings["filter"] or {}
 
                 if "method" in filter_settings:
                     method = filter_settings["method"]
@@ -1018,31 +1057,10 @@ class FilterWidget(QWidget):
             )
             return
 
-        threshold_method = self.threshold_method_combobox.currentText()
-        threshold_lower = None
-        threshold_upper = None
-        if threshold_method != "None":
-            lower_val, upper_val = self.threshold_slider.value()
-            # Only persist a bound the user actually constrained. Leaving a
-            # handle at the slider extreme means "no limit" and must be stored
-            # as ``None`` so it can't get frozen to a transient data min/max
-            # (e.g. the reduced max while a mask is active).
-            if lower_val > self.threshold_slider.minimum():
-                threshold_lower = lower_val / self.threshold_factor
-            elif self._offscreen_threshold_lower is not None:
-                # The handle only sits at the extreme because the stored bound
-                # is outside the current (mask-reduced) range.
-                threshold_lower = self._offscreen_threshold_lower
-            if upper_val < self.threshold_slider.maximum():
-                threshold_upper = upper_val / self.threshold_factor
-            elif self._offscreen_threshold_upper is not None:
-                threshold_upper = self._offscreen_threshold_upper
-
-        current_filter_method_text = self.filter_method_combobox.currentText()
-        if current_filter_method_text == "Wavelet (binlet pawFLIM)":
-            current_filter_method = "wavelet"
-        else:
-            current_filter_method = current_filter_method_text.lower()
+        threshold_method, threshold_lower, threshold_upper = (
+            self._threshold_ui_values()
+        )
+        current_filter_method = self._filter_ui_method()
 
         # Collect each layer's parameters first. Every widget read has to
         # happen here on the main thread, because the filtering itself is
@@ -1106,8 +1124,113 @@ class FilterWidget(QWidget):
             )
             show_error(f"Could not filter {len(failed)} layer(s):\n{details}")
 
+        # The filter/threshold just applied is now what each layer stores.
+        applied = [
+            (layer, params)
+            for (layer, params), error in zip(
+                layer_params, errors, strict=True
+            )
+            if not isinstance(error, BaseException)
+        ]
+        for layer, params in applied:
+            if params["filter_method"] is None:
+                # Applied without a filter: a previously stored one no longer
+                # describes the data.
+                (layer.metadata.get("settings") or {}).pop("filter", None)
         if self.parent_widget is not None:
+            self.parent_widget.settings_store.discard_drafts(
+                [layer for layer, _ in applied], FILTER_SETTINGS_KEYS
+            )
             self.parent_widget.refresh_phasor_data()
+
+    def _threshold_ui_values(self):
+        """Return ``(method, lower, upper)`` thresholds as Apply stores them."""
+        threshold_method = self.threshold_method_combobox.currentText()
+        threshold_lower = None
+        threshold_upper = None
+        if threshold_method != "None":
+            lower_val, upper_val = self.threshold_slider.value()
+            # Only persist a bound the user actually constrained. Leaving a
+            # handle at the slider extreme means "no limit" and must be stored
+            # as ``None`` so it can't get frozen to a transient data min/max
+            # (e.g. the reduced max while a mask is active).
+            if lower_val > self.threshold_slider.minimum():
+                threshold_lower = lower_val / self.threshold_factor
+            elif self._offscreen_threshold_lower is not None:
+                # The handle only sits at the extreme because the stored bound
+                # is outside the current (mask-reduced) range.
+                threshold_lower = self._offscreen_threshold_lower
+            if upper_val < self.threshold_slider.maximum():
+                threshold_upper = upper_val / self.threshold_factor
+            elif self._offscreen_threshold_upper is not None:
+                threshold_upper = self._offscreen_threshold_upper
+        return threshold_method, threshold_lower, threshold_upper
+
+    def _filter_ui_method(self):
+        """Return the selected filter as ``'median'``, ``'wavelet'``..."""
+        text = self.filter_method_combobox.currentText()
+        if text == "Wavelet (binlet pawFLIM)":
+            return "wavelet"
+        return text.lower()
+
+    def _collect_ui_settings(self):
+        """Return the settings Apply would store, keyed like the metadata.
+
+        A missing ``'filter'`` key means no filter is applied.
+        """
+        method, lower, upper = self._threshold_ui_values()
+        values = {
+            "threshold": lower,
+            "threshold_upper": upper,
+            "threshold_method": method,
+        }
+        filter_method = self._filter_ui_method()
+        if (
+            filter_method == "median"
+            and self.median_filter_repetition_spinbox.value() > 0
+        ):
+            values["filter"] = {
+                "method": "median",
+                "size": self.median_filter_spinbox.value(),
+                "repeat": self.median_filter_repetition_spinbox.value(),
+            }
+        elif filter_method == "wavelet":
+            values["filter"] = {
+                "method": "wavelet",
+                "sigma": self.wavelet_sigma_spinbox.value(),
+                "levels": self.wavelet_levels_spinbox.value(),
+            }
+        return values
+
+    def _stage_ui_settings(self, *_):
+        """Keep the shown filter/threshold as the primary's unsaved edit."""
+        if self._restoring_settings or self.parent_widget is None:
+            return
+        primary = self.parent_widget.get_primary_layer()
+        if primary is None:
+            return
+        store = self.parent_widget.settings_store
+        values = self._collect_ui_settings()
+        for key in FILTER_SETTINGS_KEYS:
+            if key in values:
+                store.set_draft(primary, key, values[key], notify=False)
+            elif key in store.committed(primary):
+                # An empty filter block reads as "no filter" when restored.
+                store.set_draft(primary, key, {}, notify=False)
+            else:
+                store.discard_drafts([primary], [key], notify=False)
+        store.notify()
+
+    def _refresh_settings_note(self):
+        """Warn when Apply would replace other selected layers' settings."""
+        message = None
+        if self.parent_widget is not None:
+            message = self.parent_widget.settings_overwrite_message(
+                "filter_tab",
+                values=self._collect_ui_settings(),
+                action="Applying",
+            )
+        set_settings_note(self._settings_note, [message])
 
     def on_mouse_press(self, event):
         """Handle mouse press event for threshold line dragging."""

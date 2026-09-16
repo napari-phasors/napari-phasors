@@ -215,7 +215,8 @@ def test_components_lifetime_lands_on_universal_circle(
             x, y = comp.dot.get_data()
             assert abs(np.hypot(x[0] - 0.5, y[0]) - 0.5) < 1e-12
 
-            stored = layer.metadata["settings"]["component_analysis"][
+            # An unsaved setting of the layer until the analysis runs.
+            stored = parent.layer_settings(layer)["component_analysis"][
                 "components"
             ]["0"]["gs_harmonics"][str(harmonic)]
             assert abs(np.hypot(stored["g"] - 0.5, stored["s"]) - 0.5) < 1e-12
@@ -745,8 +746,8 @@ def test_components_widget_harmonic_storage_and_switching(
     assert comp_widget.components[0].g_edit.text() == ""
     assert comp_widget.components[1].g_edit.text() == ""
 
-    # But stored in metadata under harmonic 1
-    components_settings = layer.metadata['settings']['component_analysis']
+    # But kept (unsaved until the analysis runs) under harmonic 1
+    components_settings = parent.layer_settings(layer)['component_analysis']
     assert '0' in components_settings['components']  # Changed from 1 to '0'
     stored_comp1 = components_settings['components'][
         '0'
@@ -2370,9 +2371,10 @@ def test_components_phasor_center_remembers_selection_and_rename(
 
         comp_widget._select_from_phasor_center(0)
 
-    # The selection is remembered on the component and persisted to metadata.
+    # The selection is remembered on the component and in the layer's
+    # (unsaved) settings.
     assert comp0.phasor_center_layers == [layer.name]
-    settings = layer.metadata["settings"]["component_analysis"]
+    settings = parent.layer_settings(layer)["component_analysis"]
     assert settings["components"]["0"]["phasor_center_layers"] == [layer.name]
 
     # Reopening the dialog pre-selects the previously chosen layers.
@@ -3265,7 +3267,7 @@ def test_on_color_button_clicked_updates_color_and_metadata(
         comp._on_color_button_clicked()
 
     assert comp.default_component_color == "#ff0000"
-    settings = layer.metadata["settings"]["component_analysis"]
+    settings = parent.layer_settings(layer)["component_analysis"]
     assert (
         settings["two_component_line_settings"]["default_component_color"]
         == "#ff0000"
@@ -3326,7 +3328,8 @@ def test_on_histogram_offset_changed_updates_metadata_and_redraws(
     comp._on_histogram_offset_changed(0.3)
 
     assert comp.histogram_offset == 0.3
-    settings = layer.metadata["settings"]["component_analysis"]
+    # Unsaved until the analysis runs again.
+    settings = parent.layer_settings(layer)["component_analysis"]
     assert settings["two_component_line_settings"]["histogram_offset"] == 0.3
 
 
@@ -3340,7 +3343,7 @@ def test_on_histogram_transparency_changed_updates_metadata_and_redraws(
     comp._on_histogram_transparency_changed(0.4)
 
     assert abs(comp.histogram_alpha - 0.6) < 1e-9
-    settings = layer.metadata["settings"]["component_analysis"]
+    settings = parent.layer_settings(layer)["component_analysis"]
     assert (
         abs(settings["two_component_line_settings"]["histogram_alpha"] - 0.6)
         < 1e-9
@@ -4911,16 +4914,19 @@ def test_components_remove_component_from_settings(make_viewer_model):
         }
     }
 
-    # Remove index 1 from settings: old '2' should become new '1'
+    # Remove index 1 from settings: old '2' should become new '1'. The
+    # removal is an unsaved edit until the analysis runs.
     comp._remove_component_from_settings(1)
-    settings = layer.metadata["settings"]["component_analysis"]["components"]
+    settings = parent.layer_settings(layer)["component_analysis"]["components"]
     assert "0" in settings and settings["0"]["name"] == "Comp 0"
     assert "1" in settings and settings["1"]["name"] == "Comp 2"
     assert "2" not in settings
+    stored = layer.metadata["settings"]["component_analysis"]["components"]
+    assert len(stored) == 3
 
     # Remove with idx=None removes the last component
     comp._remove_last_component_from_settings()
-    settings = layer.metadata["settings"]["component_analysis"]["components"]
+    settings = parent.layer_settings(layer)["component_analysis"]["components"]
     assert len(settings) == 1
     assert "0" in settings
 

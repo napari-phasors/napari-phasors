@@ -1497,6 +1497,11 @@ def test_phasor_center_dots_cleared_when_selection_change_disables_them(
         make_viewer_model, {"img0": 1, "img1": 1, "img2": 2}
     )
     assert len(plotter._phasor_center_artists) == 2
+    # Switching the centers on stored them in every selected layer; img2 is
+    # given its own settings with them off.
+    plotter.viewer.layers["img2"].metadata["settings"][
+        "phasor_center_enabled"
+    ] = False
 
     # Group A holds the primary layer, so unchecking it swaps the primary.
     _reselect(plotter, ["img2"])

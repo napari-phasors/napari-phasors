@@ -1546,8 +1546,46 @@ def test_writer_widget_csv_coordinates_consistency_2d(
     assert val_11 == 40
 
 
-def test_writer_widget_excludes_labels_layer(make_viewer_model, qtbot):
-    """Test that WriterWidget excludes Labels layers from populate combobox."""
+def test_writer_widget_exports_multiple_labels_layers(
+    make_viewer_model, qtbot, tmp_path
+):
+    """Test that several Labels layers can be exported together as CSV and image."""
+    viewer = make_viewer_model()
+    widget = WriterWidget(viewer)
+
+    viewer.add_labels(np.array([[0, 1], [2, 3]], dtype=int), name="labels_1")
+    viewer.add_labels(np.array([[3, 2], [1, 0]], dtype=int), name="labels_2")
+
+    items = [
+        widget.export_layer_combobox.itemText(i)
+        for i in range(widget.export_layer_combobox.count())
+    ]
+    assert "labels_1" in items
+    assert "labels_2" in items
+
+    csv_path = tmp_path / "labels_1.csv"
+    widget._save_file(
+        str(csv_path),
+        "Layer data as CSV (*.csv)",
+        False,
+        selected_layers=["labels_1", "labels_2"],
+    )
+    assert (tmp_path / "labels_1.csv").exists()
+    assert (tmp_path / "labels_2.csv").exists()
+
+    png_path = tmp_path / "labels_1.png"
+    widget._save_file(
+        str(png_path),
+        "Layer as PNG image (*.png)",
+        True,
+        selected_layers=["labels_1", "labels_2"],
+    )
+    assert (tmp_path / "labels_1.png").exists()
+    assert (tmp_path / "labels_2.png").exists()
+
+
+def test_writer_widget_includes_labels_layer(make_viewer_model, qtbot):
+    """Test that WriterWidget includes Labels layers in populate combobox."""
     viewer = make_viewer_model()
     viewer.add_image(np.random.random((10, 10)), name="my_image")
     viewer.add_labels(np.zeros((10, 10), dtype=int), name="my_labels")
@@ -1559,7 +1597,7 @@ def test_writer_widget_excludes_labels_layer(make_viewer_model, qtbot):
         for i in range(widget.export_layer_combobox.count())
     ]
     assert "my_image" in items
-    assert "my_labels" not in items
+    assert "my_labels" in items
 
 
 def test_writer_widget_flimari_button_requires_phasor_layer(
