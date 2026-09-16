@@ -78,3 +78,14 @@ When multiple layers are selected, you can choose between **Merged**, **Individu
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20center.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20center.mp4" type="video/mp4">
 </video>
+
+## Level of Detail
+
+Below the phasor centers, the **Level of Detail** section bins very large
+images so the plot, the filter tab and every analysis tab work on fewer
+pixels, and optionally refines the visible region as you zoom in. Binning is
+photon-weighted, so a binned image is exactly the phasor of the summed signal
+over each block, and the full-resolution data is kept throughout.
+
+See {doc}`large_images` for the controls and for when binning is worth
+choosing deliberately rather than only for speed.

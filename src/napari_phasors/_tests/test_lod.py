@@ -1,0 +1,863 @@
+"""Tests for level-of-detail control of large phasor layers."""
+
+import numpy as np
+import pytest
+
+from napari_phasors._lod import (
+    AUTO_BINNING,
+    LodManager,
+    PhasorLod,
+    layer_supports_lod,
+    manual_bin_factors,
+)
+
+
+def make_lod_layer(viewer, size=64, scale=(1.0, 1.0), settings=None):
+    """Add an image layer carrying full-resolution phasor arrays."""
+    rng = np.random.default_rng(0)
+    mean = rng.random((size, size)).astype(np.float32) * 100
+    real = rng.random((2, size, size)).astype(np.float32)
+    imag = rng.random((2, size, size)).astype(np.float32)
+    return viewer.add_image(
+        mean.copy(),
+        name="phasor",
+        scale=scale,
+        metadata={
+            "original_mean": mean,
+            "G_original": real,
+            "S_original": imag,
+            "G": real.copy(),
+            "S": imag.copy(),
+            "harmonics": np.array([1, 2]),
+            "settings": settings if settings is not None else {},
+        },
+    )
+
+
+def test_layer_supports_lod(make_viewer_model):
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer)
+    assert layer_supports_lod(layer)
+
+    plain = viewer.add_image(np.zeros((4, 4)))
+    assert not layer_supports_lod(plain)
+
+
+def test_lod_rejects_a_layer_without_phasor_data(make_viewer_model):
+    viewer = make_viewer_model()
+    plain = viewer.add_image(np.zeros((4, 4)))
+    with pytest.raises(ValueError, match="no phasor data"):
+        PhasorLod(plain)
+
+
+def test_applying_a_level_reshapes_every_phasor_array(make_viewer_model):
+    """The working arrays must follow the level, or consumers disagree."""
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer, size=64)
+    lod = PhasorLod(layer)
+
+    assert lod.apply(4) is True
+    assert layer.data.shape == (16, 16)
+    assert layer.metadata["original_mean"].shape == (16, 16)
+    assert layer.metadata["G"].shape == (2, 16, 16)
+    assert layer.metadata["S"].shape == (2, 16, 16)
+    assert layer.metadata["G_original"].shape == (2, 16, 16)
+
+
+def test_reapplying_the_same_level_is_a_no_op(make_viewer_model):
+    viewer = make_viewer_model()
+    lod = PhasorLod(make_lod_layer(viewer))
+    lod.apply(2)
+    assert lod.apply(2) is False
+
+
+def test_world_extent_survives_a_level_change(make_viewer_model):
+    """A level swap must not move the image under the camera."""
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer, size=64)
+    lod = PhasorLod(layer)
+
+    full = layer.extent.world.copy()
+    lod.apply(4)
+    coarse = layer.extent.world
+
+    # Extents agree to within one coarse pixel (napari measures between pixel
+    # centres, so the last bin's width shows up as a small difference).
+    assert np.allclose(coarse, full, atol=4)
+
+
+def test_physical_scale_is_multiplied_not_replaced(make_viewer_model):
+    """A layer with micron spacing must keep it across levels."""
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer, size=64, scale=(0.5, 0.5))
+    lod = PhasorLod(layer)
+
+    lod.apply(4)
+    assert tuple(layer.scale) == (2.0, 2.0)
+    lod.apply(1)
+    assert tuple(layer.scale) == (0.5, 0.5)
+
+
+def test_region_holds_the_real_pixels_and_sits_in_the_right_place(
+    make_viewer_model,
+):
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer, size=64, scale=(0.5, 0.5))
+    source = layer.metadata["original_mean"].copy()
+    lod = PhasorLod(layer)
+
+    lod.apply(1, region=(16, 32, 24, 48))
+
+    assert lod.origin == (16, 24)
+    assert np.array_equal(
+        layer.metadata["original_mean"], source[16:32, 24:48]
+    )
+    # translate is the region origin expressed in world units.
+    assert tuple(layer.translate) == (8.0, 12.0)
+
+
+def test_zooming_in_earns_full_resolution(make_viewer_model):
+    """Refining a small enough region reaches factor 1."""
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer, size=64)
+    lod = PhasorLod(layer)
+    lod.apply(4)
+
+    lod.refine_to((0, 8, 0, 8), budget=1024)
+    assert lod.factor == 1
+
+
+def test_refining_to_the_whole_image_drops_the_crop(make_viewer_model):
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer, size=64)
+    lod = PhasorLod(layer)
+    lod.apply(1, region=(0, 16, 0, 16))
+
+    lod.refine_to((0, 64, 0, 64), budget=64)
+    assert lod.origin == (0, 0)
+    assert tuple(layer.translate) == (0.0, 0.0)
+
+
+def test_stored_filter_is_rerun_at_the_new_level(make_viewer_model):
+    """Thresholded-out pixels must stay out after a level change."""
+    viewer = make_viewer_model()
+    layer = make_lod_layer(
+        viewer,
+        size=64,
+        settings={
+            "threshold": 50.0,
+            "threshold_upper": None,
+            "threshold_method": "Manual",
+        },
+    )
+    lod = PhasorLod(layer)
+    lod.apply(2)
+
+    below = layer.metadata["original_mean"] < 50.0
+    assert below.any(), "test needs some pixels under the threshold"
+    assert np.isnan(layer.metadata["G"][0][below]).all()
+
+
+def test_detach_restores_full_resolution(make_viewer_model):
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer, size=64)
+    source = layer.metadata["original_mean"].copy()
+    lod = PhasorLod(layer)
+
+    lod.apply(4, region=(16, 48, 16, 48))
+    lod.detach()
+
+    assert lod.factor == 1
+    assert layer.data.shape == (64, 64)
+    assert np.array_equal(layer.metadata["original_mean"], source)
+    assert tuple(layer.translate) == (0.0, 0.0)
+    assert lod.pyramid.available_factors() == []
+
+
+def test_mask_is_downsampled_alongside_the_data(make_viewer_model):
+    """A mask must keep matching the arrays it filters."""
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer, size=64)
+    mask = np.zeros((64, 64), dtype=np.uint8)
+    mask[0, 0] = 1
+    layer.metadata["mask"] = mask
+
+    lod = PhasorLod(layer)
+    lod.apply(4)
+
+    assert layer.metadata["mask"].shape == (16, 16)
+    # Block-max: a block holding any labelled pixel stays labelled.
+    assert layer.metadata["mask"][0, 0] == 1
+
+
+class TestLodManager:
+    """Camera-driven refinement."""
+
+    def test_attach_auto_bins_only_large_layers(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=64)
+        manager = LodManager(viewer, budget=256)
+
+        lod = manager.attach(layer, auto=True)
+        assert lod.factor > 1
+
+        manager.detach_all()
+        assert lod.factor == 1
+
+    def test_attach_leaves_small_layers_alone(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=16)
+        manager = LodManager(viewer, budget=10_000_000)
+        assert manager.attach(layer, auto=True).factor == 1
+
+    def test_attach_ignores_layers_without_phasor_data(
+        self, make_viewer_model
+    ):
+        viewer = make_viewer_model()
+        plain = viewer.add_image(np.zeros((4, 4)))
+        manager = LodManager(viewer)
+        assert manager.attach(plain) is None
+        assert manager.layers == []
+
+    def test_attaching_twice_reuses_the_pyramid(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer)
+        manager = LodManager(viewer)
+        assert manager.attach(layer) is manager.attach(layer)
+        assert manager.lod_for(layer) is not None
+
+    def test_visible_region_tracks_the_camera(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=256)
+        manager = LodManager(viewer)
+        lod = manager.attach(layer, auto=False)
+
+        viewer.camera.zoom = 0.01
+        wide = manager.visible_region(lod)
+        viewer.camera.zoom = 20.0
+        viewer.camera.center = (0, 128, 128)
+        narrow = manager.visible_region(lod)
+
+        assert wide == (0, 256, 0, 256)
+        assert narrow is not None
+        assert (narrow[1] - narrow[0]) < (wide[1] - wide[0])
+
+    def test_visible_region_is_none_without_a_usable_camera(
+        self, make_viewer_model
+    ):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer)
+        manager = LodManager(viewer)
+        lod = manager.attach(layer, auto=False)
+
+        viewer.camera.zoom = 0
+        assert manager.visible_region(lod) is None
+
+    def test_refine_now_follows_the_camera(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=256)
+        manager = LodManager(viewer, budget=4096)
+        manager.attach(layer, auto=True)
+        coarse = manager.lod_for(layer).factor
+
+        viewer.camera.zoom = 40.0
+        viewer.camera.center = (0, 128, 128)
+        changed = manager.refine_now()
+
+        assert changed == [layer]
+        assert manager.lod_for(layer).factor < coarse
+
+    def test_enabling_connects_and_disconnecting_releases(
+        self, make_viewer_model
+    ):
+        viewer = make_viewer_model()
+        manager = LodManager(viewer)
+
+        manager.set_enabled(True)
+        assert manager.enabled
+        manager.set_enabled(True)  # idempotent
+
+        manager.disconnect()
+        assert not manager.enabled
+
+    def test_camera_movement_is_debounced(self, make_viewer_model):
+        """A zoom gesture must schedule one recompute, not one per event."""
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=128)
+        manager = LodManager(viewer)
+        manager.attach(layer, auto=False)
+        manager.set_enabled(True)
+
+        for zoom in (2.0, 3.0, 4.0, 5.0):
+            viewer.camera.zoom = zoom
+
+        assert manager._timer.isActive()
+        manager.disconnect()
+        assert not manager._timer.isActive()
+
+
+def make_lod_section(make_viewer_model, size=64):
+    """Return ``(viewer, layer, plotter, section)`` for the LOD controls."""
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    layer = make_lod_layer(viewer, size=size)
+    parent = PlotterWidget(viewer)
+    return viewer, layer, parent, parent.lod_settings
+
+
+class TestPlotSettingsLodControls:
+    """The Level of Detail section of the Plot Settings tab."""
+
+    _widget = staticmethod(make_lod_section)
+
+    def test_manager_is_built_lazily(self, make_viewer_model):
+        """A session that never bins anything holds no camera connection."""
+        _, _, _, tab = self._widget(make_viewer_model)
+        assert tab._lod_manager is None
+        assert tab.lod_manager is not None
+        assert tab.lod_manager is tab.lod_manager
+
+    def test_controls_start_disabled(self, make_viewer_model):
+        _, _, _, tab = self._widget(make_viewer_model)
+        assert not tab.lod_checkbox.isChecked()
+        assert not tab.lod_zoom_checkbox.isEnabled()
+        assert not tab.lod_full_button.isEnabled()
+        assert tab.lod_status_label.text() == "Full resolution"
+
+    def test_enabling_bins_the_selected_layer(self, make_viewer_model):
+        _, layer, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+
+        tab.lod_checkbox.setChecked(True)
+
+        assert tab.lod_zoom_checkbox.isEnabled()
+        assert tab.lod_full_button.isEnabled()
+        assert tab.lod_manager.lod_for(layer).factor > 1
+        assert "Binned" in tab.lod_status_label.text()
+
+    def test_disabling_restores_full_resolution(self, make_viewer_model):
+        _, layer, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+
+        tab.lod_checkbox.setChecked(True)
+        tab.lod_checkbox.setChecked(False)
+
+        assert layer.data.shape == (64, 64)
+        assert tab.lod_status_label.text() == "Full resolution"
+        assert not tab.lod_manager.enabled
+
+    def test_full_resolution_button_keeps_binning_enabled(
+        self, make_viewer_model
+    ):
+        _, layer, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+        tab.lod_checkbox.setChecked(True)
+
+        tab.lod_full_button.click()
+
+        assert layer.data.shape == (64, 64)
+        assert tab.lod_checkbox.isChecked()
+        assert tab.lod_status_label.text() == "Full resolution"
+
+    def test_enabling_without_a_selection_warns_and_reverts(
+        self, make_viewer_model, monkeypatch
+    ):
+        from napari_phasors.plotter import PlotterWidget
+
+        viewer = make_viewer_model()
+        parent = PlotterWidget(viewer)
+        tab = parent.lod_settings
+
+        errors = []
+        monkeypatch.setattr("napari_phasors._lod.show_error", errors.append)
+        tab.lod_checkbox.setChecked(True)
+
+        assert errors
+        assert not tab.lod_checkbox.isChecked()
+
+    def test_zoom_toggle_drives_the_camera_connection(self, make_viewer_model):
+        _, _, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+        tab.lod_checkbox.setChecked(True)
+
+        tab.lod_zoom_checkbox.setChecked(True)
+        assert tab.lod_manager.enabled
+
+        tab.lod_zoom_checkbox.setChecked(False)
+        assert not tab.lod_manager.enabled
+
+    def test_close_releases_the_camera_connection(self, make_viewer_model):
+        """Leaving connections on a closed widget crashes PySide6 teardown."""
+        _, _, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+        tab.lod_checkbox.setChecked(True)
+        tab.lod_zoom_checkbox.setChecked(True)
+
+        tab.close()
+
+        assert not tab._lod_manager.enabled
+        assert not tab._lod_manager._timer.isActive()
+
+
+class TestBinningAmount:
+    """Choosing how much to bin, rather than leaving it to the budget."""
+
+    _widget = staticmethod(make_lod_section)
+
+    def test_offered_factors_are_the_ladder_auto_picks_from(self):
+        """Offering a factor `Auto` could not reach would be a dead end."""
+        assert manual_bin_factors() == (2, 4, 8, 16, 32)
+        assert manual_bin_factors(max_factor=8) == (2, 4, 8)
+        assert manual_bin_factors(max_factor=1) == ()
+
+    def test_combobox_starts_on_auto_and_disabled(self, make_viewer_model):
+        _, _, _, tab = self._widget(make_viewer_model)
+
+        assert tab.binning_combobox.currentText() == AUTO_BINNING
+        assert not tab.binning_combobox.isEnabled()
+        assert tab.selected_factor() is None
+        assert [
+            tab.binning_combobox.itemText(index)
+            for index in range(tab.binning_combobox.count())
+        ] == [AUTO_BINNING, "2x2", "4x4", "8x8", "16x16", "32x32"]
+
+    def test_enabling_binning_enables_the_combobox(self, make_viewer_model):
+        _, _, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+
+        tab.lod_checkbox.setChecked(True)
+        assert tab.binning_combobox.isEnabled()
+
+        tab.lod_checkbox.setChecked(False)
+        assert not tab.binning_combobox.isEnabled()
+
+    def test_a_fixed_factor_is_used_verbatim(self, make_viewer_model):
+        """The chosen factor wins over whatever the budget would have picked."""
+        _, layer, _, tab = self._widget(make_viewer_model, size=64)
+        # A budget this large would leave the layer at full resolution.
+        tab.lod_manager.budget = 10_000_000
+        tab.lod_checkbox.setChecked(True)
+        assert tab.lod_manager.lod_for(layer).factor == 1
+
+        tab.binning_combobox.setCurrentText("8x8")
+
+        assert tab.selected_factor() == 8
+        assert tab.lod_manager.lod_for(layer).factor == 8
+        assert layer.data.shape == (8, 8)
+        assert tab.lod_status_label.text() == "Binned 8x8"
+
+    def test_enabling_with_a_factor_already_chosen(self, make_viewer_model):
+        """The mode is read at enable time, not only when it changes."""
+        _, layer, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 10_000_000
+        tab.binning_combobox.setCurrentText("4x4")
+        assert layer.data.shape == (64, 64)  # nothing applied while off
+
+        tab.lod_checkbox.setChecked(True)
+
+        assert tab.lod_manager.lod_for(layer).factor == 4
+        assert layer.data.shape == (16, 16)
+
+    def test_switching_back_to_auto_restores_the_budget_choice(
+        self, make_viewer_model
+    ):
+        _, layer, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+        tab.lod_checkbox.setChecked(True)
+        tab.binning_combobox.setCurrentText("16x16")
+        assert tab.lod_manager.lod_for(layer).factor == 16
+
+        tab.binning_combobox.setCurrentText(AUTO_BINNING)
+
+        assert tab.selected_factor() is None
+        assert tab.lod_manager.lod_for(layer).factor == 4
+        assert tab.lod_status_label.text() == "Binned 4x4"
+
+    def test_a_fixed_factor_locks_out_zoom_and_full_resolution(
+        self, make_viewer_model
+    ):
+        """Both would move the level out from under the user's choice."""
+        _, _, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+        tab.lod_checkbox.setChecked(True)
+        assert tab.lod_zoom_checkbox.isEnabled()
+        assert tab.lod_full_button.isEnabled()
+
+        tab.binning_combobox.setCurrentText("2x2")
+
+        assert not tab.lod_zoom_checkbox.isEnabled()
+        assert not tab.lod_full_button.isEnabled()
+
+        tab.binning_combobox.setCurrentText(AUTO_BINNING)
+
+        assert tab.lod_zoom_checkbox.isEnabled()
+        assert tab.lod_full_button.isEnabled()
+
+    def test_choosing_a_factor_turns_off_refine_on_zoom(
+        self, make_viewer_model
+    ):
+        """An active camera connection would re-level on the next zoom."""
+        _, _, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+        tab.lod_checkbox.setChecked(True)
+        tab.lod_zoom_checkbox.setChecked(True)
+        assert tab.lod_manager.enabled
+
+        tab.binning_combobox.setCurrentText("4x4")
+
+        assert not tab.lod_zoom_checkbox.isChecked()
+        assert not tab.lod_manager.enabled
+
+    def test_changing_the_factor_while_binning_is_off_does_nothing(
+        self, make_viewer_model
+    ):
+        """No layer is managed yet, so there is nothing to re-level."""
+        _, layer, _, tab = self._widget(make_viewer_model, size=64)
+
+        tab.binning_combobox.setCurrentText("32x32")
+
+        assert layer.data.shape == (64, 64)
+        assert tab.lod_status_label.text() == "Full resolution"
+        assert tab._lod_manager is None
+
+    def test_a_layer_without_state_is_skipped(self, make_viewer_model):
+        """Re-levelling guards `lod_for` returning None, as the other
+        handlers do; without the guard this raises."""
+        _, layer, _, tab = self._widget(make_viewer_model, size=64)
+        tab.lod_manager.budget = 256
+        tab.lod_checkbox.setChecked(True)
+        binned_shape = layer.data.shape
+
+        manager = tab.lod_manager
+        manager._lods[layer] = None
+
+        tab.binning_combobox.setCurrentText("2x2")
+
+        assert manager.lod_for(layer) is None
+        assert layer.data.shape == binned_shape  # left exactly as it was
+
+
+def test_lod_status_lists_every_distinct_factor(make_viewer_model, qtbot):
+    """Layers binned differently are all reported, not just the first."""
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    first = make_lod_layer(viewer, size=64)
+    first.name = "first"
+    second = make_lod_layer(viewer, size=64)
+    second.name = "second"
+    parent = PlotterWidget(viewer)
+    section = parent.lod_settings
+
+    manager = section.lod_manager
+    manager.attach(first, auto=False).apply(2)
+    manager.attach(second, auto=False).apply(4)
+
+    section._update_lod_status()
+
+    assert section.lod_status_label.text() == "Binned 2x2, 4x4"
+
+
+def test_refresh_after_lod_change_without_a_parent_is_a_no_op(
+    make_viewer_model, qtbot
+):
+    """The section can outlive its plotter; refreshing must not raise."""
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    section = parent.lod_settings
+
+    section.parent_widget = None
+    section._refresh_after_lod_change()
+    assert section._selected_layers() == []
+
+
+class TestLodEdgeCases:
+    """Guard rails that only trigger on odd layers or an odd camera."""
+
+    def test_layer_without_a_metadata_dict_is_unsupported(self):
+        """A layer-like object with no metadata mapping is simply skipped."""
+
+        class _Bare:
+            metadata = None
+
+        assert not layer_supports_lod(_Bare())
+        assert not layer_supports_lod(object())
+
+    def test_bin_mask_returns_the_original_at_factor_one(self):
+        from napari_phasors._lod import _bin_mask
+
+        mask = np.eye(4, dtype=np.uint8)
+        assert _bin_mask(mask, 1) is mask
+        assert _bin_mask(mask, 0) is mask
+
+    def test_bin_mask_pads_a_ragged_mask(self):
+        """A mask whose size is not a multiple of the factor is zero-padded."""
+        from napari_phasors._lod import _bin_mask
+
+        mask = np.zeros((5, 7), dtype=np.uint8)
+        mask[4, 6] = 3  # in the padded-away corner block
+
+        binned = _bin_mask(mask, 2)
+
+        assert binned.shape == (3, 4)
+        # Padding is zero, so block-max still reports the label.
+        assert binned[2, 3] == 3
+
+    def test_is_full_detail_tracks_level_and_crop(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=64)
+        lod = PhasorLod(layer)
+
+        assert lod.is_full_detail
+
+        lod.apply(2)
+        assert not lod.is_full_detail
+
+        lod.apply(1, region=(0, 32, 0, 32))
+        assert not lod.is_full_detail
+
+        lod.apply(1)
+        assert lod.is_full_detail
+
+    def test_suggested_factor_matches_the_budget(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=64)
+        lod = PhasorLod(layer)
+
+        assert lod.suggested_factor(budget=64 * 64) == 1
+        assert lod.suggested_factor(budget=256) > 1
+
+    def test_mask_is_cropped_with_the_region(self, make_viewer_model):
+        """A region view has to crop the mask as well as the arrays."""
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=64)
+        mask = np.zeros((64, 64), dtype=np.uint8)
+        mask[:32, :32] = 1
+        mask[32:, 32:] = 2
+        layer.metadata["mask"] = mask
+
+        lod = PhasorLod(layer)
+        lod.apply(1, region=(32, 64, 32, 64))
+
+        cropped = layer.metadata["mask"]
+        assert cropped.shape == (32, 32)
+        assert np.all(cropped == 2)
+
+
+class _StubCamera:
+    """Minimal stand-in for ``viewer.camera``."""
+
+    def __init__(self, zoom=1.0, center=(0.0, 0.0, 0.0)):
+        self.zoom = zoom
+        self.center = center
+
+
+class _StubViewer:
+    """Viewer stand-in whose camera and canvas can be made unusable."""
+
+    def __init__(self, camera=None, canvas=(100, 100)):
+        self.camera = camera
+        self._canvas_size = canvas
+
+
+class TestLodManagerWithoutACamera:
+    """A viewer with no camera must not break refinement."""
+
+    @staticmethod
+    def _cameraless(make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=32)
+        manager = LodManager(viewer)
+        lod = manager.attach(layer, auto=False)
+        manager.viewer = _StubViewer(camera=None)
+        return manager, lod
+
+    def test_connecting_is_a_no_op(self, make_viewer_model):
+        manager, _ = self._cameraless(make_viewer_model)
+        manager._connect_camera()
+        manager._disconnect_camera()
+
+    def test_visible_region_is_none(self, make_viewer_model):
+        manager, lod = self._cameraless(make_viewer_model)
+        assert manager.visible_region(lod) is None
+
+    def test_refine_now_skips_layers_it_cannot_place(self, make_viewer_model):
+        manager, _ = self._cameraless(make_viewer_model)
+        assert manager.refine_now() == []
+
+
+class TestVisibleRegionGuards:
+    """Every way the camera can fail to describe a rectangle."""
+
+    @staticmethod
+    def _manager(make_viewer_model, size=64):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=size)
+        manager = LodManager(viewer)
+        return viewer, manager, manager.attach(layer, auto=False)
+
+    def test_missing_canvas_size(self, make_viewer_model):
+        _, manager, lod = self._manager(make_viewer_model)
+        manager.viewer = _StubViewer(camera=_StubCamera(), canvas=())
+        assert manager.visible_region(lod) is None
+
+    def test_one_dimensional_camera_center(self, make_viewer_model):
+        _, manager, lod = self._manager(make_viewer_model)
+        manager.viewer = _StubViewer(camera=_StubCamera(center=(5.0,)))
+        assert manager.visible_region(lod) is None
+
+    def test_zero_zoom(self, make_viewer_model):
+        _, manager, lod = self._manager(make_viewer_model)
+        manager.viewer = _StubViewer(camera=_StubCamera(zoom=0.0))
+        assert manager.visible_region(lod) is None
+
+    def test_degenerate_layer_scale(self, make_viewer_model):
+        viewer, manager, lod = self._manager(make_viewer_model)
+        viewer.camera.zoom = 1.0
+        lod.base_scale = np.array([0.0, 1.0])
+        assert manager.visible_region(lod) is None
+
+    def test_camera_looking_away_from_the_image(self, make_viewer_model):
+        """Panned entirely off the image, there is no rectangle to refine."""
+        viewer, manager, lod = self._manager(make_viewer_model, size=64)
+        viewer.camera.zoom = 50.0
+        viewer.camera.center = (0, -10_000, -10_000)
+        assert manager.visible_region(lod) is None
+
+
+class TestRefineReentrancy:
+    """The debounce timer and the re-entrancy guard."""
+
+    def test_camera_events_are_ignored_while_refining(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=64)
+        manager = LodManager(viewer)
+        manager.attach(layer, auto=False)
+        manager.set_enabled(True)
+        manager._timer.stop()
+
+        manager._refining = True
+        manager._on_camera_moved()
+        assert not manager._timer.isActive()
+
+        # A refine that arrives while one is running returns immediately.
+        assert manager.refine_now() == []
+        manager._refining = False
+
+    def test_camera_events_are_ignored_without_attached_layers(
+        self, make_viewer_model
+    ):
+        viewer = make_viewer_model()
+        manager = LodManager(viewer)
+        manager.set_enabled(True)
+        manager._on_camera_moved()
+        assert not manager._timer.isActive()
+
+    def test_timeout_refines(self, make_viewer_model):
+        """The debounce timer's slot is what actually triggers the refine."""
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=256)
+        manager = LodManager(viewer, budget=4096)
+        manager.attach(layer, auto=True)
+        coarse = manager.lod_for(layer).factor
+
+        viewer.camera.zoom = 40.0
+        viewer.camera.center = (0, 128, 128)
+        manager._on_timeout()
+
+        assert manager.lod_for(layer).factor < coarse
+
+
+class TestNapariApiCompatibility:
+    """The camera and canvas moved in napari 0.9; both shapes must work."""
+
+    class _ModernViewer:
+        """Viewer shaped like napari 0.9: ``scene.camera`` and ``canvas.size``."""
+
+        def __init__(self, zoom=1.0, center=(0.0, 0.0, 0.0), size=(600, 800)):
+            self.scene = type(
+                "Scene", (), {"camera": _StubCamera(zoom, center)}
+            )()
+            self.canvas = type("Canvas", (), {"size": size})()
+
+    class _LegacyViewer:
+        """Viewer shaped like napari 0.8: ``camera`` and ``_canvas_size``."""
+
+        def __init__(self, zoom=1.0, center=(0.0, 0.0, 0.0), size=(600, 800)):
+            self.camera = _StubCamera(zoom, center)
+            self._canvas_size = size
+
+    def test_camera_is_found_on_both_shapes(self):
+        from napari_phasors._lod import viewer_camera
+
+        modern = self._ModernViewer()
+        assert viewer_camera(modern) is modern.scene.camera
+
+        legacy = self._LegacyViewer()
+        assert viewer_camera(legacy) is legacy.camera
+
+        assert viewer_camera(object()) is None
+
+    def test_canvas_size_is_found_on_both_shapes(self):
+        from napari_phasors._lod import viewer_canvas_size
+
+        assert viewer_canvas_size(self._ModernViewer()) == (600.0, 800.0)
+        assert viewer_canvas_size(self._LegacyViewer()) == (600.0, 800.0)
+
+        assert viewer_canvas_size(object()) is None
+        assert viewer_canvas_size(self._LegacyViewer(size=())) is None
+        assert viewer_canvas_size(self._LegacyViewer(size=(5,))) is None
+
+    def test_visible_region_works_through_the_modern_api(
+        self, make_viewer_model
+    ):
+        """The regression: a 0.9-shaped viewer must still yield a rectangle."""
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=256)
+        manager = LodManager(viewer)
+        lod = manager.attach(layer, auto=False)
+
+        manager.viewer = self._ModernViewer(zoom=0.01)
+        assert manager.visible_region(lod) == (0, 256, 0, 256)
+
+        manager.viewer = self._ModernViewer(
+            zoom=20.0, center=(0.0, 128.0, 128.0)
+        )
+        narrow = manager.visible_region(lod)
+        assert narrow is not None
+        assert (narrow[1] - narrow[0]) < 256
+
+    def test_refine_now_works_through_the_modern_api(self, make_viewer_model):
+        """Refinement follows a 0.9-shaped camera as well as a 0.8-shaped one."""
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=256)
+        manager = LodManager(viewer, budget=4096)
+        manager.attach(layer, auto=True)
+        coarse = manager.lod_for(layer).factor
+
+        manager.viewer = self._ModernViewer(
+            zoom=40.0, center=(0.0, 128.0, 128.0)
+        )
+        changed = manager.refine_now()
+
+        assert changed == [layer]
+        assert manager.lod_for(layer).factor < coarse
+
+    def test_camera_connection_uses_the_modern_api(self, make_viewer_model):
+        """Connecting must reach the same Camera the modern viewer exposes."""
+        viewer = make_viewer_model()
+        manager = LodManager(viewer)
+        camera = viewer.camera
+
+        # A 0.9-shaped wrapper around the real camera object.
+        manager.viewer = type(
+            "V", (), {"scene": type("S", (), {"camera": camera})()}
+        )()
+
+        manager.set_enabled(True)
+        assert manager.enabled
+        manager.disconnect()
+        assert not manager.enabled
