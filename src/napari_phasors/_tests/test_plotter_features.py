@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from napari_phasors._tests.test_plotter import (  # noqa: E501
     create_image_layer_with_phasors,
@@ -1700,6 +1701,70 @@ def test_add_lifetime_ticks(make_viewer_model):
 
     assert len(plotter.semi_circle_plot_artist_list) > 0
     plt.close(fig)
+
+
+def test_lifetime_tick_size_scales_only_the_labels(make_viewer_model):
+    """The tick size scales the labels, never the tick marks."""
+    import matplotlib.pyplot as plt
+    from matplotlib.text import Text
+
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    plotter._get_frequency_from_layer = lambda: 80.0
+    fig, ax = plt.subplots()
+
+    def tick_artists():
+        plotter.semi_circle_plot_artist_list.clear()
+        plotter._add_lifetime_ticks_to_semicircle(ax)
+        artists = plotter.semi_circle_plot_artist_list
+        lines = [a for a in artists if not isinstance(a, Text)]
+        labels = [a for a in artists if isinstance(a, Text)]
+        return lines[1], labels[1]
+
+    line, label = tick_artists()
+    width, fontsize = line.get_linewidth(), label.get_fontsize()
+    tick_data = line.get_xydata().copy()
+    label_position = label.get_position()
+
+    plotter._updating_settings = True
+    plotter.plotter_inputs_widget.lifetime_tick_size_spinbox.setValue(2.0)
+    plotter._updating_settings = False
+    line, label = tick_artists()
+    assert line.get_linewidth() == pytest.approx(width)
+    np.testing.assert_allclose(line.get_xydata(), tick_data)
+    assert label.get_position() == pytest.approx(label_position)
+    assert label.get_fontsize() == pytest.approx(2 * fontsize)
+    plt.close(fig)
+
+
+def test_lifetime_tick_size_shown_only_with_semicircle_ticks(
+    make_viewer_model,
+):
+    """The control shows in semicircle mode when the layer has a frequency."""
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    piw = plotter.plotter_inputs_widget
+    frequency = {'value': None}
+    plotter._get_frequency_from_layer = lambda: frequency['value']
+
+    plotter._update_semi_circle_plot(plotter.canvas_widget.axes)
+    assert piw.lifetime_tick_size_spinbox.isHidden()
+    assert piw.label_lifetime_tick_size.isHidden()
+
+    frequency['value'] = 80.0
+    plotter._update_semi_circle_plot(plotter.canvas_widget.axes)
+    assert not piw.lifetime_tick_size_spinbox.isHidden()
+    assert not piw.label_lifetime_tick_size.isHidden()
+
+    plotter.toggle_semi_circle = False
+    assert piw.lifetime_tick_size_spinbox.isHidden()
+
+    plotter.toggle_semi_circle = True
+    assert not piw.lifetime_tick_size_spinbox.isHidden()
 
 
 def test_on_colormap_changed(make_viewer_model, monkeypatch):

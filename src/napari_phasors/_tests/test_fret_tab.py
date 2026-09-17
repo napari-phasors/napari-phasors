@@ -6,6 +6,7 @@ from numpy.testing import assert_array_equal
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor
 from superqt import QToggleSwitch
 
 from napari_phasors._mapping_filters import (
@@ -2862,17 +2863,213 @@ def test_fret_filter_section_is_a_single_card(make_viewer_model, qtbot):
     assert widget.filter_list.filters() == []
 
 
-def test_fret_colormap_toggle_sits_above_the_filter_section(
+def test_fret_trajectory_style_button_sits_above_the_filter_section(
     make_viewer_model, qtbot
 ):
-    """The trajectory colormap toggle leads into the filter section."""
+    """The style button leads into the filter section; the toggle is in
+    its dialog."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
-    layout = widget.colormap_checkbox.parentWidget().layout()
-    toggle = layout.indexOf(widget.colormap_checkbox)
-    assert toggle >= 0
-    assert layout.indexOf(widget.filter_box) > toggle
+    content_layout = widget.filter_box.parentWidget().layout()
+    display_box = widget.trajectory_style_btn.parentWidget()
+    style = content_layout.indexOf(display_box)
+    assert style >= 0
+    assert content_layout.indexOf(widget.filter_box) > style
+    assert widget.colormap_checkbox.window() is widget.trajectory_style_dialog
+
+
+def test_fret_trajectory_style_dialog_opens_once(make_viewer_model, qtbot):
+    """Clicking the button twice keeps one dialog."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+    widget.trajectory_style_btn.click()
+    dialog = widget.trajectory_style_dialog
+    assert dialog.isVisible()
+    widget.trajectory_style_btn.click()
+    assert widget.trajectory_style_dialog is dialog
+    dialog.close()
+
+
+def _plotted_trajectory_widget(make_viewer_model):
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    widget = parent.fret_tab
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.plot_donor_trajectory()
+    return parent, widget, layer
+
+
+def test_fret_trajectory_style_is_applied_to_the_plot(
+    make_viewer_model, qtbot
+):
+    """Width, transparency and end-dot radius reach the drawn artists."""
+    _, widget, _ = _plotted_trajectory_widget(make_viewer_model)
+
+    widget.trajectory_width_spin.setValue(6.5)
+    widget.trajectory_transparency_spin.setValue(0.4)
+    widget.trajectory_dot_spin.setValue(0.05)
+
+    assert widget.trajectory_linewidth == 6.5
+    assert widget.trajectory_alpha == pytest.approx(0.6)
+    assert widget.trajectory_dot_radius == pytest.approx(0.05)
+    # The slider follows the spinbox.
+    assert widget.trajectory_width_slider.value() == 65
+    line = widget.current_donor_line
+    assert line.get_linewidth() == pytest.approx(6.5)
+    assert line.get_alpha() == pytest.approx(0.6)
+    for circle in (
+        widget.current_donor_circle,
+        widget.current_background_circle,
+    ):
+        assert circle.get_radius() == pytest.approx(0.05)
+        assert circle.get_alpha() == pytest.approx(0.6)
+
+
+def test_fret_trajectory_style_is_kept_in_layer_settings(
+    make_viewer_model, qtbot
+):
+    """The style is a setting of the layer and is restored with it."""
+    parent, widget, layer = _plotted_trajectory_widget(make_viewer_model)
+
+    widget.trajectory_width_spin.setValue(5.0)
+    widget.trajectory_transparency_spin.setValue(0.25)
+    widget.trajectory_dot_spin.setValue(0.04)
+
+    fret_settings = parent.layer_settings(layer)['fret']
+    assert fret_settings['trajectory_linewidth'] == 5.0
+    assert fret_settings['trajectory_alpha'] == pytest.approx(0.75)
+    assert fret_settings['trajectory_dot_radius'] == pytest.approx(0.04)
+
+    widget.trajectory_linewidth = 3.0
+    widget.trajectory_alpha = 1.0
+    widget.trajectory_dot_radius = 0.02
+    widget._restore_fret_settings_from_metadata()
+
+    assert widget.trajectory_linewidth == 5.0
+    assert widget.trajectory_alpha == pytest.approx(0.75)
+    assert widget.trajectory_dot_radius == pytest.approx(0.04)
+    assert widget.trajectory_width_spin.value() == 5.0
+    assert widget.trajectory_transparency_spin.value() == pytest.approx(0.25)
+    assert widget.trajectory_dot_slider.value() == 40
+
+
+def test_fret_trajectory_color_picker_follows_colormap_toggle(
+    make_viewer_model, qtbot
+):
+    """The flat color is offered only while the colormap overlay is off."""
+    _, widget, layer = _plotted_trajectory_widget(make_viewer_model)
+    assert widget.trajectory_color_row.isHidden()
+
+    widget.colormap_checkbox.setChecked(False)
+    assert not widget.trajectory_color_row.isHidden()
+
+    with patch(
+        'napari_phasors.fret_tab.QColorDialog.getColor',
+        return_value=QColor('#ff0000'),
+    ):
+        widget.trajectory_color_button.click()
+
+    assert widget.trajectory_color == '#ff0000'
+    assert widget.current_donor_line.get_color() == '#ff0000'
+    assert widget.current_donor_circle.get_facecolor()[:3] == (1.0, 0.0, 0.0)
+    settings = widget.parent_widget.layer_settings(layer)['fret']
+    assert settings['trajectory_color'] == '#ff0000'
+
+    widget.colormap_checkbox.setChecked(True)
+    assert widget.trajectory_color_row.isHidden()
+
+
+def test_fret_trajectory_dots_can_be_hidden(make_viewer_model, qtbot):
+    """Unchecking the dots removes them and disables their radius."""
+    parent, widget, layer = _plotted_trajectory_widget(make_viewer_model)
+    assert widget.current_donor_circle is not None
+
+    widget.trajectory_dots_checkbox.setChecked(False)
+    assert widget.current_donor_circle is None
+    assert widget.current_background_circle is None
+    assert not widget.trajectory_dot_spin.isEnabled()
+    assert (
+        parent.layer_settings(layer)['fret']['show_trajectory_dots'] is False
+    )
+
+    widget.trajectory_dots_checkbox.setChecked(True)
+    assert widget.current_donor_circle is not None
+    assert widget.trajectory_dot_spin.isEnabled()
+
+
+def test_fret_trajectory_style_reset(make_viewer_model, qtbot):
+    """Reset restores every trajectory style default."""
+    parent, widget, layer = _plotted_trajectory_widget(make_viewer_model)
+    widget.colormap_checkbox.setChecked(False)
+    widget.trajectory_width_spin.setValue(8.0)
+    widget.trajectory_transparency_spin.setValue(0.5)
+    widget.trajectory_dot_spin.setValue(0.07)
+    widget.trajectory_dots_checkbox.setChecked(False)
+    widget.trajectory_color = '#00ff00'
+
+    widget.trajectory_style_reset_button.click()
+
+    assert widget.use_colormap is True
+    assert widget.colormap_checkbox.isChecked()
+    assert widget.trajectory_color_row.isHidden()
+    assert widget.trajectory_linewidth == 3.0
+    assert widget.trajectory_alpha == 1.0
+    assert widget.trajectory_dot_radius == 0.02
+    assert widget.trajectory_color == 'dimgray'
+    assert widget.show_trajectory_dots is True
+    assert widget.trajectory_width_spin.value() == 3.0
+    assert widget.trajectory_width_slider.value() == 30
+    assert widget.trajectory_dots_checkbox.isChecked()
+    assert widget.current_donor_circle is not None
+    settings = parent.layer_settings(layer)['fret']
+    assert settings['trajectory_linewidth'] == 3.0
+    assert settings['trajectory_color'] == 'dimgray'
+    assert settings['show_trajectory_dots'] is True
+    assert settings['use_colormap'] is True
+
+
+def test_draw_fret_trajectory_overlay_uses_style_settings():
+    """The standalone overlay honours the trajectory style settings."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    real = np.linspace(0.8, 0.2, 10)
+    imag = np.linspace(0.3, 0.1, 10)
+    draw_fret_trajectory_overlay(
+        ax,
+        real,
+        imag,
+        np.linspace(0, 1, 10),
+        {
+            "use_colormap": False,
+            "trajectory_linewidth": 7.0,
+            "trajectory_alpha": 0.3,
+            "trajectory_dot_radius": 0.06,
+            "trajectory_color": "#0000ff",
+        },
+    )
+    assert ax.lines[0].get_color() == "#0000ff"
+    assert ax.lines[0].get_linewidth() == pytest.approx(7.0)
+    assert ax.lines[0].get_alpha() == pytest.approx(0.3)
+    assert all(p.get_radius() == pytest.approx(0.06) for p in ax.patches)
+    plt.close(fig)
+
+    fig, ax = plt.subplots()
+    draw_fret_trajectory_overlay(
+        ax,
+        real,
+        imag,
+        np.linspace(0, 1, 10),
+        {"use_colormap": False, "show_trajectory_dots": False},
+    )
+    assert len(ax.patches) == 0
+    plt.close(fig)
 
 
 def test_fret_calculate_button_is_pinned_under_the_scroll_area(

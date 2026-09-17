@@ -7,6 +7,8 @@ and customize the appearance of the phasor plot.
 
 In the **Plot Settings** tab, you can adjust the following general options:
 
+- **Full Polar Plot (Spectral Phasor)**: Toggle between the universal semicircle (default) and the full polar plot.
+- **Lifetime Tick Size**: Scale the lifetime labels (numbers) next to the ticks on the universal semicircle. Only shown in semicircle mode when the selected layer has a frequency, since the ticks are drawn only then.
 - **White Background**: Toggle between a dark (default) and a white background for the plot.
 - **Plot Type**: Choose how the phasor data is displayed. Options include **Density Plot**, **Scatter Plot**, **Contour Plot**, or **None** (to hide the main plot).
 

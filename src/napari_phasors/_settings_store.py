@@ -33,6 +33,7 @@ ANALYSIS_SETTINGS_KEYS = {
     "settings_tab": [
         "harmonic",
         "semi_circle",
+        "lifetime_tick_size",
         "white_background",
         "plot_type",
         "colormap",

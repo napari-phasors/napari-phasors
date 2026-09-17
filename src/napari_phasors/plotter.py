@@ -2246,6 +2246,8 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.white_background_checkbox.toggled.connect(
             self._on_white_background_changed
         )
+        piw_tick_size = self.plotter_inputs_widget.lifetime_tick_size_spinbox
+        piw_tick_size.valueChanged.connect(self._on_lifetime_tick_size_changed)
 
         self.plotter_inputs_widget.marker_size_spinbox.valueChanged.connect(
             self._on_marker_size_changed
@@ -3044,9 +3046,10 @@ class PlotterWidget(QWidget):
             ax.tick_params(axis='both', which='both', labelsize=fs)
 
         # --- Semicircle lifetime tick labels ---
+        tick_scale = self._lifetime_tick_size()
         for artist in getattr(self, 'semi_circle_plot_artist_list', []):
             if hasattr(artist, 'set_fontsize'):
-                artist.set_fontsize(fs * 0.75)
+                artist.set_fontsize(fs * 0.75 * tick_scale)
 
         # --- Colorbar label & tick labels ---
         if getattr(self, 'colorbar', None) is not None:
@@ -3415,6 +3418,7 @@ class PlotterWidget(QWidget):
         return {
             'harmonic': default_harmonic,
             'semi_circle': self.toggle_semi_circle,
+            'lifetime_tick_size': 1.0,
             'white_background': self.white_background,
             'plot_type': self.plot_type,
             'colormap': self.histogram_colormap,
@@ -3461,6 +3465,7 @@ class PlotterWidget(QWidget):
         current = {
             'harmonic': self.harmonic,
             'semi_circle': self.toggle_semi_circle,
+            'lifetime_tick_size': piw.lifetime_tick_size_spinbox.value(),
             'white_background': self.white_background,
             'plot_type': self.plot_type,
             'colormap': self._histogram_colormap_name,
@@ -3598,6 +3603,12 @@ class PlotterWidget(QWidget):
             if 'semi_circle' in settings:
                 # Use the setter to properly update the display
                 self.toggle_semi_circle = settings['semi_circle']
+
+            if 'lifetime_tick_size' in settings:
+                piw = self.plotter_inputs_widget
+                piw.lifetime_tick_size_spinbox.setValue(
+                    settings['lifetime_tick_size']
+                )
 
             # Only restore if explicitly set in metadata
             if (
@@ -4882,6 +4893,30 @@ class PlotterWidget(QWidget):
                 self._connect_active_artist_signals()
                 self.switch_plot_type(new_plot_type)
 
+    def _on_lifetime_tick_size_changed(self, value):
+        """Callback when the semicircle lifetime label size is changed."""
+        self._update_setting_in_metadata('lifetime_tick_size', float(value))
+        if self.toggle_semi_circle:
+            self._update_semi_circle_plot(self.canvas_widget.axes)
+            self.canvas_widget.figure.canvas.draw_idle()
+
+    def _lifetime_tick_size(self):
+        """Return the scale of the semicircle lifetime tick labels."""
+        piw = getattr(self, 'plotter_inputs_widget', None)
+        if piw is None:
+            return 1.0
+        return piw.lifetime_tick_size_spinbox.value()
+
+    def _update_lifetime_tick_size_visibility(self):
+        """Show the tick size control only when ticks can be drawn."""
+        piw = self.plotter_inputs_widget
+        visible = bool(
+            self.toggle_semi_circle
+            and self._get_frequency_from_layer() is not None
+        )
+        piw.label_lifetime_tick_size.setVisible(visible)
+        piw.lifetime_tick_size_spinbox.setVisible(visible)
+
     def _on_marker_size_changed(self, value):
         """Callback when the scatter marker size spinbox is changed."""
         self._update_setting_in_metadata('marker_size', value)
@@ -5773,6 +5808,20 @@ class PlotterWidget(QWidget):
         widget.label_5.setWordWrap(True)
         widget.semi_circle_checkbox = QToggleSwitch()
 
+        widget.label_lifetime_tick_size = QLabel("Lifetime Tick Size:")
+        widget.lifetime_tick_size_spinbox = QDoubleSpinBox()
+        widget.lifetime_tick_size_spinbox.setMinimum(0.25)
+        widget.lifetime_tick_size_spinbox.setMaximum(4.0)
+        widget.lifetime_tick_size_spinbox.setSingleStep(0.25)
+        widget.lifetime_tick_size_spinbox.setValue(1.0)
+        widget.lifetime_tick_size_spinbox.setKeyboardTracking(False)
+        tick_size_tooltip = (
+            "Scale of the lifetime labels (numbers) of the semicircle ticks. "
+            "Shown when the layer has a frequency."
+        )
+        widget.label_lifetime_tick_size.setToolTip(tick_size_tooltip)
+        widget.lifetime_tick_size_spinbox.setToolTip(tick_size_tooltip)
+
         widget.label_6 = QLabel("White Background:")
         widget.white_background_checkbox = QToggleSwitch()
         widget.white_background_checkbox.setChecked(True)
@@ -5832,6 +5881,10 @@ class PlotterWidget(QWidget):
 
         rows = [
             (widget.label_5, widget.semi_circle_checkbox),
+            (
+                widget.label_lifetime_tick_size,
+                widget.lifetime_tick_size_spinbox,
+            ),
             (widget.label_6, widget.white_background_checkbox),
             (widget.label_2, widget.plot_type_combobox),
             (widget.label_3, widget.colormap_combobox),
@@ -5882,6 +5935,7 @@ class PlotterWidget(QWidget):
         for row, (label, field) in enumerate(
             [
                 (piw.label_5, piw.semi_circle_checkbox),
+                (piw.label_lifetime_tick_size, piw.lifetime_tick_size_spinbox),
                 (piw.label_6, piw.white_background_checkbox),
                 (piw.label_2, piw.plot_type_combobox),
             ]
@@ -6771,6 +6825,7 @@ class PlotterWidget(QWidget):
 
             self._add_lifetime_ticks_to_semicircle(ax, visible, alpha, zorder)
 
+        self._update_lifetime_tick_size_visibility()
         return ax
 
     def _add_lifetime_ticks_to_semicircle(
@@ -6784,6 +6839,7 @@ class PlotterWidget(QWidget):
         effective_frequency = frequency * self.harmonic
 
         tick_color = 'black' if self.white_background else 'darkgray'
+        tick_scale = self._lifetime_tick_size()
 
         lifetimes = [0.0]
 
@@ -6850,7 +6906,7 @@ class PlotterWidget(QWidget):
                 if hasattr(self, 'canvas_widget')
                 else 300
             )
-            label_fontsize = self._compute_font_size(side) * 0.75
+            label_fontsize = self._compute_font_size(side) * 0.75 * tick_scale
             label = ax.text(
                 label_x,
                 label_y,

@@ -379,6 +379,62 @@ def test_cursor_add_circular(make_viewer_model, qtbot):
     assert widget._cursors[0]["color"] != widget._cursors[1]["color"]
 
 
+def test_cursor_style_dialog_restyles_outlines(make_viewer_model, qtbot):
+    """Outline width and transparency apply to every cursor shape."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+    widget._add_cursor()
+    widget._add_cursor(cursor_type="elliptic")
+
+    widget.cursor_style_button.click()
+    dialog = widget.cursor_style_dialog
+    assert dialog.isVisible()
+    widget.cursor_style_button.click()
+    assert widget.cursor_style_dialog is dialog
+
+    widget.cursor_width_spin.setValue(4.5)
+    widget.cursor_transparency_spin.setValue(0.3)
+    dialog.close()
+
+    for cursor in widget._cursors:
+        patch = cursor["patch"]
+        assert patch.get_linewidth() == pytest.approx(4.5)
+        assert patch.get_edgecolor()[3] == pytest.approx(0.7)
+
+    # New and redrawn cursors use the same style.
+    widget._add_cursor(cursor_type="polar")
+    widget.redraw_all_patches()
+    for cursor in widget._cursors:
+        patch = cursor["patch"]
+        assert patch.get_linewidth() == pytest.approx(4.5)
+        assert patch.get_edgecolor()[3] == pytest.approx(0.7)
+
+
+def test_cursor_style_reset(make_viewer_model, qtbot):
+    """Reset restores the default outline width and transparency."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+    widget._add_cursor()
+    widget.cursor_style_button.click()
+    widget.cursor_width_spin.setValue(6.0)
+    widget.cursor_transparency_spin.setValue(0.5)
+
+    widget.cursor_style_reset_button.click()
+    widget.cursor_style_dialog.close()
+
+    assert widget.cursor_outline_width == 2.0
+    assert widget.cursor_outline_alpha == 1.0
+    assert widget.cursor_width_slider.value() == 20
+    assert widget.cursor_transparency_slider.value() == 0
+    patch_ = widget._cursors[0]["patch"]
+    assert patch_.get_linewidth() == pytest.approx(2.0)
+    assert patch_.get_edgecolor()[3] == pytest.approx(1.0)
+
+
 def test_cursor_add_elliptic_defaults(make_viewer_model, qtbot):
     """Elliptic cursors keep their distinct radius defaults."""
     viewer = make_viewer_model()

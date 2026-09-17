@@ -43,6 +43,7 @@ from qtpy.QtWidgets import (
     QColorDialog,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -55,6 +56,7 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QStyle,
@@ -184,6 +186,64 @@ def make_section(title):
     box = QGroupBox(title)
     layout = QVBoxLayout(box)
     return box, layout
+
+
+def make_slider_spin_row(
+    label, minv, maxv, value, decimals, on_value, *, step=None, tooltip=None
+):
+    """Return ``(row, slider, spin)``: a labelled slider and spinbox in sync.
+
+    ``on_value`` is called with the float value whenever either control
+    changes, so the value can be dragged or typed.
+    """
+    factor = 10**decimals
+    row = QHBoxLayout()
+    lbl = QLabel(label)
+    row.addWidget(lbl)
+
+    slider = QSlider(Qt.Horizontal)
+    slider.setRange(int(round(minv * factor)), int(round(maxv * factor)))
+    slider.setValue(int(round(value * factor)))
+
+    spin = QDoubleSpinBox()
+    spin.setDecimals(decimals)
+    spin.setRange(minv, maxv)
+    spin.setSingleStep(step if step is not None else 1.0 / factor)
+    spin.setValue(value)
+    spin.setMaximumWidth(85)
+
+    if tooltip:
+        for w in (lbl, slider, spin):
+            w.setToolTip(tooltip)
+
+    syncing = [False]
+
+    def on_slider(iv):
+        if syncing[0]:
+            return
+        syncing[0] = True
+        try:
+            spin.setValue(iv / factor)
+        finally:
+            syncing[0] = False
+        on_value(iv / factor)
+
+    def on_spin(val):
+        if syncing[0]:
+            return
+        syncing[0] = True
+        try:
+            slider.setValue(int(round(val * factor)))
+        finally:
+            syncing[0] = False
+        on_value(val)
+
+    slider.valueChanged.connect(on_slider)
+    spin.valueChanged.connect(on_spin)
+
+    row.addWidget(slider)
+    row.addWidget(spin)
+    return row, slider, spin
 
 
 #: Fallback for :func:`theme_warning_color`, matching the amber napari's own
