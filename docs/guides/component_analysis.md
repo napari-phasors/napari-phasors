@@ -108,6 +108,42 @@ more complex mixtures.
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20fit%20analysis.mp4" type="video/mp4">
 </video>
 
+## Filtering by Component Fraction
+
+The **Fraction filters** section lets you exclude or isolate specific phasor coordinates based on component fractions. Coordinates that fail the filter criteria are invalidated and set to `NaN`.
+
+Each filter carries:
+
+| Control | Purpose |
+|---|---|
+| Checkbox | Toggles the filter on or off without resetting its range. Hidden phasor coordinates are instantly restored when toggled off. |
+| Component name | Identifies the target component, styled in that component's designated color. |
+| **Keep** / **Exclude** | Retains coordinates inside the range (**Keep**) or drops them (**Exclude**). |
+| Range slider and min/max boxes | Sets the fraction range, bounded by the values actually measured. |
+
+Filters always evaluate against **the fractions of the latest analysis run**. Moving a component, switching between **Linear Projection** and **Component Fit**, or changing the harmonic updates all filter targets on the next analysis run—either immediately with **Autoupdate** on, or when triggered manually. Until then, active filters continue testing against the previous dataset.
+
+> [!IMPORTANT]
+> Fraction filters belong to the **same stack** as the criteria in the **Phasor Mapping** and **FRET** tabs. A pixel is kept only when *every* enabled criterion across all tabs keeps it. Because each criterion evaluates independently against the unfiltered data, the order you add them in does not change the result.
+
+### Pixel counts and percentages in the filter
+
+The **Statistics** dock reports these metrics directly. Once a filter is active, the columns reflect the configured range—for example, *Component 1 Pixels in 0.2 – 0.8* and *Component 1 % in 0.2 – 0.8*.
+
+The reported percentage is relative to the pixels that were **still valid** when the analysis ran—after accounting for the intensity threshold, median filter, image mask, and any active criteria from the **Phasor Mapping** and **FRET** tabs.
+
+### Labels layer of filtered pixels
+
+Check **Labels layer** to create a napari labels layer using the components' designated colors. Two options are available:
+
+- **One layer per component** — generates a separate labels layer for each component, showing only the pixels kept by that component's range. Use this to isolate where a single component resides, or to overlay several components for direct comparison.
+- **Single layer, dominant component** — combines all components into a single labels layer. Every pixel that satisfies *every* active filter is assigned the label of the component that accounts for its highest fraction. With no filters enabled, this acts as a direct classification map of the entire image, with each pixel labeled by its dominant component.
+
+### Component colors
+
+Each component card carries a color swatch at the right of its **G** and **S** fields, showing the color that component is drawn in on the phasor plot. Click it to choose a different one: the color you pick stays put whatever the plot's colormap does afterwards, and the **Reset** button that appears beside the swatch restores the inherited one. The choice applies at once to the component's dot on the phasor plot, to its filter card, to both labels layouts and to its label in the combined layer, so a component reads the same everywhere, and it is saved with the layer's settings rather than picked again every session.
+
+
 ## Visualization and quantitative analysis
 
 Component fraction results can be inspected visually as image layers and also

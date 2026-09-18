@@ -33,6 +33,7 @@ ANALYSIS_SETTINGS_KEYS = {
     "settings_tab": [
         "harmonic",
         "semi_circle",
+        "lifetime_tick_size",
         "white_background",
         "plot_type",
         "colormap",
@@ -85,8 +86,8 @@ ANALYSIS_SETTINGS_KEYS = {
         "threshold_method",
     ],
     # The metric filter stack rides with the Phasor Mapping tab: it is one
-    # ordered object, even when some of its criteria are on the FRET
-    # efficiency.
+    # object, even when some of its criteria are on the FRET efficiency or on
+    # a component fraction.
     "phasor_mapping_tab": [
         "phasor_mapping",
         "lifetime",

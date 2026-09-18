@@ -1884,3 +1884,35 @@ def test_marker_transparency_control_round_trips_through_alpha(
     assert plotter.canvas_widget.artists['SCATTER'].alpha == pytest.approx(0.4)
 
     plotter.deleteLater()
+
+
+def assert_run_row_is_pinned(tab, button, autoupdate=None):
+    """Assert a tab's primary button sits under its scroll area, not in it.
+
+    The analysis buttons are pinned below the scrolling settings so they stay
+    reachable however far the settings above them have grown, with the
+    "Autoupdate" switch on the same line to their right.
+    """
+    from qtpy.QtWidgets import QScrollArea
+
+    scroll = tab.findChild(QScrollArea)
+    assert scroll is not None
+
+    ancestors = []
+    node = button.parentWidget()
+    while node is not None:
+        ancestors.append(node)
+        node = node.parentWidget()
+    assert scroll.widget() not in ancestors
+
+    row = button.parentWidget().layout()
+    assert row.indexOf(button) >= 0
+    if autoupdate is not None:
+        assert row.indexOf(autoupdate) > row.indexOf(button)
+
+    tab_layout = tab.layout()
+    node = button
+    while node is not None and tab_layout.indexOf(node) < 0:
+        node = node.parentWidget()
+    assert node is not None
+    assert tab_layout.indexOf(node) > tab_layout.indexOf(scroll)

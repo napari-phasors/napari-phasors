@@ -19,6 +19,8 @@ from napari_phasors._utils import (
     StatisticsTableWidget,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
+    compute_dataset_statistics,
+    create_colormap_icon,
     make_experimental_warning,
     save_groups_to_layer_metadata,
     split_items_by_group,
@@ -681,12 +683,9 @@ def test_statistics_columns_name_the_quantity(qtbot):
         table.horizontalHeaderItem(col).text()
         for col in range(table.columnCount())
     ]
-    assert headers == [
-        "Name",
-        "FRET efficiency Center of Mass",
-        "FRET efficiency Mean",
-        "FRET efficiency Median",
-        "FRET efficiency Std Dev",
+    assert headers == ["Name"] + [
+        f"FRET efficiency {column}"
+        for column in StatisticsTableWidget.COLUMNS[1:]
     ]
 
     # A single series names itself rather than the axis.
@@ -716,16 +715,10 @@ def test_statistics_columns_name_the_quantity(qtbot):
         table.horizontalHeaderItem(col).text()
         for col in range(table.columnCount())
     ]
-    assert headers == [
-        "Name",
-        "Component 1 Center of Mass",
-        "Component 1 Mean",
-        "Component 1 Median",
-        "Component 1 Std Dev",
-        "Component 2 Center of Mass",
-        "Component 2 Mean",
-        "Component 2 Median",
-        "Component 2 Std Dev",
+    assert headers == ["Name"] + [
+        f"{series} {column}"
+        for series in ("Component 1", "Component 2")
+        for column in StatisticsTableWidget.COLUMNS[1:]
     ]
     assert table.rowCount() == 1
     assert table.item(0, 0).text() == "img0"
@@ -772,10 +765,11 @@ def test_statistics_dock_lists_one_row_per_group_and_series(qtbot):
         table.horizontalHeaderItem(col).text()
         for col in range(table.columnCount())
     ]
+    block = len(StatisticsTableWidget.COLUMNS) - 1
     assert headers[0] == "Name"
-    assert len(headers) == 1 + 3 * 4
+    assert len(headers) == 1 + 3 * block
     assert headers[1] == "C1 Center of Mass"
-    assert headers[5] == "C2 Center of Mass"
+    assert headers[1 + block] == "C2 Center of Mass"
 
 
 def test_histogram_dock_widget_links_statistics_dock(qtbot):
@@ -4177,3 +4171,358 @@ def test_layer_colormap_settings_roundtrip():
         )
         is None
     )
+
+
+# ------------------------------------------------ pixel counts and shares
+
+
+def test_dataset_statistics_count_the_pixels_they_summarise():
+    """How many pixels a row holds is part of what the row says."""
+    stats = compute_dataset_statistics(
+        np.array([1.0, np.nan, 3.0, np.inf, 5.0])
+    )
+    assert stats["Pixels"] == 3
+    # Without a reference there is nothing for the count to be a share of.
+    assert np.isnan(stats["% Pixels"])
+
+    stats = compute_dataset_statistics(
+        np.array([1.0, np.nan, 3.0]), reference_count=8
+    )
+    assert stats["Pixels"] == 2
+    assert stats["% Pixels"] == pytest.approx(25.0)
+
+
+def test_an_empty_dataset_holds_no_pixels():
+    """Zero pixels is a number; the statistics of nothing are not."""
+    stats = compute_dataset_statistics(np.array([np.nan, np.nan]))
+    assert stats["Pixels"] == 0
+    assert np.isnan(stats["Mean"])
+    assert np.isnan(stats["% Pixels"])
+
+    stats = compute_dataset_statistics(np.array([np.nan]), reference_count=10)
+    assert stats["Pixels"] == 0
+    assert stats["% Pixels"] == 0.0
+
+
+def test_statistics_are_formatted_by_what_they_are():
+    """A count is whole, a share is a percentage, a measurement has decimals."""
+    fmt = StatisticsTableWidget.format_statistic
+    assert fmt("Pixels", 1234) == "1234"
+    assert fmt("Pixels", None) == ""
+    assert fmt("% Pixels", 23.456) == "23.5%"
+    assert fmt("% Pixels", float("nan")) == "—"
+    assert fmt("% Pixels", None) == "—"
+    assert fmt("Mean", 0.5) == "0.5000"
+    assert fmt("Mean", None) == ""
+
+
+def test_statistics_table_reports_the_share_of_each_layer(qtbot):
+    """A row says how much of its layer survived, not only what is left."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    table.update_statistics(
+        {"A": np.array([1.0, 2.0]), "B": np.array([3.0])},
+        totals={"A": 4},
+    )
+    columns = StatisticsTableWidget.COLUMNS
+    pixels = columns.index("Pixels")
+    share = columns.index("% Pixels")
+    assert table.item(0, pixels).text() == "2"
+    assert table.item(0, share).text() == "50.0%"
+    # A row with no reference count says so rather than inventing one.
+    assert table.item(1, pixels).text() == "1"
+    assert table.item(1, share).text() == "—"
+
+
+def test_series_statistics_report_a_share_per_quantity(qtbot):
+    """Each component of a row is a share of the same layer."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    table.update_series_statistics(
+        {"img0": {"C1": np.array([1.0, 2.0]), "C2": np.array([3.0])}},
+        ["C1", "C2"],
+        totals={"img0": {"C1": 8, "C2": 8}},
+    )
+    block = len(StatisticsTableWidget.COLUMNS) - 1
+    offset = StatisticsTableWidget.COLUMNS.index("% Pixels")
+    assert table.item(0, offset).text() == "25.0%"
+    assert table.item(0, block + offset).text() == "12.5%"
+
+    # A row with no counts at all still renders.
+    table.update_series_statistics(
+        {"img0": {"C1": np.array([1.0]), "C2": None}}, ["C1", "C2"]
+    )
+    assert table.item(0, offset).text() == "—"
+    assert table.item(0, block + offset).text() == ""
+
+
+def test_group_statistics_pool_the_reference_counts(qtbot):
+    """A group is the sum of its layers, and so is what it is a share of."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    datasets = {
+        "a": np.array([1.0, 2.0]),
+        "b": np.array([3.0]),
+        "c": np.array([4.0]),
+    }
+    table.update_group_statistics(
+        datasets,
+        {"a": 1, "b": 1, "c": 2},
+        group_names={1: "Control", 2: "Treated"},
+        totals={"a": 6, "b": 6, "c": 4},
+    )
+    share = StatisticsTableWidget.COLUMNS.index("% Pixels")
+    assert table.item(0, share).text() == "25.0%"
+    assert table.item(1, share).text() == "25.0%"
+
+    # One member without a count makes the whole group's share unknown: a
+    # partial denominator would overstate it.
+    table.update_group_statistics(
+        datasets,
+        {"a": 1, "b": 1, "c": 2},
+        group_names={1: "Control", 2: "Treated"},
+        totals={"a": 6, "c": 4},
+    )
+    assert table.item(0, share).text() == "—"
+    assert table.item(1, share).text() == "25.0%"
+
+
+def test_histogram_totals_follow_the_source_layer(qtbot):
+    """One count per analysed layer covers every quantity derived from it."""
+    widget = HistogramWidget(bins=8)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"C1: img0": "img0", "C2: img0": "img0"})
+    widget.set_dataset_series(
+        {"C1: img0": "Component 1", "C2: img0": "Component 2"}
+    )
+    widget.set_dataset_totals({"img0": 40})
+    widget.update_multi_data(
+        {
+            "C1: img0": np.array([0.1, 0.2]),
+            "C2: img0": np.array([0.8, 0.9, 0.95]),
+        }
+    )
+
+    assert widget.dataset_total("C1: img0") == 40
+    assert widget.dataset_total("nothing") is None
+    # Two quantities of one layer are two shares of the same 40 pixels.
+    assert widget.series_statistics_totals() == {
+        "img0": {"Component 1": 40, "Component 2": 40}
+    }
+    assert widget.statistics_totals() == {"C1: img0": 40, "C2: img0": 40}
+    assert widget._pooled_total(["C1: img0", "C2: img0"]) == 40
+    assert widget._pooled_total(["C1: img0", "nothing"]) is None
+    assert widget._pooled_total([]) is None
+
+    # A label with a count of its own wins over its source's.
+    widget.set_dataset_totals({"img0": 40, "C1: img0": 10})
+    assert widget.dataset_total("C1: img0") == 10
+
+
+def test_statistics_dock_shows_the_share_of_the_analysed_layer(qtbot):
+    """The dock carries the counts the tab recorded into the table."""
+    widget = HistogramWidget(bins=8)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+
+    widget.set_dataset_sources({"C1: img0": "img0"})
+    widget.set_dataset_totals({"img0": 8})
+    widget.update_multi_data({"C1: img0": np.array([0.1, 0.2, 0.3, 0.4])})
+
+    share = StatisticsTableWidget.COLUMNS.index("% Pixels")
+    table = dock.layer_stats_table
+    assert table.item(0, share).text() == "50.0%"
+
+
+def test_single_dataset_statistics_report_their_share(qtbot):
+    """One curve on screen is still a share of the layer it came from."""
+    widget = HistogramWidget(bins=8)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+
+    widget.set_dataset_sources({"img0": "img0"})
+    widget.set_dataset_totals({"img0": 10})
+    widget.update_data(np.array([0.1, 0.2, 0.3, 0.4, 0.5]), label="img0")
+
+    share = StatisticsTableWidget.COLUMNS.index("% Pixels")
+    assert dock.layer_stats_table.item(0, share).text() == "50.0%"
+
+
+def test_grouped_statistics_report_their_pooled_share(qtbot):
+    """Grouped rows pool the counts of the layers they pool the data of."""
+    widget = HistogramWidget(bins=8, viewer=None)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+
+    widget.set_dataset_sources({"img0": "img0", "img1": "img1"})
+    widget.set_dataset_totals({"img0": 4, "img1": 6})
+    widget._group_assignments = {"img0": 1, "img1": 1}
+    widget._group_names = {1: "Control"}
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(
+        {
+            "img0": np.array([0.1, 0.2]),
+            "img1": np.array([0.3, 0.4, 0.5]),
+        }
+    )
+
+    assert widget.grouped_dataset_totals() == {"Control": 10}
+    share = StatisticsTableWidget.COLUMNS.index("% Pixels")
+    assert dock.group_stats_table.item(0, share).text() == "50.0%"
+
+
+def test_grouped_series_statistics_report_their_pooled_share(qtbot):
+    """One row per group, one share per quantity in it."""
+    widget = HistogramWidget(bins=8, viewer=None)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+
+    widget.set_dataset_sources(
+        {"C1: img0": "img0", "C2: img0": "img0", "C1: img1": "img1"}
+    )
+    widget.set_dataset_series(
+        {"C1: img0": "C1", "C2: img0": "C2", "C1: img1": "C1"}
+    )
+    widget.set_dataset_totals({"img0": 4, "img1": 6})
+    widget._group_assignments = {"img0": 1, "img1": 1}
+    widget._group_names = {1: "Control"}
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(
+        {
+            "C1: img0": np.array([0.1, 0.2]),
+            "C2: img0": np.array([0.7]),
+            "C1: img1": np.array([0.3, 0.4, 0.5]),
+        }
+    )
+
+    assert widget.grouped_series_statistics_totals() == {
+        "Control": {"C1": 10, "C2": 4}
+    }
+    share = StatisticsTableWidget.COLUMNS.index("% Pixels")
+    block = len(StatisticsTableWidget.COLUMNS) - 1
+    table = dock.group_stats_table
+    assert table.item(0, share).text() == "50.0%"
+    assert table.item(0, block + share).text() == "25.0%"
+
+
+def test_pixel_columns_name_the_range_they_counted(qtbot):
+    """A count means nothing without the range it counted over."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    # With no range known the columns stay plain: nothing was filtered.
+    table.set_quantity_label("Component 1")
+    table.update_statistics({"img0": np.array([0.1, 0.2])})
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert "Component 1 Pixels" in headers
+    assert "Component 1 % Pixels" in headers
+
+    table.set_range_labels({"Component 1": "in 0.2 – 0.8"})
+    table.update_statistics({"img0": np.array([0.3, 0.4])})
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert "Component 1 Pixels in 0.2 – 0.8" in headers
+    assert "Component 1 % in 0.2 – 0.8" in headers
+
+
+def test_each_quantity_names_its_own_range(qtbot):
+    """Two components filtered differently must not share one heading."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+    table.set_range_labels({"C1": "in 0.2 – 0.8", "C2": "outside 0.1 – 0.4"})
+    table.update_series_statistics(
+        {"img0": {"C1": np.array([0.3]), "C2": np.array([0.9])}},
+        ["C1", "C2"],
+    )
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert "C1 Pixels in 0.2 – 0.8" in headers
+    assert "C2 Pixels outside 0.1 – 0.4" in headers
+    assert "C2 % outside 0.1 – 0.4" in headers
+    # A quantity with no filter of its own keeps a plain heading.
+    table.set_range_labels({"C1": "in 0.2 – 0.8"})
+    table.update_series_statistics(
+        {"img0": {"C1": np.array([0.3]), "C2": np.array([0.9])}},
+        ["C1", "C2"],
+    )
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert "C1 Pixels in 0.2 – 0.8" in headers
+    assert "C2 Pixels" in headers
+
+
+def test_the_histogram_carries_the_ranges_to_the_table(qtbot):
+    """The tab that filtered says over what; the dock passes it through."""
+    widget = HistogramWidget(bins=8)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+
+    assert widget.series_ranges() == {}
+    widget.set_dataset_series({"C1: img0": "Component 1"})
+    widget.set_series_ranges({"Component 1": "in 0.2 – 0.8"})
+    assert widget.series_ranges() == {"Component 1": "in 0.2 – 0.8"}
+    widget.update_multi_data({"C1: img0": np.array([0.3, 0.4])})
+
+    headers = [
+        dock.layer_stats_table.horizontalHeaderItem(col).text()
+        for col in range(dock.layer_stats_table.columnCount())
+    ]
+    assert "Component 1 Pixels in 0.2 – 0.8" in headers
+
+
+def test_colormap_icons_are_drawn_once_per_colormap():
+    """The same icon is handed out again instead of being repainted.
+
+    Every layer added or removed repopulates the colormap selectors, so one
+    edit would otherwise redraw the whole list of icons many times over.
+    """
+    from napari.utils import colormaps as napari_colormaps
+
+    import napari_phasors._utils as utils
+
+    utils._COLORMAP_ICON_CACHE.clear()
+    first = create_colormap_icon("viridis")
+    assert create_colormap_icon("viridis") is first
+    # A different size is a different icon.
+    assert create_colormap_icon("viridis", width=40) is not first
+    # An unknown name is not cached as a blank icon.
+    blank = create_colormap_icon("not a colormap")
+    assert blank is not None
+    assert create_colormap_icon("not a colormap") is not blank
+
+    # A napari colormap is keyed by its colours, so a name that comes back
+    # meaning something else is redrawn rather than served from the cache.
+    name = next(iter(napari_colormaps.ALL_COLORMAPS))
+    icon = create_colormap_icon(name)
+    assert create_colormap_icon(name) is icon
+    original = napari_colormaps.ALL_COLORMAPS[name]
+    try:
+        napari_colormaps.ALL_COLORMAPS[name] = napari_colormaps.ALL_COLORMAPS[
+            "red" if name != "red" else "blue"
+        ]
+        assert create_colormap_icon(name) is not icon
+    finally:
+        napari_colormaps.ALL_COLORMAPS[name] = original
+
+    # The cache cannot grow without bound.
+    utils._COLORMAP_ICON_CACHE.clear()
+    for size in range(utils._COLORMAP_ICON_CACHE_MAX + 1):
+        create_colormap_icon("viridis", width=1 + size)
+    assert len(utils._COLORMAP_ICON_CACHE) <= utils._COLORMAP_ICON_CACHE_MAX
