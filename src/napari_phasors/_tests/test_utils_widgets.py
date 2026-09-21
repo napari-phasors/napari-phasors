@@ -1775,6 +1775,92 @@ class TestCheckableComboBoxBasics:
             painter.end()
 
 
+class TestCheckableComboBoxSelectAllButtons:
+    """Tests for the show_select_all_buttons segmented button pair."""
+
+    def test_not_built_by_default(self, qtbot):
+        """Without the flag there is no button widget to place."""
+        combo = _make_combo(qtbot, items=["a", "b"])
+        assert combo.select_all_buttons is None
+
+    def test_buttons_are_built_and_reused(self, qtbot):
+        """The flag builds one widget holding both buttons."""
+        combo = _make_combo(
+            qtbot, items=["a", "b"], show_select_all_buttons=True
+        )
+        buttons = combo.select_all_buttons
+        assert buttons is not None
+        assert combo.select_all_buttons is buttons
+        assert combo._select_all_button.parent() is buttons
+        assert combo._select_none_button.parent() is buttons
+
+    def test_buttons_change_the_selection(self, qtbot):
+        """Clicking checks or unchecks every item."""
+        combo = _make_combo(
+            qtbot, items=["a", "b", "c"], show_select_all_buttons=True
+        )
+        combo._select_all_button.click()
+        assert combo.checkedItems() == ["a", "b", "c"]
+        combo._select_none_button.click()
+        assert combo.checkedItems() == []
+
+    def test_each_button_is_enabled_only_when_it_would_change_something(
+        self, qtbot
+    ):
+        """Enablement tracks the selection, replacing the old click no-ops."""
+        combo = _make_combo(
+            qtbot, items=["a", "b"], show_select_all_buttons=True
+        )
+        # Nothing checked: only "all" can do anything.
+        assert combo._select_all_button.isEnabled()
+        assert not combo._select_none_button.isEnabled()
+
+        combo.setCheckedItems(["a"])
+        assert combo._select_all_button.isEnabled()
+        assert combo._select_none_button.isEnabled()
+
+        combo.selectAll()
+        assert not combo._select_all_button.isEnabled()
+        assert combo._select_none_button.isEnabled()
+
+    def test_both_buttons_disabled_when_empty(self, qtbot):
+        """An empty combobox offers neither action."""
+        combo = _make_combo(qtbot, show_select_all_buttons=True)
+        assert not combo._select_all_button.isEnabled()
+        assert not combo._select_none_button.isEnabled()
+
+        combo.addItems(["a"])
+        assert combo._select_all_button.isEnabled()
+
+        combo.clear()
+        assert not combo._select_all_button.isEnabled()
+        assert not combo._select_none_button.isEnabled()
+
+    def test_tooltips_report_the_count_and_unit(self, qtbot):
+        """Tooltips carry the state the compact icons cannot show."""
+        combo = _make_combo(
+            qtbot,
+            items=["1", "2", "3"],
+            unit="labels",
+            show_select_all_buttons=True,
+        )
+        combo.setCheckedItems(["1"])
+        assert "1 of 3 selected" in combo._select_all_button.toolTip()
+        assert "labels" in combo._select_none_button.toolTip()
+
+    def test_header_rows_are_excluded_from_the_count(self, qtbot):
+        """The All/None header rows must not count as selectable items."""
+        combo = _make_combo(
+            qtbot,
+            items=["a", "b"],
+            show_select_all_none=True,
+            show_select_all_buttons=True,
+        )
+        combo.selectAll()
+        assert not combo._select_all_button.isEnabled()
+        assert "2 of 2 selected" in combo._select_all_button.toolTip()
+
+
 class TestCheckableComboBoxHeaderControls:
     """Tests for the show_select_all_none 'All' / 'None' header rows."""
 

@@ -65,6 +65,7 @@ from qtpy.QtWidgets import (
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -2725,6 +2726,11 @@ class CheckableComboBox(QComboBox):
         When True, prepend "All" and "None" shortcut rows at the top of
         the dropdown so the user can select or deselect all items with
         one click (default: False).
+    show_select_all_buttons : bool, optional
+        When True, build :attr:`select_all_buttons`, a compact segmented
+        pair of buttons that check or uncheck every item. The widget is
+        not placed for you: add it to the layout next to the combobox
+        (default: False).
     """
 
     selectionChanged = Signal()
@@ -2746,6 +2752,7 @@ class CheckableComboBox(QComboBox):
         show_select_all_none=False,
         no_selection_text=None,
         show_checked_list=False,
+        show_select_all_buttons=False,
     ):
         """Build the combobox and its checkable item model.
 
@@ -2800,6 +2807,11 @@ class CheckableComboBox(QComboBox):
         self.view().viewport().installEventFilter(self)
         self.view().setMouseTracking(True)
 
+        # Optional segmented "check all / uncheck all" buttons
+        self._select_all_buttons = None
+        if show_select_all_buttons:
+            self._build_select_all_buttons()
+
     # ------------------------------------------------------------------
     # Header control helpers
     # ------------------------------------------------------------------
@@ -2828,6 +2840,91 @@ class CheckableComboBox(QComboBox):
         """Return True if *row* is a header control row (not a data item)."""
         item = self.model().item(row)
         return item is not None and item.data(self._CONTROL_ROLE) is not None
+
+    # ------------------------------------------------------------------
+    # Select all / none buttons
+    # ------------------------------------------------------------------
+
+    @property
+    def select_all_buttons(self):
+        """Segmented check-all/uncheck-all widget, or None if not enabled.
+
+        Built when the combobox is constructed with
+        ``show_select_all_buttons=True``. The caller owns the placement:
+        add it to the same row as the combobox.
+        """
+        return self._select_all_buttons
+
+    def _build_select_all_buttons(self):
+        """Create the segmented check-all / uncheck-all button pair."""
+        container = QWidget()
+        container.setObjectName("selectAllButtons")
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._select_all_button = QToolButton()
+        self._select_all_button.setObjectName("selectAllButton")
+        self._select_all_button.setText("\u2611")  # ballot box with check
+        self._select_none_button = QToolButton()
+        self._select_none_button.setObjectName("selectNoneButton")
+        self._select_none_button.setText("\u2610")  # empty ballot box
+
+        for button in (self._select_all_button, self._select_none_button):
+            button.setFixedSize(22, 22)
+            button.setAutoRaise(True)
+            button.setFocusPolicy(Qt.NoFocus)
+            layout.addWidget(button)
+
+        # Segmented look: one border around the pair, a hairline between
+        # them. Translucent grays rather than palette() roles: napari themes
+        # the app through a stylesheet and leaves QPalette at the light
+        # default, so palette(midlight) would paint a near-white block on a
+        # dark theme. A gray wash lightens a dark background and darkens a
+        # light one, so it reads as a hover in either.
+        container.setStyleSheet(
+            "QWidget#selectAllButtons {"
+            "  border: 1px solid rgba(135, 135, 135, 0.6);"
+            "  border-radius: 4px;"
+            "}"
+            "QWidget#selectAllButtons QToolButton {"
+            "  border: none;"
+            "  border-radius: 0px;"
+            "  background: transparent;"
+            "  padding: 0px;"
+            "}"
+            "QWidget#selectAllButtons QToolButton:hover:enabled {"
+            "  background: rgba(135, 135, 135, 0.25);"
+            "}"
+            "QWidget#selectAllButtons QToolButton:pressed:enabled {"
+            "  background: rgba(135, 135, 135, 0.45);"
+            "}"
+            "QWidget#selectAllButtons QToolButton#selectNoneButton {"
+            "  border-left: 1px solid rgba(135, 135, 135, 0.6);"
+            "}"
+        )
+
+        self._select_all_button.clicked.connect(self.selectAll)
+        self._select_none_button.clicked.connect(self.deselectAll)
+
+        self._select_all_buttons = container
+        self._sync_select_all_buttons()
+
+    def _sync_select_all_buttons(self):
+        """Enable each button only when it would change the selection."""
+        if getattr(self, "_select_all_buttons", None) is None:
+            return
+        total = self.model().rowCount() - self._header_count
+        checked = len(self.checkedItems())
+        self._select_all_button.setEnabled(total > 0 and checked < total)
+        self._select_none_button.setEnabled(checked > 0)
+        state = f"{checked} of {total} selected"
+        self._select_all_button.setToolTip(
+            f"Select all {self._unit} ({state})"
+        )
+        self._select_none_button.setToolTip(
+            f"Deselect all {self._unit} ({state})"
+        )
 
     def selectAll(self):
         """Check all items (emits one selectionChanged)."""
@@ -3121,6 +3218,7 @@ class CheckableComboBox(QComboBox):
 
     def _update_display_text(self):
         """Update the display text to show primary layer and selection count."""
+        self._sync_select_all_buttons()
         checked = self.checkedItems()
         line_edit = self.lineEdit()
 

@@ -1,7 +1,9 @@
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 from napari.layers import Image
+from qtpy.QtCore import QEvent
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -236,10 +238,8 @@ def test_image_layer_rename_without_initial_phasors(make_viewer_model):
     )
 
 
-def test_mask_ui_switches_to_button_when_multiple_layers_selected(
-    make_viewer_model,
-):
-    """Test that selecting multiple layers switches mask UI from combobox to button."""
+def test_mask_row_keeps_its_shape_across_selection_counts(make_viewer_model):
+    """The summary button is the whole row, whatever the selection count."""
     viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_image_layer_with_phasors()
@@ -247,26 +247,24 @@ def test_mask_ui_switches_to_button_when_multiple_layers_selected(
     viewer.add_layer(layer2)
     plotter = PlotterWidget(viewer)
 
-    # With only one layer selected (default primary), combobox should be visible.
-    # Use not isHidden() because the plotter is not rendered in a window during tests,
-    # so isVisible() would be False for all widgets regardless of their setVisible() state.
+    # Use not isHidden() because the plotter is not rendered in a window during
+    # tests, so isVisible() would be False regardless of setVisible() state.
     plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
-    assert not plotter.mask_layer_combobox.isHidden()
-    assert not plotter.mask_layer_label.isHidden()
-    assert plotter.mask_assign_button.isHidden()
+    assert not plotter.mask_summary_button.isHidden()
+    assert not plotter.mask_button_label.isHidden()
 
-    # Select both layers - should switch to button mode
     plotter.image_layers_checkable_combobox.setCheckedItems(
         [layer1.name, layer2.name]
     )
-    assert plotter.mask_layer_combobox.isHidden()
-    assert plotter.mask_layer_label.isHidden()
-    assert not plotter.mask_assign_button.isHidden()
+    assert not plotter.mask_summary_button.isHidden()
+    assert not plotter.mask_button_label.isHidden()
 
-    # Back to single selection - should revert to combobox mode
     plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
-    assert not plotter.mask_layer_combobox.isHidden()
-    assert plotter.mask_assign_button.isHidden()
+    assert not plotter.mask_summary_button.isHidden()
+
+    # The editor controls live in the popover, not in the row.
+    assert plotter.mask_layer_combobox.parent() is plotter.mask_editor_popover
+    assert plotter.mask_invert_checkbox.parent() is plotter.mask_editor_popover
 
 
 def test_mask_assignment_dialog_get_assignments(make_viewer_model):
@@ -635,8 +633,8 @@ def test_get_mask_for_layer_multi_mode(make_viewer_model):
     assert plotter.get_mask_for_layer(layer2.name) == "None"
 
 
-def test_mask_assign_button_text_updates_with_count(make_viewer_model):
-    """Test that the assign button text shows how many layers have masks assigned."""
+def test_mask_summary_text_updates_with_count(make_viewer_model):
+    """Multi-layer summary reports how many layers carry a mask."""
     viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_image_layer_with_phasors()
@@ -650,24 +648,27 @@ def test_mask_assign_button_text_updates_with_count(make_viewer_model):
 
     # No masks assigned yet
     plotter._mask_assignments = {}
-    plotter._update_mask_assign_button_text()
-    assert plotter.mask_assign_button.text() == "Assign Masks..."
+    plotter._update_mask_summary_text()
+    assert plotter._mask_summary_full_text == "None"
 
     # One mask assigned
     G = layer1.metadata["G"]
     shape = G.shape[1:] if G.ndim == 3 else G.shape
     labels_layer = viewer.add_labels(np.ones(shape, dtype=int), name="m")
     plotter._mask_assignments = {layer1.name: labels_layer.name}
-    plotter._update_mask_assign_button_text()
-    assert "1/2" in plotter.mask_assign_button.text()
+    plotter._update_mask_summary_text()
+    assert plotter._mask_summary_full_text == "1 of 2 layers"
+    assert "1 of 2 selected layers masked" in (
+        plotter.mask_summary_button.toolTip()
+    )
 
     # Both masks assigned
     plotter._mask_assignments = {
         layer1.name: labels_layer.name,
         layer2.name: labels_layer.name,
     }
-    plotter._update_mask_assign_button_text()
-    assert "2/2" in plotter.mask_assign_button.text()
+    plotter._update_mask_summary_text()
+    assert plotter._mask_summary_full_text == "2 of 2 layers"
 
 
 def _make_mask_shape(layer):
@@ -1220,18 +1221,26 @@ def test_mask_labels_combobox_defaults_to_all_checked(make_viewer_model):
     assert checked == all_items, "All label items should be checked by default"
 
 
-def test_mask_labels_combobox_has_external_all_none_labels(make_viewer_model):
-    """mask_labels_container should contain 'All' and 'None' clickable labels."""
+def test_mask_labels_combobox_has_external_select_all_buttons(
+    make_viewer_model,
+):
+    """The mask labels row carries the combobox's select all/none buttons."""
     _, plotter, _, _, _ = _setup_plotter_with_labels(make_viewer_model)
 
-    assert (
-        plotter.mask_labels_select_all.text()
-        == '<a href="all" style="color: gray;">All</a>'
-    )
-    assert (
-        plotter.mask_labels_select_none.text()
-        == '<a href="none" style="color: gray;">None</a>'
-    )
+    combo = plotter.mask_labels_combobox
+    assert plotter.mask_labels_select_buttons is combo.select_all_buttons
+
+    # All labels are checked by default: "all" is a no-op, "none" is not.
+    assert not combo._select_all_button.isEnabled()
+    assert combo._select_none_button.isEnabled()
+
+    combo.deselectAll()
+    assert combo._select_all_button.isEnabled()
+    assert not combo._select_none_button.isEnabled()
+
+    combo._select_all_button.click()
+    assert combo.checkedItems() == combo.allItems()
+    assert not combo._select_all_button.isEnabled()
 
 
 # ---------------------------------------------------------------------------
@@ -2671,3 +2680,211 @@ def test_parallel_processing_hint_describes_the_memory_budget(
     finally:
         _parallel.set_memory_budget_enabled(previous)
         _parallel.set_parallel_items_enabled(previous_items)
+
+
+# ---------------------------------------------------------------------------
+# Mask summary button and editor popover
+# ---------------------------------------------------------------------------
+
+
+def _plotter_with_label_mask(make_viewer_model, n_layers=1):
+    """Build a plotter with ``n_layers`` phasor layers and a 3-label mask."""
+    viewer = make_viewer_model()
+    layers = []
+    for _ in range(n_layers):
+        layer = create_image_layer_with_phasors()
+        viewer.add_layer(layer)
+        layers.append(layer)
+    plotter = PlotterWidget(viewer)
+    shape = _make_mask_shape(layers[0])
+    data = np.zeros(shape, dtype=int)
+    width = shape[-1]
+    data[..., : width // 3] = 1
+    data[..., width // 3 : 2 * width // 3] = 2
+    data[..., 2 * width // 3 :] = 3
+    mask = viewer.add_labels(data, name="cells")
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer.name for layer in layers]
+    )
+    return viewer, plotter, layers, mask
+
+
+def test_mask_summary_reports_no_mask(make_viewer_model):
+    """With no mask the button reads 'None' and says what it is for."""
+    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
+
+    assert plotter._mask_summary_full_text == "None"
+    assert "restrict the analysis" in plotter.mask_summary_button.toolTip()
+
+
+def test_mask_summary_names_the_mask_layer(make_viewer_model):
+    """Selecting a mask puts its name on the button."""
+    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
+
+    plotter.mask_layer_combobox.setCurrentText(mask.name)
+
+    assert plotter._mask_summary_full_text == "cells"
+    assert "Click to edit" in plotter.mask_summary_button.toolTip()
+
+
+def test_mask_summary_counts_only_a_narrowed_label_set(make_viewer_model):
+    """Labels are mentioned only when they actually narrow the mask."""
+    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
+    plotter.mask_layer_combobox.setCurrentText(mask.name)
+
+    # All labels checked is the same mask as no label filter: stay quiet.
+    plotter.mask_labels_combobox.selectAll()
+    assert plotter._mask_summary_full_text == "cells"
+
+    plotter.mask_labels_combobox.setCheckedItems(["1", "2"])
+    assert plotter._mask_summary_full_text == "cells · 2 labels"
+
+    # Singular noun for a single label.
+    plotter.mask_labels_combobox.setCheckedItems(["1"])
+    assert plotter._mask_summary_full_text == "cells · 1 label"
+
+
+def test_mask_summary_reports_inversion(make_viewer_model):
+    """Invert shows up in the summary, alongside any label narrowing."""
+    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
+    plotter.mask_layer_combobox.setCurrentText(mask.name)
+
+    plotter.mask_invert_checkbox.setChecked(True)
+    assert plotter._mask_summary_full_text == "cells · inverted"
+
+    plotter.mask_labels_combobox.setCheckedItems(["3"])
+    assert plotter._mask_summary_full_text == "cells · 1 label · inverted"
+
+
+def test_mask_editor_opens_popover_for_one_layer(make_viewer_model):
+    """One selected layer edits its own mask in the popover."""
+    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
+
+    with patch.object(plotter, '_open_mask_assignment_dialog') as dialog:
+        with patch.object(plotter, '_show_mask_editor_popover') as popover:
+            plotter.mask_summary_button.click()
+
+    dialog.assert_not_called()
+    popover.assert_called_once()
+
+
+def test_mask_editor_popover_is_sized_and_placed_under_the_button(
+    make_viewer_model,
+):
+    """The popover is at least as wide as the button and sits below it."""
+    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
+    plotter.mask_summary_button.resize(240, 24)
+    popover = plotter.mask_editor_popover
+
+    # Never actually show it: a Qt.Popup takes a global input grab, which
+    # would wedge the machine running the suite if this test died mid-way.
+    with patch.object(type(popover), 'show') as show:
+        plotter._show_mask_editor_popover()
+
+    show.assert_called_once()
+    assert popover.minimumWidth() >= plotter.mask_summary_button.width()
+    expected = plotter.mask_summary_button.mapToGlobal(
+        plotter.mask_summary_button.rect().bottomLeft()
+    )
+    assert popover.pos() == expected
+
+
+def test_mask_editor_opens_assignment_dialog_for_several_layers(
+    make_viewer_model,
+):
+    """Several selected layers go to the per-layer assignment dialog."""
+    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model, n_layers=2)
+
+    with patch.object(plotter, '_open_mask_assignment_dialog') as dialog:
+        with patch.object(plotter, '_show_mask_editor_popover') as popover:
+            plotter.mask_summary_button.click()
+    dialog.assert_called_once()
+    popover.assert_not_called()
+
+
+def test_mask_summary_is_elided_to_fit_the_button(make_viewer_model):
+    """A summary too wide for the button is elided, never clipped."""
+    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
+    plotter.mask_layer_combobox.setCurrentText(mask.name)
+    plotter._mask_summary_full_text = "a very long mask layer name indeed"
+
+    plotter.mask_summary_button.resize(60, 24)
+    plotter._elide_mask_summary()
+    elided = plotter.mask_summary_button.text()
+    assert elided != plotter._mask_summary_full_text
+    assert "…" in elided
+
+    # Wide enough for the whole thing: no elision.
+    plotter.mask_summary_button.resize(400, 24)
+    plotter._elide_mask_summary()
+    assert plotter.mask_summary_button.text() == (
+        plotter._mask_summary_full_text
+    )
+
+
+@pytest.mark.parametrize("event_type", [QEvent.Resize, QEvent.Show])
+def test_mask_summary_re_elides_on_resize_and_show(
+    make_viewer_model, event_type
+):
+    """Resizing or showing the button re-fits the summary to it.
+
+    Show matters because the first summary is set while the row is still
+    unlaid-out and the button has no meaningful width.
+    """
+    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
+    plotter._mask_summary_full_text = "a very long mask layer name indeed"
+
+    plotter.mask_summary_button.resize(60, 24)
+    plotter.eventFilter(plotter.mask_summary_button, QEvent(event_type))
+
+    assert "…" in plotter.mask_summary_button.text()
+
+
+def test_mask_summary_survives_a_zero_width_button(make_viewer_model):
+    """A button with no width yet falls back to the untruncated text."""
+    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
+    plotter._mask_summary_full_text = "cells"
+
+    plotter.mask_summary_button.resize(0, 24)
+    plotter._elide_mask_summary()
+
+    assert plotter.mask_summary_button.text() == "cells"
+
+
+def test_mask_editor_keeps_an_available_mask_when_reselecting(
+    make_viewer_model,
+):
+    """An unassigned layer keeps the mask already showing in the editor."""
+    _, plotter, layers, mask = _plotter_with_label_mask(make_viewer_model)
+    plotter.mask_layer_combobox.setCurrentText(mask.name)
+    # Drop the stored assignment but leave the editor showing "cells".
+    plotter._mask_assignments.pop(layers[0].name, None)
+
+    plotter._update_mask_ui_mode()
+
+    assert plotter.mask_layer_combobox.currentText() == mask.name
+    assert plotter._mask_summary_full_text == "cells"
+
+
+def test_mask_editor_restores_a_stored_label_subset(make_viewer_model):
+    """Re-syncing the editor restores the labels stored for that layer."""
+    _, plotter, layers, mask = _plotter_with_label_mask(make_viewer_model)
+    plotter.mask_layer_combobox.setCurrentText(mask.name)
+    plotter._mask_label_assignments[layers[0].name] = [2, 3]
+
+    plotter._update_mask_ui_mode()
+
+    assert plotter.mask_labels_combobox.checkedItems() == ["2", "3"]
+
+
+def test_mask_labels_visibility_covers_its_caption(make_viewer_model):
+    """The 'Labels' caption hides and shows with the combobox it names."""
+    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
+
+    plotter._set_mask_labels_visible(True)
+    assert not plotter.mask_labels_label.isHidden()
+    assert not plotter.mask_labels_container.isHidden()
+
+    plotter._set_mask_labels_visible(False)
+    assert plotter.mask_labels_label.isHidden()
+    assert plotter.mask_labels_container.isHidden()
