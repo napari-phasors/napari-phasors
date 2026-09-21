@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization"
 ]
 dependencies = [
-    "phasorpy>=0.10",
+    "phasorpy>=0.12",
     "qtpy",
     "fbdfile==2026.8.30",
     "sdtfile",
@@ -39,7 +39,8 @@ dependencies = [
     "pawflim",
     "scipy",
     "czifile",
-    "lfdfiles"
+    "lfdfiles",
+    "brighteyes-mcs-reader>=0.1.0"
 ]
 
 [project.optional-dependencies]
@@ -60,7 +61,7 @@ testing = [
     "isort",
     "ruff",
     "pre-commit",
-    "phasorpy>=0.10",
+    "phasorpy>=0.12",
     "tifffile",
     "fbdfile==2026.8.30",
     "sdtfile",
@@ -68,7 +69,8 @@ testing = [
     "pawflim",
     "scipy",
     "czifile",
-    "lfdfiles"
+    "lfdfiles",
+    "brighteyes-mcs-reader>=0.1.0"
 ]
 
 [tool.pytest.ini_options]

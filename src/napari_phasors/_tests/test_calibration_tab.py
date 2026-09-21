@@ -410,20 +410,24 @@ def test_harmonic_mismatch_error(make_viewer_model, qtbot):
 
 
 def test_on_image_layer_changed_with_frequency(make_viewer_model, qtbot):
-    """Test that frequency is populated when image layer changes."""
+    """Test that frequency and reference lifetime populate from metadata."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
 
     widget = parent.calibration_tab
 
-    # Add layer with frequency in metadata
+    # Add layer with frequency and MCS-H5 reference lifetime in metadata
     test_layer = create_image_layer_with_phasors()
     test_layer.name = "test_layer"
-    test_layer.metadata["settings"] = {"frequency": 80}
+    test_layer.metadata["settings"] = {
+        "frequency": 80.0,
+        "reference_lifetime_ns": 2.7,
+    }
     viewer.add_layer(test_layer)
 
     parent._sync_frequency_inputs_from_metadata()
     assert widget.calibration_widget.frequency_input.text() == "80.0"
+    assert widget.calibration_widget.lifetime_line_edit_widget.text() == "2.7"
 
 
 def test_calibration_preserves_filters(make_viewer_model, qtbot):
@@ -917,3 +921,76 @@ def test_rich_text_delegate_paint_without_html(make_viewer_model, qtbot):
         delegate.paint(painter, option, plain_index)
     finally:
         painter.end()
+
+
+def _add_layer_with_settings(viewer, parent, settings, name):
+    """Add a phasor layer carrying *settings* and select it in *parent*."""
+    layer = create_image_layer_with_phasors()
+    layer.name = name
+    layer.metadata.setdefault('settings', {}).update(settings)
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    return layer
+
+
+def test_calibration_inputs_filled_from_layer_metadata(
+    make_viewer_model, qtbot
+):
+    """Files that record their acquisition parameters fill the tab in.
+
+    Calibrated BrightEyes-MCS files carry the reference lifetime alongside
+    the laser frequency, so neither has to be retyped.
+    """
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    calibration_widget = parent.calibration_tab.calibration_widget
+
+    _add_layer_with_settings(
+        viewer,
+        parent,
+        {'frequency': 80.0, 'reference_lifetime_ns': 2.7},
+        'mcs calibrated',
+    )
+
+    assert calibration_widget.frequency_input.text() == "80.0"
+    assert calibration_widget.lifetime_line_edit_widget.text() == "2.7"
+
+
+def test_calibration_lifetime_cleared_for_layer_without_it(
+    make_viewer_model, qtbot
+):
+    """Selecting a layer that records no lifetime must not keep the old one."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    calibration_widget = parent.calibration_tab.calibration_widget
+
+    _add_layer_with_settings(
+        viewer,
+        parent,
+        {'frequency': 80.0, 'reference_lifetime_ns': 2.7},
+        'mcs calibrated',
+    )
+    _add_layer_with_settings(
+        viewer, parent, {'frequency': 40.0}, 'plain layer'
+    )
+
+    # The stale 2.7 ns would otherwise be applied to the wrong acquisition.
+    assert calibration_widget.lifetime_line_edit_widget.text() == ""
+    assert calibration_widget.frequency_input.text() == "40.0"
+
+
+def test_calibration_lifetime_set_without_emitting_signals(
+    make_viewer_model, qtbot
+):
+    """Filling the field in must not look like the user typing."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    field = parent.calibration_tab.calibration_widget.lifetime_line_edit_widget
+    edits = []
+    field.textChanged.connect(edits.append)
+
+    parent._set_calibration_lifetime_from_metadata("3.5")
+
+    assert field.text() == "3.5"
+    # A feedback loop here would clear the fluorophore dropdown selection.
+    assert edits == []

@@ -15,10 +15,11 @@ napari-phasors supports a wide range of FLIM file formats directly:
 - **BH** (`.bh`, `.b&h`) — Becker & Hickl binary
 - **BHZ** (`.bhz`) — Becker & Hickl zipped
 - **BIN** (`.bin`) — PicoQuant binary
-- **FLIF** (`.flif`) — FLIM Labs
+- **FLIF** (`.flif`) — Flim Fast
 - **R64** (`.r64`), **REF** (`.ref`) — SimFCS referenced
-- **IFLI** (`.ifli`) — FLIM Labs intensity
+- **IFLI** (`.ifli`) — ISS VistaVision
 - **JSON** (`.json`) — FLIM Labs/FLIM processed
+- **HDF5** (`.h5`) — BrightEyes-MCS, raw acquisitions and files calibrated with `calibrate_h5_file()`
 
 All formats above can be opened via **File → Open File(s)** or by drag-and-drop into napari.
 > [!TIP]

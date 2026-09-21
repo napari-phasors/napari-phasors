@@ -30,6 +30,7 @@ from napari_phasors._widget import (
     AdvancedOptionsWidget,
     CziWidget,
     FbdWidget,
+    H5Widget,
     LsmWidget,
     OmeTifWidget,
     PhasorTransform,
@@ -48,6 +49,40 @@ TEST_FORMATS = [
     (".sdt", SdtWidget),
     (".ome.tif", None),
 ]
+
+
+def test_h5_widget_current_output_default_product(tmp_path):
+    """Test current-schema output defaults can point to a non-spad product."""
+    pytest.importorskip("brighteyes_mcs_reader")
+    h5py = pytest.importorskip("h5py")
+
+    file_path = tmp_path / "current_output.h5"
+    with h5py.File(file_path, "w") as h5:
+        h5.attrs["schema_name"] = "brighteyes_mcs_file"
+        h5.attrs["data_format_version"] = "0.0.6"
+        raw = h5.create_group("raw")
+        raw.create_group("metadata")
+        raw.create_group("axes")
+        output = h5.create_group("output")
+        output.attrs["default"] = "/output/apr_001/products/apr_sum"
+        output.attrs["default_run"] = "/output/apr_001"
+        products = output.create_group("apr_001/products")
+        products.create_dataset("apr", data=np.zeros((1, 2, 3, 4, 5)))
+        dataset = products.create_dataset(
+            "apr_sum", data=np.zeros((1, 2, 3, 4, 5))
+        )
+        dataset.attrs["axis_order"] = "repetition,z,y,x,time_bin"
+
+        widget = H5Widget.__new__(H5Widget)
+        widget.h5_products = []
+        widget._read_h5_products(file_path)
+
+    assert widget.h5_products[0]["path"] == (
+        "/output/apr_001/products/apr_sum"
+    )
+    assert widget.h5_products[0]["default"] is True
+    assert widget.all_time == 1
+    assert widget.all_depth == 2
 
 
 def test_phasor_transform_widget(make_viewer_model, qtbot):
@@ -3981,3 +4016,343 @@ def test_custom_import_single_layer_update_without_checkbox(
     assert widget.single_layer_checkbox is None
     widget._update_single_layer_checkbox()
     assert "single_layer" not in widget.reader_options
+
+
+def _h5_product(label, path, shape, axes, default=False):
+    """Build one entry of the shared BrightEyes-MCS dataset listing."""
+    return {
+        "label": label,
+        "path": path,
+        "shape": tuple(shape),
+        "axes": tuple(axes),
+        "default": default,
+    }
+
+
+@pytest.fixture
+def h5_widget_env(monkeypatch):
+    """Drive H5Widget without phasorpy>=0.12 or brighteyes-mcs-reader.
+
+    Both optional dependencies are replaced at the names ``_widget`` bound
+    them to, so the widget's own logic -- the selectors, the option sync and
+    the two import buttons -- is what the tests exercise.
+    """
+    from napari_phasors import _widget as widget_module
+
+    state = {
+        "products": [
+            _h5_product(
+                "apr_sum",
+                "/output/apr_001/products/apr_sum",
+                (3, 4, 8, 8, 16),
+                ("repetition", "z", "y", "x", "time_bin"),
+                default=True,
+            ),
+            _h5_product(
+                "spad",
+                "/raw/spad",
+                (2, 5, 8, 8, 16),
+                ("repetition", "z", "y", "x", "time_bin"),
+            ),
+        ],
+        "calls": [],
+    }
+
+    def fake_list(path):
+        if isinstance(state["products"], Exception):
+            raise state["products"]
+        return list(state["products"])
+
+    def fake_signal(path, **kwargs):
+        state["calls"].append({"path": path, **kwargs})
+        return xr.DataArray(
+            np.ones((8, 8, 16), dtype=np.uint16), dims=("Y", "X", "H")
+        )
+
+    monkeypatch.setattr(widget_module, "list_h5_datasets", fake_list)
+    monkeypatch.setattr(
+        widget_module,
+        "resolve_h5_dataset",
+        lambda path, dataset: dataset or "/output/apr_001/products/apr_sum",
+    )
+    monkeypatch.setattr(
+        widget_module, "_signal_from_brighteyes_mcs", fake_signal
+    )
+    return state
+
+
+def test_h5_widget_populates_selectors_from_listing(
+    make_viewer_model, h5_widget_env
+):
+    """Selectors describe the datasets and axes the file actually has."""
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+
+    # The declared default leads, and each entry keeps its dataset path.
+    assert widget.product_combo.count() == 2
+    assert widget.product_combo.currentData() == (
+        "/output/apr_001/products/apr_sum"
+    )
+    # Ranges come from that product's repetition and z axes.
+    assert widget.time_combo.count() == 3
+    assert widget.depth_combo.count() == 4
+
+
+def test_h5_widget_product_change_resizes_index_selectors(
+    make_viewer_model, h5_widget_env
+):
+    """Switching product re-ranges Time and Z to the new product's axes."""
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+
+    widget.product_combo.setCurrentIndex(1)
+
+    assert widget.product_combo.currentData() == "/raw/spad"
+    assert widget.time_combo.count() == 2
+    assert widget.depth_combo.count() == 5
+    assert widget.reader_options["dataset"] == "/raw/spad"
+
+
+def test_h5_widget_index_selection_reaches_reader_options(
+    make_viewer_model, h5_widget_env
+):
+    """Time and Z selections are what the reader is asked for."""
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+
+    widget.time_combo.setCurrentIndex(2)
+    widget.depth_combo.setCurrentIndex(3)
+
+    assert widget.reader_options["time"] == 2
+    assert widget.reader_options["depth"] == 3
+    assert widget.reader_options["channel"] == 0
+
+
+@pytest.mark.parametrize(
+    "calibration_choice, expected_dataset",
+    [("REF", "reference"), ("IRF", "irf")],
+)
+def test_h5_widget_calibration_mode(
+    make_viewer_model, h5_widget_env, calibration_choice, expected_dataset
+):
+    """Calibration reads REF/IRF and disables the selectors it ignores."""
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+
+    widget.calibration_combo.setCurrentText(calibration_choice)
+    widget.reference_checkbox.setChecked(True)
+
+    assert widget.reader_options["dataset"] == expected_dataset
+    # REF/IRF datasets have neither a repetition nor a z axis.
+    assert not widget.time_combo.isEnabled()
+    assert not widget.depth_combo.isEnabled()
+    assert not widget.product_combo.isEnabled()
+
+    widget.reference_checkbox.setChecked(False)
+
+    assert widget.reader_options["dataset"] == (
+        "/output/apr_001/products/apr_sum"
+    )
+    assert widget.time_combo.isEnabled()
+
+
+def test_h5_widget_signal_read_strips_widget_only_options(
+    make_viewer_model, h5_widget_env
+):
+    """Widget-level options must never reach the IO function."""
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+    h5_widget_env["calls"].clear()
+    widget.reader_options["phasor_axis"] = 2
+    widget.reader_options["single_layer"] = True
+
+    signal = widget._get_signal_data()
+
+    assert signal is not None
+    call = h5_widget_env["calls"][-1]
+    assert "phasor_axis" not in call and "single_layer" not in call
+    assert call["dataset"] == "/output/apr_001/products/apr_sum"
+
+
+def test_h5_widget_reports_missing_phasorpy_reader(
+    make_viewer_model, h5_widget_env, monkeypatch
+):
+    """Without the phasorpy reader the widget explains, and does not crash."""
+    from napari_phasors import _widget as widget_module
+
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+    monkeypatch.setattr(widget_module, "_signal_from_brighteyes_mcs", None)
+    errors = []
+    monkeypatch.setattr(widget_module, "show_error", errors.append)
+
+    assert widget._get_signal_data() is None
+    assert "phasorpy>=0.12" in errors[0]
+
+
+def test_h5_widget_reports_unreadable_dataset_listing(
+    make_viewer_model, h5_widget_env, monkeypatch
+):
+    """A file that cannot be described is reported, not silently reduced."""
+    from napari_phasors import _widget as widget_module
+
+    errors = []
+    monkeypatch.setattr(widget_module, "show_error", errors.append)
+    h5_widget_env["products"] = RuntimeError("corrupt file")
+
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+
+    assert any("corrupt file" in message for message in errors)
+    # It still falls back to the dataset every MCS file has.
+    assert widget.h5_products[0]["path"] == "raw/spad"
+
+
+def test_h5_widget_missing_optional_dependency_is_quiet(
+    make_viewer_model, h5_widget_env, monkeypatch
+):
+    """An absent optional dependency falls back without an error popup."""
+    from napari_phasors import _widget as widget_module
+
+    errors = []
+    monkeypatch.setattr(widget_module, "show_error", errors.append)
+    h5_widget_env["products"] = ImportError("no brighteyes_mcs_reader")
+
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+
+    assert errors == []
+    assert widget.h5_products[0]["path"] == "raw/spad"
+
+
+def test_h5_widget_imports_data_and_calibration_together(
+    make_viewer_model, h5_widget_env
+):
+    """The combined button imports the data product and then the REF."""
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+    datasets = []
+
+    with patch.object(
+        AdvancedOptionsWidget,
+        "_on_click",
+        side_effect=lambda p, o, h: datasets.append(o["dataset"]),
+    ):
+        widget._on_click_data_and_calibration(
+            widget.path, widget.reader_options, widget.harmonics
+        )
+
+    assert datasets == [
+        "/output/apr_001/products/apr_sum",
+        "reference",
+    ]
+
+
+def test_h5_widget_keeps_data_layer_when_calibration_fails(
+    make_viewer_model, h5_widget_env, monkeypatch
+):
+    """A missing REF/IRF is reported; the data import still stands."""
+    from napari_phasors import _widget as widget_module
+
+    errors = []
+    monkeypatch.setattr(widget_module, "show_error", errors.append)
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+    calls = []
+
+    def flaky(path, options, harmonics):
+        calls.append(options["dataset"])
+        if options["dataset"] == "reference":
+            raise RuntimeError("no reference dataset")
+
+    with patch.object(AdvancedOptionsWidget, "_on_click", side_effect=flaky):
+        widget._on_click_data_and_calibration(
+            widget.path, widget.reader_options, widget.harmonics
+        )
+
+    # The data product was imported before the failure, and was not undone.
+    assert calls[0] == "/output/apr_001/products/apr_sum"
+    assert any("REFERENCE could not be read" in m for m in errors)
+
+
+def test_h5_widget_axis_counts_without_axis_metadata(
+    make_viewer_model, h5_widget_env
+):
+    """A product with no axis names falls back to positional sizes."""
+    h5_widget_env["products"] = [
+        _h5_product("bare", "/raw/spad", (6, 7, 8, 8, 16), ())
+    ]
+
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+
+    # Without axis names, time and z are read off the first two dimensions.
+    assert widget.time_combo.count() == 6
+    assert widget.depth_combo.count() == 7
+
+
+def test_h5_widget_axis_counts_when_axes_lack_time_and_z(
+    make_viewer_model, h5_widget_env
+):
+    """Named axes that include neither repetition nor z give a single index."""
+    h5_widget_env["products"] = [
+        _h5_product("flat", "/raw/spad", (8, 8, 16), ("y", "x", "time_bin"))
+    ]
+
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+
+    assert widget.time_combo.count() == 1
+    assert widget.depth_combo.count() == 1
+
+
+def test_h5_widget_axis_counts_for_out_of_range_product(
+    make_viewer_model, h5_widget_env
+):
+    """An index with no matching product degrades to a single index."""
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+
+    widget._set_h5_counts_from_product(99)
+
+    assert widget.all_time == 1
+    assert widget.all_depth == 1
+
+
+def test_h5_widget_reports_unreadable_signal(
+    make_viewer_model, h5_widget_env, monkeypatch
+):
+    """A failing read is reported instead of propagating into the plot."""
+    from napari_phasors import _widget as widget_module
+
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+    errors = []
+    monkeypatch.setattr(widget_module, "show_error", errors.append)
+
+    def boom(path, **kwargs):
+        raise RuntimeError("dataset is truncated")
+
+    monkeypatch.setattr(widget_module, "_signal_from_brighteyes_mcs", boom)
+
+    assert widget._get_signal_data() is None
+    assert any("dataset is truncated" in message for message in errors)
+
+
+def test_h5_widget_transform_syncs_options_first(
+    make_viewer_model, h5_widget_env
+):
+    """The plain transform imports exactly what the selectors describe."""
+    widget = H5Widget(make_viewer_model(), path="sample.h5")
+    widget.product_combo.setCurrentIndex(1)
+    widget.time_combo.setCurrentIndex(1)
+    seen = {}
+
+    with patch.object(
+        AdvancedOptionsWidget,
+        "_on_click",
+        side_effect=lambda p, o, h: seen.update(o),
+    ):
+        widget._on_click(widget.path, widget.reader_options, widget.harmonics)
+
+    assert seen["dataset"] == "/raw/spad"
+    assert seen["time"] == 1
+
+
+def test_phasor_transform_offers_h5_only_when_supported(
+    make_viewer_model, monkeypatch
+):
+    """The dialog lists .h5 exactly when phasorpy provides the reader."""
+    from napari_phasors import _widget as widget_module
+
+    monkeypatch.setattr(widget_module, "BRIGHTEYES_MCS_AVAILABLE", True)
+    assert ".h5" in PhasorTransform(make_viewer_model()).reader_options
+
+    monkeypatch.setattr(widget_module, "BRIGHTEYES_MCS_AVAILABLE", False)
+    assert ".h5" not in PhasorTransform(make_viewer_model()).reader_options

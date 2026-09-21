@@ -1,6 +1,9 @@
 import csv
+import sys
+import types
 from dataclasses import replace
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from qtpy.QtWidgets import QDialog, QHeaderView, QPushButton, QWidget
@@ -2334,6 +2337,47 @@ def test_register_extra_colormaps_idempotent():
         assert name in AVAILABLE_COLORMAPS
 
 
+def test_register_extra_colormaps_without_add_colormap_if_missing(
+    monkeypatch,
+):
+    """Older napari has no add_colormap_if_missing; registration still works.
+
+    ``AVAILABLE_COLORMAPS`` gained that method only in newer napari, so the
+    registration falls back to plain item assignment rather than raising an
+    AttributeError on every import.
+    """
+    from napari_phasors import _utils as utils_module
+
+    registry = {}
+    monkeypatch.setattr(
+        utils_module,
+        "EXTRA_MATPLOTLIB_COLORMAPS",
+        ("viridis",),
+        raising=False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "napari.utils.colormaps",
+        _colormaps_module_without_helper(registry),
+    )
+
+    utils_module.register_extra_colormaps()
+
+    assert "viridis" in registry
+
+
+def _colormaps_module_without_helper(registry):
+    """Return a stand-in ``napari.utils.colormaps`` with no helper method."""
+    import napari.utils.colormaps as real
+
+    module = types.ModuleType("napari.utils.colormaps")
+    module.Colormap = real.Colormap
+    # A plain dict has no add_colormap_if_missing, which is exactly the
+    # older-napari shape the fallback exists for.
+    module.AVAILABLE_COLORMAPS = registry
+    return module
+
+
 def test_available_colormap_names_includes_extras():
     from napari_phasors._utils import (
         EXTRA_MATPLOTLIB_COLORMAPS,
@@ -2348,7 +2392,6 @@ def test_available_colormap_names_includes_extras():
 
 
 def test_colormap_legend_proxy_and_handler(qtbot):
-    import matplotlib.pyplot as plt
     from matplotlib.transforms import IdentityTransform
 
     from napari_phasors._utils import (

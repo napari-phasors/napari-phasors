@@ -6,9 +6,9 @@ napari-phasors is a comprehensive plugin, based on the [phasorpy](https://www.ph
 
 - **Reading** a wide range of FLIM and hyperspectral file formats:
 	- **Raw data formats:**
-		- `.ptu`, `.fbd`, `.sdt`, `.lsm`, `.tif`, `.tiff`, `.czi`, `.flif`, `.bh`, `.b&h`, `.bhz`, `.lif`, `.bin`, `.json`
+		- `.ptu`, `.fbd`, `.sdt`, `.lsm`, `.tif`, `.tiff`, `.czi`, `.flif`, `.bh`, `.b&h`, `.bhz`, `.lif`, `.bin`, `.json` (FLIM LABS), `.h5` (BrightEyes-MCS)
 	- **Processed data formats:**
-		- `.ome.tif`, `.ome.tiff`, `.r64`, `.ref`, `.ifli`, `.lif`, `.json`
+		- `.ome.tif`, `.ome.tiff`, `.r64`, `.ref`, `.ifli`, `.lif`, `.json` (FLIM LABS)
 - **Phasor analysis** on multiple layers simultaneously, including support for stacking multiple raw data files
 - **Calibration** using reference images with known lifetimes
 - **Component analysis** for multi-component systems
