@@ -2855,9 +2855,13 @@ class CheckableComboBox(QComboBox):
         render at different sizes in whatever font each platform falls
         back to, which made the two buttons visibly mismatched.
 
-        The pixmap is rendered at the screen's own pixel ratio so it stays
-        crisp on a retina display without being drawn oversized on a
-        1x one.
+        The artwork is rendered at the screen's own pixel ratio so it
+        stays crisp on a retina display without being drawn oversized on
+        a 1x one. The scaling is applied to the painter and the device
+        pixel ratio is only attached afterwards: a QPainter already
+        multiplies by a paint device's ratio, so setting it up front and
+        scaling as well would draw everything at twice its size, and not
+        every Qt build makes the ratio stick on a pixmap anyway.
         """
         if scale is None:
             app = QApplication.instance()
@@ -2865,7 +2869,6 @@ class CheckableComboBox(QComboBox):
             scale = max(1, scale)
         size = cls._ICON_SIZE
         pixmap = QPixmap(size * scale, size * scale)
-        pixmap.setDevicePixelRatio(scale)
         pixmap.fill(Qt.transparent)
 
         painter = QPainter(pixmap)
@@ -2895,6 +2898,11 @@ class CheckableComboBox(QComboBox):
                 painter.drawLine(QLineF(10.6, 5.4, 5.4, 10.6))
         finally:
             painter.end()
+
+        # Attach the ratio now that nothing else will paint on it. Where a
+        # Qt build ignores this the pixmap simply stays a 1x image and the
+        # button scales it down to its icon size, which still looks right.
+        pixmap.setDevicePixelRatio(scale)
         return pixmap
 
     def _build_select_all_buttons(self):

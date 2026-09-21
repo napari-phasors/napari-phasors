@@ -1837,20 +1837,52 @@ class TestCheckableComboBoxSelectAllButtons:
             assert enabled != disabled
 
     def test_icons_are_drawn_at_the_screen_pixel_ratio(self, qtbot):
-        """A retina screen gets a denser pixmap, not a bigger icon."""
+        """A retina screen gets a denser pixmap, not a bigger icon.
+
+        The artwork must fill the pixmap the same way at every scale. A
+        QPainter already multiplies by its paint device's pixel ratio, so
+        setting that ratio before painting *and* scaling the painter drew
+        the icon at double size and clipped it into a corner.
+
+        Deliberately no assertion on ``devicePixelRatio()`` itself: some
+        Qt builds decline to set it on a pixmap, and the icon renders
+        correctly either way.
+        """
+        from qtpy.QtGui import QColor, QImage
+
         from napari_phasors._utils import CheckableComboBox
 
-        one_x = CheckableComboBox._draw_box_pixmap("check", "#2f9e44", scale=1)
-        two_x = CheckableComboBox._draw_box_pixmap("check", "#2f9e44", scale=2)
+        def ink_bounds(pixmap):
+            """Bounding box of the drawn artwork, in device pixels."""
+            image = pixmap.toImage().convertToFormat(QImage.Format_ARGB32)
+            drawn = [
+                (x, y)
+                for y in range(image.height())
+                for x in range(image.width())
+                if QColor.fromRgba(image.pixel(x, y)).alpha() > 40
+            ]
+            assert drawn, "nothing was drawn"
+            xs = [x for x, _ in drawn]
+            ys = [y for _, y in drawn]
+            return min(xs), min(ys), max(xs), max(ys)
 
-        assert one_x.width() == CheckableComboBox._ICON_SIZE
-        assert two_x.width() == CheckableComboBox._ICON_SIZE * 2
-        # Same logical size, so the button draws them identically.
-        assert two_x.devicePixelRatio() == 2
-        assert (
-            two_x.width() / two_x.devicePixelRatio()
-            == one_x.width() / one_x.devicePixelRatio()
-        )
+        size = CheckableComboBox._ICON_SIZE
+        for scale in (1, 2, 3):
+            pixmap = CheckableComboBox._draw_box_pixmap(
+                "check", "#2f9e44", scale=scale
+            )
+            assert pixmap.width() == size * scale
+            assert pixmap.height() == size * scale
+
+            left, top, right, bottom = ink_bounds(pixmap)
+            # Centred, with the same small margin on every side: a drawing
+            # that overflowed would sit hard against two edges instead.
+            assert left <= scale
+            assert top <= scale
+            assert pixmap.width() - 1 - right <= scale
+            assert pixmap.height() - 1 - bottom <= scale
+            assert abs(left - (pixmap.width() - 1 - right)) <= 1
+            assert abs(top - (pixmap.height() - 1 - bottom)) <= 1
 
     def test_buttons_change_the_selection(self, qtbot):
         """Clicking checks or unchecks every item."""
