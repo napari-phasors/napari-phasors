@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 from matplotlib.colorbar import Colorbar
-from matplotlib.colors import LogNorm
+from matplotlib.colors import ListedColormap, LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Patch
 from napari.layers import Image, Labels, Shapes
@@ -1725,6 +1725,13 @@ class PlotterWidget(QWidget):
         self._last_histogram_norm = None
         self._last_histogram_color_indices = None
         self._last_scatter_color_indices = None
+
+        # Automatic clustering colours the phasor plot by cluster: the
+        # overlay colormaps it replaced (restored once it stops) and the
+        # colour of each cluster id for the contour plot.
+        self._cluster_coloring_active = False
+        self._cluster_saved_overlay_colormaps = {}
+        self._selection_contour_colors = None
 
         # Bin grid and count range shared by every time-lapse frame, so the
         # 2D histogram's colours and colorbar stay put while stepping.
@@ -4457,6 +4464,7 @@ class PlotterWidget(QWidget):
                     w_cursor.redraw_all_patches()
                 elif mode_idx == 1:
                     w_auto.redraw_all_patches()
+                    w_auto.refresh_phasor_plot_coloring()
                 elif mode_idx == 2:
                     if hasattr(self.selection_tab, '_update_manual_colormaps'):
                         self.selection_tab._update_manual_colormaps()
@@ -4467,6 +4475,7 @@ class PlotterWidget(QWidget):
                 w_cursor.clear_all_patches()
                 w_auto.clear_all_patches()
                 self._clear_manual_selection_coloring()
+                w_auto.release_phasor_plot_coloring()
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
@@ -6343,8 +6352,6 @@ class PlotterWidget(QWidget):
 
     def _update_scatter_colormap(self):
         """Recolour the scatter artist to the current single marker colour."""
-        from matplotlib.colors import ListedColormap
-
         current_color = getattr(self, '_marker_color', '#1f77b4')
 
         new_cmap = ListedColormap([current_color])
@@ -9810,6 +9817,11 @@ class PlotterWidget(QWidget):
             self._contour_display_mode if has_multiple_layers else "Merged"
         )
 
+        if self._render_contour_by_class(
+            x_data, y_data, selection_id_data, cmap
+        ):
+            return
+
         if display_mode == "Merged" or not has_multiple_layers:
             merged_cmap = cmap
             if has_multiple_layers:
@@ -9946,6 +9958,48 @@ class PlotterWidget(QWidget):
             show_legend=self._contour_show_legend,
         )
         self._contour_collections = list(contour_artist._contour_collections)
+
+    def _render_contour_by_class(
+        self, x_data, y_data, selection_id_data, cmap
+    ):
+        """Draw one solid-coloured contour set per selection class.
+
+        Used while automatic clustering colours the phasor plot: each
+        cluster's points get contours in the cluster's colour, and points in
+        no cluster keep ``cmap``. Returns whether it drew.
+        """
+        colors = self._selection_contour_colors
+        if (
+            not colors
+            or not isinstance(selection_id_data, np.ndarray)
+            or len(selection_id_data) != len(x_data)
+        ):
+            return False
+
+        self._remove_colorbar()
+        x_data = np.asarray(x_data)
+        y_data = np.asarray(y_data)
+        grouped_dict = {}
+        styles_dict = {}
+        unassigned = selection_id_data == 0
+        if np.any(unassigned):
+            grouped_dict[0] = (x_data[unassigned], y_data[unassigned])
+            styles_dict[0] = {'mode': 'colormap'}
+        for class_id, color in colors.items():
+            in_class = selection_id_data == class_id
+            if np.any(in_class):
+                grouped_dict[class_id] = (x_data[in_class], y_data[in_class])
+                styles_dict[class_id] = {'mode': 'solid', 'color': color}
+
+        contour_artist = self.canvas_widget.artists['CONTOUR']
+        contour_artist.colormap = cmap
+        contour_artist.set_grouped_data(
+            grouped_dict=grouped_dict,
+            styles_dict=styles_dict,
+            show_legend=False,
+        )
+        self._contour_collections = list(contour_artist._contour_collections)
+        return True
 
     def _update_colorbar(self, colormap=None, mappable=None, label=None):
         """Update or create colorbar for the current plot."""
@@ -10192,6 +10246,10 @@ class PlotterWidget(QWidget):
         if len(x_data) == 0 or len(y_data) == 0:
             return
 
+        cluster_ids = self._cluster_coloring_selection_data()
+        if selection_id_data is None:
+            selection_id_data = cluster_ids
+
         old_updating = getattr(self, '_updating_plot', False)
         self._updating_plot = True
         try:
@@ -10239,6 +10297,61 @@ class PlotterWidget(QWidget):
             self._update_plot_elements()
         finally:
             self._updating_plot = old_updating
+
+    def _cluster_coloring_selection_data(self):
+        """Return per-point cluster ids when the plot is coloured by cluster.
+
+        Asks the automatic clustering mode of the Selection tab for its
+        cluster ids and, when it has some, points the histogram and scatter
+        overlay colormaps (and the contour colours) at the cluster colours.
+        Otherwise the overlay colormaps it replaced are restored and ``None``
+        is returned.
+        """
+        selection_tab = getattr(self, 'selection_tab', None)
+        result = None
+        if selection_tab is not None:
+            result = (
+                selection_tab.automatic_clustering_widget.phasor_plot_selection_data()
+            )
+
+        artists = getattr(self.canvas_widget, 'artists', {})
+        overlay_artists = [
+            artists[name]
+            for name in ('HISTOGRAM2D', 'SCATTER')
+            if name in artists
+        ]
+
+        if result is None:
+            self._selection_contour_colors = None
+            if self._cluster_coloring_active:
+                for artist in overlay_artists:
+                    saved = self._cluster_saved_overlay_colormaps.get(
+                        id(artist)
+                    )
+                    if saved is not None:
+                        artist.overlay_colormap = saved
+                self._cluster_saved_overlay_colormaps = {}
+                self._cluster_coloring_active = False
+            return None
+
+        cluster_ids, colors = result
+        if not self._cluster_coloring_active:
+            self._cluster_saved_overlay_colormaps = {
+                id(artist): artist.overlay_colormap
+                for artist in overlay_artists
+            }
+            self._cluster_coloring_active = True
+        overlay_cmap = ListedColormap(
+            [(0.0, 0.0, 0.0, 0.0)] + list(colors),
+            name='cluster_overlay',
+        )
+        for artist in overlay_artists:
+            artist.overlay_colormap = overlay_cmap
+        self._selection_contour_colors = {
+            cluster_id: color[:3]
+            for cluster_id, color in enumerate(colors, start=1)
+        }
+        return cluster_ids
 
     def set_colorbar_style(self, color="white", label=None, is_mapping=False):
         """Set the colorbar style in the canvas widget."""
