@@ -5272,7 +5272,10 @@ def test_renaming_a_component_renames_its_filter(make_viewer_model):
 
     _rename_component(comp_widget, 0, "Free NADH")
 
-    assert comp_widget.filter_list._cards[0].metric_label.text() == "Free NADH"
+    assert (
+        comp_widget.filter_list._cards[0].metric_label.text()
+        == "Free NADH Filter"
+    )
     assert [
         f['params']['component_name']
         for f in get_filters(layer)
@@ -5570,6 +5573,56 @@ def test_a_measurement_is_never_served_for_the_wrong_arrays(
     assert not np.allclose(maps_after[0], maps_before[0], equal_nan=True)
 
 
+def test_a_masked_layer_is_never_measured_on_its_unmasked_baseline(
+    make_viewer_model,
+):
+    """The baseline outlives one edit now, so a mask has to invalidate it."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    unmasked = comp_widget._baseline_for(layer)
+    assert comp_widget._baseline_for(layer) is unmasked
+
+    mask = np.zeros(layer.data.shape, dtype=int)
+    mask[..., :1] = 1
+    layer.metadata['mask'] = mask
+    masked = comp_widget._baseline_for(layer)
+    assert masked is not unmasked
+    assert np.isfinite(masked[0]).sum() < np.isfinite(unmasked[0]).sum()
+
+    # Selecting labels within the mask, and inverting it, are mask edits too.
+    layer.metadata['mask_invert'] = True
+    inverted = comp_widget._baseline_for(layer)
+    assert inverted is not masked
+    assert np.isfinite(inverted[0]).sum() != np.isfinite(masked[0]).sum()
+
+    layer.metadata['mask_labels'] = [1]
+    assert comp_widget._baseline_for(layer) is not inverted
+
+
+def test_the_shared_baseline_is_not_handed_to_the_layer_itself(
+    make_viewer_model,
+):
+    """The layer's arrays are its own, whoever measured them first."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+
+    # Switched off: nothing is masked, so the rebuild has no new array to
+    # write and would otherwise hand the layer the cached baseline itself.
+    _enable_fraction_filter(comp_widget, 0, 0.0, 1.0)
+    comp_widget.filter_list._cards[0].enabled_check.setChecked(False)
+
+    mean, real, imag = comp_widget._baseline_for(layer)
+    assert layer.data is not mean
+    assert layer.metadata['G'] is not real
+    assert layer.metadata['S'] is not imag
+
+    layer.data[:] = np.nan
+    assert np.isfinite(comp_widget._baseline_for(layer)[0]).any()
+
+
 def test_the_derived_arrays_do_not_outlive_the_interaction(
     make_viewer_model,
 ):
@@ -5594,7 +5647,7 @@ def test_the_derived_arrays_do_not_outlive_the_interaction(
     assert comp_widget._baseline_cache == {}
     assert comp_widget._fraction_map_cache == {}
     assert comp_widget._metric_context_cache == {}
-    assert comp_widget._derived_cache_expiry_scheduled is False
+    assert comp_widget._derived_cache_timer.isActive() is False
 
 
 def test_the_redraws_of_one_edit_collapse_into_one(make_viewer_model):

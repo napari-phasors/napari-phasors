@@ -1371,7 +1371,7 @@ def test_the_list_follows_the_components(qtbot):
     assert widget.filters()[0]['params']['component_name'] == "Component 1"
 
     widget.set_components([(0, "Free NADH", "#ff00ff"), (1, "Bound", "#0f0")])
-    assert widget._cards[0].metric_label.text() == "Free NADH"
+    assert widget._cards[0].metric_label.text() == "Free NADH Filter"
     assert widget.filters()[0]['params']['component_name'] == "Free NADH"
 
     # An unchanged set of components leaves the cards exactly as they are.
@@ -1395,7 +1395,7 @@ def test_stored_criteria_are_adopted_under_the_current_names(qtbot):
     )
     widget.set_filters([stored, new_filter(MODULATION, 0, 1)])
 
-    assert widget._cards[1].metric_label.text() == "Component 2"
+    assert widget._cards[1].metric_label.text() == "Component 2 Filter"
     (adopted,) = widget.filters()
     assert adopted['id'] == stored['id']
     assert adopted['min'] == 0.2

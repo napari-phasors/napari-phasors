@@ -1321,8 +1321,15 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         layers = self._filter_layers()
         return layers[0] if layers else None
 
-    def _sync_filter_ui(self):
-        """Show the stack stored on the primary layer, and refresh its ranges."""
+    def _sync_filter_stack(self):
+        """Show the stack stored on the primary layer, ranges left as they are.
+
+        What the cards offer is measured on the layer's baseline, and
+        re-deriving that re-runs the median filter over the whole image. A
+        criterion added or edited in another tab cannot have moved it -- it
+        is not even listed here -- so a sync coming from there re-reads the
+        stack and leaves the ranges alone.
+        """
         layer = self._primary_filter_layer()
         if layer is None:
             self.filter_list.set_filters([])
@@ -1333,9 +1340,13 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         if output_type in MAPPING_METRICS and not self.filter_list.filters():
             # An empty list should offer the quantity the user is looking at.
             self.filter_list.set_current_metric(output_type)
-        self._refresh_filter_bounds()
         self._refresh_filter_stats()
         self._refresh_filter_add_button()
+
+    def _sync_filter_ui(self):
+        """Show the stack stored on the primary layer, and refresh its ranges."""
+        self._sync_filter_stack()
+        self._refresh_filter_bounds()
 
     @staticmethod
     def _own_filters(filters):
