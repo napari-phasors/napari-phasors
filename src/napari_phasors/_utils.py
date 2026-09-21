@@ -22,7 +22,18 @@ from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image, Labels
 from napari.utils import progress as _napari_progress
 from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
-from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
+from qtpy.QtCore import (
+    QEvent,
+    QLineF,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+)
 from qtpy.QtGui import (
     QColor,
     QCursor,
@@ -33,6 +44,7 @@ from qtpy.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QPolygonF,
     QStandardItem,
     QStandardItemModel,
 )
@@ -2855,6 +2867,76 @@ class CheckableComboBox(QComboBox):
         """
         return self._select_all_buttons
 
+    # Both marks are drawn inside an identical square so the two buttons
+    # read as a matched pair. Green says "fill the selection", red says
+    # "empty it"; a disabled button drops to gray so colour only ever means
+    # "this action would do something".
+    _SELECT_ALL_COLOR = "#2f9e44"
+    _SELECT_NONE_COLOR = "#e03131"
+    _SELECT_DISABLED_COLOR = "#878787"
+    _ICON_SIZE = 16
+
+    @classmethod
+    def _make_box_icon(cls, mark, color):
+        """Return a two-mode icon: *color* when enabled, gray when not."""
+        icon = QIcon()
+        icon.addPixmap(cls._draw_box_pixmap(mark, color), QIcon.Normal)
+        icon.addPixmap(
+            cls._draw_box_pixmap(mark, cls._SELECT_DISABLED_COLOR),
+            QIcon.Disabled,
+        )
+        return icon
+
+    @classmethod
+    def _draw_box_pixmap(cls, mark, color, scale=None):
+        """Draw a square outline with a check or a cross inside it.
+
+        Drawn rather than taken from a glyph: the ballot-box characters
+        render at different sizes in whatever font each platform falls
+        back to, which made the two buttons visibly mismatched.
+
+        The pixmap is rendered at the screen's own pixel ratio so it stays
+        crisp on a retina display without being drawn oversized on a
+        1x one.
+        """
+        if scale is None:
+            app = QApplication.instance()
+            scale = int(round(app.devicePixelRatio())) if app else 1
+            scale = max(1, scale)
+        size = cls._ICON_SIZE
+        pixmap = QPixmap(size * scale, size * scale)
+        pixmap.setDevicePixelRatio(scale)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.scale(scale, scale)
+            pen = QPen(QColor(color))
+            pen.setWidthF(1.4)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.drawRoundedRect(
+                QRectF(1.2, 1.2, size - 2.4, size - 2.4), 2.5, 2.5
+            )
+            if mark == "check":
+                painter.drawPolyline(
+                    QPolygonF(
+                        [
+                            QPointF(4.4, 8.3),
+                            QPointF(6.8, 10.9),
+                            QPointF(11.6, 5.3),
+                        ]
+                    )
+                )
+            else:
+                painter.drawLine(QLineF(5.4, 5.4, 10.6, 10.6))
+                painter.drawLine(QLineF(10.6, 5.4, 5.4, 10.6))
+        finally:
+            painter.end()
+        return pixmap
+
     def _build_select_all_buttons(self):
         """Create the segmented check-all / uncheck-all button pair."""
         container = QWidget()
@@ -2865,13 +2947,18 @@ class CheckableComboBox(QComboBox):
 
         self._select_all_button = QToolButton()
         self._select_all_button.setObjectName("selectAllButton")
-        self._select_all_button.setText("\u2611")  # ballot box with check
+        self._select_all_button.setIcon(
+            self._make_box_icon("check", self._SELECT_ALL_COLOR)
+        )
         self._select_none_button = QToolButton()
         self._select_none_button.setObjectName("selectNoneButton")
-        self._select_none_button.setText("\u2610")  # empty ballot box
+        self._select_none_button.setIcon(
+            self._make_box_icon("cross", self._SELECT_NONE_COLOR)
+        )
 
         for button in (self._select_all_button, self._select_none_button):
             button.setFixedSize(22, 22)
+            button.setIconSize(QSize(self._ICON_SIZE, self._ICON_SIZE))
             button.setAutoRaise(True)
             button.setFocusPolicy(Qt.NoFocus)
             layout.addWidget(button)

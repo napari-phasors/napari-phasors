@@ -1794,6 +1794,57 @@ class TestCheckableComboBoxSelectAllButtons:
         assert combo._select_all_button.parent() is buttons
         assert combo._select_none_button.parent() is buttons
 
+    def test_the_two_buttons_are_the_same_size(self, qtbot):
+        """The pair reads as one control, so the halves must match."""
+        combo = _make_combo(
+            qtbot, items=["a", "b"], show_select_all_buttons=True
+        )
+        assert (
+            combo._select_all_button.size() == combo._select_none_button.size()
+        )
+        assert (
+            combo._select_all_button.iconSize()
+            == combo._select_none_button.iconSize()
+        )
+
+    def test_each_button_carries_a_distinct_two_mode_icon(self, qtbot):
+        """Check and cross differ, and each has an explicit gray disabled
+        pixmap rather than Qt's generated fade."""
+        from qtpy.QtCore import QSize
+        from qtpy.QtGui import QIcon
+
+        combo = _make_combo(
+            qtbot, items=["a", "b"], show_select_all_buttons=True
+        )
+        size = QSize(combo._ICON_SIZE, combo._ICON_SIZE)
+
+        check = combo._select_all_button.icon()
+        cross = combo._select_none_button.icon()
+        assert not check.isNull()
+        assert not cross.isNull()
+        assert check.pixmap(size).toImage() != cross.pixmap(size).toImage()
+
+        for icon in (check, cross):
+            enabled = icon.pixmap(size, QIcon.Normal).toImage()
+            disabled = icon.pixmap(size, QIcon.Disabled).toImage()
+            assert enabled != disabled
+
+    def test_icons_are_drawn_at_the_screen_pixel_ratio(self, qtbot):
+        """A retina screen gets a denser pixmap, not a bigger icon."""
+        from napari_phasors._utils import CheckableComboBox
+
+        one_x = CheckableComboBox._draw_box_pixmap("check", "#2f9e44", scale=1)
+        two_x = CheckableComboBox._draw_box_pixmap("check", "#2f9e44", scale=2)
+
+        assert one_x.width() == CheckableComboBox._ICON_SIZE
+        assert two_x.width() == CheckableComboBox._ICON_SIZE * 2
+        # Same logical size, so the button draws them identically.
+        assert two_x.devicePixelRatio() == 2
+        assert (
+            two_x.width() / two_x.devicePixelRatio()
+            == one_x.width() / one_x.devicePixelRatio()
+        )
+
     def test_buttons_change_the_selection(self, qtbot):
         """Clicking checks or unchecks every item."""
         combo = _make_combo(
