@@ -133,13 +133,12 @@ def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
     colored text stays readable against napari's dark theme.
     """
     bg = QColor(160, 160, 160, 160)
-    offset = combo.header_count
     for i, lbl in enumerate(lbl for lbl in unique_labels if lbl > 0):
         rgba = labels_layer.get_color(lbl)
         if rgba is None:
             continue
         r, g, b = (int(c * 255) for c in rgba[:3])
-        item = combo.model().item(offset + i)
+        item = combo.model().item(i)
         if item is None:
             continue
         item.setForeground(QColor(r, g, b))
@@ -256,7 +255,6 @@ class MaskAssignmentDialog(QDialog):
                 placeholder="All Labels",
                 enable_primary_layer=False,
                 unit="labels",
-                show_select_all_none=False,  # DO NOT show select all/none as items in checklist
                 no_selection_text="No labels",
                 show_select_all_buttons=True,
             )
@@ -468,7 +466,7 @@ class MaskAssignmentDialog(QDialog):
         for name, combo in self._label_combos.items():
             if not combo.isHidden():
                 checked = [int(lbl) for lbl in combo.checkedItems()]
-                all_count = combo.model().rowCount() - combo._header_count
+                all_count = combo.model().rowCount()
                 # Normalize: if all labels are checked, store None (= "all labels")
                 assignments[name] = (
                     None if len(checked) == all_count else checked
@@ -1875,7 +1873,6 @@ class PlotterWidget(QWidget):
             placeholder="All Labels",
             enable_primary_layer=False,
             unit="labels",
-            show_select_all_none=False,  # DO NOT show select all/none as items in checklist
             no_selection_text="No labels",
             show_select_all_buttons=True,
         )
@@ -8360,10 +8357,7 @@ class PlotterWidget(QWidget):
             checked = [
                 int(lbl) for lbl in self.mask_labels_combobox.checkedItems()
             ]
-            all_count = (
-                self.mask_labels_combobox.model().rowCount()
-                - self.mask_labels_combobox._header_count
-            )
+            all_count = self.mask_labels_combobox.model().rowCount()
             # Normalize: all checked == "All Labels" == None
             labels = None if len(checked) == all_count else checked
         else:
@@ -8482,10 +8476,7 @@ class PlotterWidget(QWidget):
         checked = [
             int(lbl) for lbl in self.mask_labels_combobox.checkedItems()
         ]
-        all_count = (
-            self.mask_labels_combobox.model().rowCount()
-            - self.mask_labels_combobox.header_count
-        )
+        all_count = self.mask_labels_combobox.model().rowCount()
         labels = None if len(checked) == all_count else checked
         for image_layer in self.get_selected_layers():
             self._mask_label_assignments[image_layer.name] = labels

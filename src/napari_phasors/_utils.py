@@ -2734,10 +2734,6 @@ class CheckableComboBox(QComboBox):
         Parent widget.
     enable_primary_layer : bool, optional
         Whether to enable primary layer functionality (default: True).
-    show_select_all_none : bool, optional
-        When True, prepend "All" and "None" shortcut rows at the top of
-        the dropdown so the user can select or deselect all items with
-        one click (default: False).
     show_select_all_buttons : bool, optional
         When True, build :attr:`select_all_buttons`, a compact segmented
         pair of buttons that check or uncheck every item. The widget is
@@ -2751,17 +2747,12 @@ class CheckableComboBox(QComboBox):
     primaryLayerChanged = Signal(str)
     """Signal emitted with the name of the new primary (main) layer."""
 
-    # Use a plain int rather than Qt.UserRole + 21 to avoid psygnal
-    # inspecting Qt enum values as type hints.
-    _CONTROL_ROLE = int(Qt.UserRole) + 21
-
     def __init__(
         self,
         parent=None,
         enable_primary_layer=True,
         placeholder="Select Layers...",
         unit="layers",
-        show_select_all_none=False,
         no_selection_text=None,
         show_checked_list=False,
         show_select_all_buttons=False,
@@ -2778,13 +2769,11 @@ class CheckableComboBox(QComboBox):
         self.lineEdit().setReadOnly(True)
         self._placeholder_text = placeholder
         self._unit = unit
-        self._show_select_all_none = show_select_all_none
         self._no_selection_text = no_selection_text
         # When True the line edit lists the checked items verbatim (e.g.
         # "PNG, CSV") instead of the primary/count/"all" summary. Suited to
         # small fixed option sets where every state should read literally.
         self._show_checked_list = show_checked_list
-        self._header_count = 0  # number of non-checkable header rows at top
         # Items kept in the model but not offered in the dropdown.
         self._hidden_items = set()
         self.lineEdit().setPlaceholderText(self._placeholder_text)
@@ -2823,35 +2812,6 @@ class CheckableComboBox(QComboBox):
         self._select_all_buttons = None
         if show_select_all_buttons:
             self._build_select_all_buttons()
-
-    # ------------------------------------------------------------------
-    # Header control helpers
-    # ------------------------------------------------------------------
-
-    def _add_header_controls(self):
-        """Prepend 'All' and 'None' control rows at the top of the model."""
-        for row_idx, (label, action) in enumerate(
-            [("All", "all"), ("None", "none")]
-        ):
-            item = QStandardItem(label)
-            # Not checkable — acts as a button
-            item.setFlags(Qt.ItemIsEnabled)
-            item.setData(action, self._CONTROL_ROLE)
-            font = item.font()
-            font.setBold(True)
-            item.setFont(font)
-            self.model().insertRow(row_idx, item)
-        self._header_count = 2
-
-    @property
-    def header_count(self):
-        """Number of non-checkable header rows at the top of the dropdown."""
-        return self._header_count
-
-    def _is_header_row(self, row):
-        """Return True if *row* is a header control row (not a data item)."""
-        item = self.model().item(row)
-        return item is not None and item.data(self._CONTROL_ROLE) is not None
 
     # ------------------------------------------------------------------
     # Select all / none buttons
@@ -3001,7 +2961,7 @@ class CheckableComboBox(QComboBox):
         """Enable each button only when it would change the selection."""
         if getattr(self, "_select_all_buttons", None) is None:
             return
-        total = self.model().rowCount() - self._header_count
+        total = self.model().rowCount()
         checked = len(self.checkedItems())
         self._select_all_button.setEnabled(total > 0 and checked < total)
         self._select_none_button.setEnabled(checked > 0)
@@ -3018,7 +2978,7 @@ class CheckableComboBox(QComboBox):
         already_blocked = self.signalsBlocked()
         if not already_blocked:
             self.blockSignals(True)
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             self.model().item(i).setCheckState(Qt.Checked)
         if not already_blocked:
             self.blockSignals(False)
@@ -3032,7 +2992,7 @@ class CheckableComboBox(QComboBox):
         already_blocked = self.signalsBlocked()
         if not already_blocked:
             self.blockSignals(True)
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             self.model().item(i).setCheckState(Qt.Unchecked)
         if not already_blocked:
             self.blockSignals(False)
@@ -3063,15 +3023,6 @@ class CheckableComboBox(QComboBox):
             elif event.type() == QEvent.MouseButtonRelease:
                 index = self.view().indexAt(event.pos())
                 if index.isValid():
-                    # Check if this is a header control row (All / None)
-                    control = index.data(self._CONTROL_ROLE)
-                    if control == "all":
-                        self.selectAll()
-                        return True
-                    if control == "none":
-                        self.deselectAll()
-                        return True
-
                     vis_rect = self.view().visualRect(index)
                     option = QStyleOptionViewItem()
                     option.rect = vis_rect
@@ -3127,11 +3078,6 @@ class CheckableComboBox(QComboBox):
         """Add multiple items to the combobox."""
         for text in texts:
             self.addItem(text)
-        # Insert All/None header rows at the top after data rows are appended.
-        # _add_header_controls uses insertRow(0/1) so they end up before data.
-        # Only call on the first addItems invocation (_header_count == 0).
-        if self._show_select_all_none and self._header_count == 0 and texts:
-            self._add_header_controls()
 
     def clear(self):
         """Clear all items."""
@@ -3141,7 +3087,6 @@ class CheckableComboBox(QComboBox):
         for i in range(self.model().rowCount()):
             view.setRowHidden(i, False)
         self.model().clear()
-        self._header_count = 0
         self._hidden_items = set()
         self._primary_layer_name = ""
         self._last_emitted_primary = ""
@@ -3150,7 +3095,7 @@ class CheckableComboBox(QComboBox):
     def checkedItems(self):
         """Return list of checked item texts in list order (top to bottom)."""
         checked = []
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             item = self.model().item(i)
             if item and item.checkState() == Qt.Checked:
                 checked.append(item.text())
@@ -3160,7 +3105,7 @@ class CheckableComboBox(QComboBox):
         """Return list of all item texts in list order."""
         return [
             self.model().item(i).text()
-            for i in range(self._header_count, self.model().rowCount())
+            for i in range(self.model().rowCount())
             if self.model().item(i)
         ]
 
@@ -3180,7 +3125,7 @@ class CheckableComboBox(QComboBox):
         hidden = set(texts)
         self._hidden_items = hidden
         view = self.view()
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             item = self.model().item(i)
             if item is not None:
                 view.setRowHidden(i, item.text() in hidden)
@@ -3220,7 +3165,7 @@ class CheckableComboBox(QComboBox):
         if not signals_were_blocked:
             self.blockSignals(True)
 
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             item = self.model().item(i)
             if item.text() in texts:
                 item.setCheckState(Qt.Checked)
@@ -3323,7 +3268,7 @@ class CheckableComboBox(QComboBox):
                 line_edit.setPlaceholderText(self._placeholder_text)
             return
 
-        all_count = self.model().rowCount() - self._header_count
+        all_count = self.model().rowCount()
         if not checked:
             if self._no_selection_text is not None:
                 line_edit.setText(self._no_selection_text)

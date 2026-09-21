@@ -1693,22 +1693,21 @@ class TestCheckableComboBoxBasics:
     """Unit tests for CheckableComboBox core API."""
 
     def test_default_parameters(self, qtbot):
-        """Default combo has no items, no headers, plain-int role values."""
+        """Default combo has no items and a plain-int role value."""
         from napari_phasors._utils import CheckableComboBox
 
         combo = CheckableComboBox()
         qtbot.addWidget(combo)
-        assert combo._header_count == 0
         assert combo.allItems() == []
         assert combo.checkedItems() == []
-        # Role constants must be plain ints, not Qt enum values
-        assert type(combo._CONTROL_ROLE) is int
+        # Role constants must be plain ints, not Qt enum values, or psygnal
+        # inspects them as type hints.
         from napari_phasors._utils import _PrimaryLayerDelegate
 
         assert type(_PrimaryLayerDelegate.PRIMARY_ROLE) is int
 
     def test_add_items_and_all_items(self, qtbot):
-        """addItems populates allItems(); header rows are excluded."""
+        """addItems populates allItems()."""
         combo = _make_combo(qtbot, items=["a", "b", "c"])
         assert combo.allItems() == ["a", "b", "c"]
 
@@ -1733,13 +1732,21 @@ class TestCheckableComboBoxBasics:
         assert combo.checkedItems() == []
 
     def test_clear_resets_state(self, qtbot):
-        """clear() empties model and resets _header_count."""
-        combo = _make_combo(qtbot, items=["a", "b"], show_select_all_none=True)
-        assert combo._header_count == 2
+        """clear() empties the model."""
+        combo = _make_combo(qtbot, items=["a", "b"])
+        combo.selectAll()
         combo.clear()
-        assert combo._header_count == 0
+        assert combo.model().rowCount() == 0
         assert combo.allItems() == []
         assert combo.checkedItems() == []
+
+    def test_clear_then_repopulate(self, qtbot):
+        """After clear+addItems the model holds only the new items."""
+        combo = _make_combo(qtbot, items=["1", "2"])
+        combo.clear()
+        combo.addItems(["x", "y", "z"])
+        assert combo.model().rowCount() == 3
+        assert combo.allItems() == ["x", "y", "z"]
 
     def test_primary_layer_delegate_paint_custom_color(self, qtbot):
         """Test that _PrimaryLayerDelegate.paint handles custom ForegroundRole colors without crashing."""
@@ -1899,101 +1906,6 @@ class TestCheckableComboBoxSelectAllButtons:
         assert "1 of 3 selected" in combo._select_all_button.toolTip()
         assert "labels" in combo._select_none_button.toolTip()
 
-    def test_header_rows_are_excluded_from_the_count(self, qtbot):
-        """The All/None header rows must not count as selectable items."""
-        combo = _make_combo(
-            qtbot,
-            items=["a", "b"],
-            show_select_all_none=True,
-            show_select_all_buttons=True,
-        )
-        combo.selectAll()
-        assert not combo._select_all_button.isEnabled()
-        assert "2 of 2 selected" in combo._select_all_button.toolTip()
-
-
-class TestCheckableComboBoxHeaderControls:
-    """Tests for the show_select_all_none 'All' / 'None' header rows."""
-
-    def test_header_rows_are_added(self, qtbot):
-        """When show_select_all_none=True, 2 header rows are prepended."""
-        combo = _make_combo(
-            qtbot, items=["1", "2", "3"], show_select_all_none=True
-        )
-        assert combo._header_count == 2
-        # Total model rows = 2 headers + 3 data
-        assert combo.model().rowCount() == 5
-        # First two rows are "All" and "None"
-        assert combo.model().item(0).text() == "All"
-        assert combo.model().item(1).text() == "None"
-
-    def test_all_items_excludes_header_rows(self, qtbot):
-        """allItems() must return only the data rows, not 'All'/'None'."""
-        combo = _make_combo(
-            qtbot, items=["1", "2", "3"], show_select_all_none=True
-        )
-        assert combo.allItems() == ["1", "2", "3"]
-
-    def test_checked_items_excludes_header_rows(self, qtbot):
-        """checkedItems() must not include the non-checkable header rows."""
-        combo = _make_combo(
-            qtbot, items=["1", "2", "3"], show_select_all_none=True
-        )
-        combo.selectAll()
-        checked = combo.checkedItems()
-        assert "All" not in checked
-        assert "None" not in checked
-        assert checked == ["1", "2", "3"]
-
-    def test_set_checked_items_skips_headers(self, qtbot):
-        """setCheckedItems must not attempt to check the header rows."""
-        combo = _make_combo(
-            qtbot, items=["1", "2", "3"], show_select_all_none=True
-        )
-        # Should not raise; header items have no CheckStateRole
-        combo.setCheckedItems(["2"])
-        assert combo.checkedItems() == ["2"]
-
-    def test_select_all_skips_headers(self, qtbot):
-        """selectAll() must only check data rows, not the 'All'/'None' rows."""
-        combo = _make_combo(qtbot, items=["a", "b"], show_select_all_none=True)
-        combo.selectAll()
-        from qtpy.QtCore import Qt
-
-        # Header items should NOT have a checkable check state
-        for row in range(combo._header_count):
-            item = combo.model().item(row)
-            assert not (item.flags() & Qt.ItemIsUserCheckable)
-
-    def test_deselect_all_skips_headers(self, qtbot):
-        """deselectAll() must only uncheck data rows."""
-        combo = _make_combo(qtbot, items=["a", "b"], show_select_all_none=True)
-        combo.selectAll()
-        combo.deselectAll()
-        assert combo.checkedItems() == []
-
-    def test_is_header_row(self, qtbot):
-        """_is_header_row correctly identifies header vs data rows."""
-        combo = _make_combo(qtbot, items=["1"], show_select_all_none=True)
-        assert combo._is_header_row(0)  # "All"
-        assert combo._is_header_row(1)  # "None"
-        assert not combo._is_header_row(2)  # "1"
-
-    def test_no_header_rows_without_flag(self, qtbot):
-        """Without show_select_all_none, no header rows are added."""
-        combo = _make_combo(qtbot, items=["a", "b"])
-        assert combo._header_count == 0
-        assert combo.model().rowCount() == 2
-
-    def test_clear_then_repopulate_adds_headers_once(self, qtbot):
-        """After clear+addItems a fresh set of 2 headers is added."""
-        combo = _make_combo(qtbot, items=["1", "2"], show_select_all_none=True)
-        combo.clear()
-        combo.addItems(["x", "y", "z"])
-        assert combo._header_count == 2
-        assert combo.model().rowCount() == 5  # 2 headers + 3 data
-        assert combo.allItems() == ["x", "y", "z"]
-
 
 class TestCheckableComboBoxDisplayText:
     """Tests for _update_display_text with all parameter combinations."""
@@ -2060,33 +1972,6 @@ class TestCheckableComboBoxDisplayText:
         # single item → item text, not count string
         assert combo.lineEdit().text() == "2"
 
-    def test_all_selected_with_headers_uses_correct_all_count(self, qtbot):
-        """all_count excludes header rows so 'all checked' triggers correctly."""
-        combo = _make_combo(
-            qtbot,
-            items=["1", "2"],
-            enable_primary_layer=False,
-            placeholder="All Labels",
-            show_select_all_none=True,
-        )
-        combo.selectAll()
-        # all_count = 2 (not 4), len(checked)=2, so placeholder should show
-        assert combo.lineEdit().text() == ""
-        assert combo.lineEdit().placeholderText() == "All Labels"
-
-    def test_no_selection_with_headers_shows_no_selection_text(self, qtbot):
-        """no_selection_text works correctly when headers are present."""
-        combo = _make_combo(
-            qtbot,
-            items=["1", "2", "3"],
-            enable_primary_layer=False,
-            placeholder="All Labels",
-            show_select_all_none=True,
-            no_selection_text="No labels",
-        )
-        combo.deselectAll()
-        assert combo.lineEdit().text() == "No labels"
-
     def test_deselect_all_then_select_all_text_cycles(self, qtbot):
         """Cycling between all-selected and none-selected updates text correctly."""
         combo = _make_combo(
@@ -2094,7 +1979,6 @@ class TestCheckableComboBoxDisplayText:
             items=["1", "2"],
             enable_primary_layer=False,
             placeholder="All Labels",
-            show_select_all_none=True,
             no_selection_text="No labels",
         )
         combo.selectAll()
@@ -2871,13 +2755,11 @@ def test_histogram_widget_square_aspect_keeps_data(
 
 def test_checkable_combobox_event_filter(qtbot):
     """Drive the CheckableComboBox event filter: line-edit clicks, hover,
-    header All/None clicks, item toggle and leave."""
+    item toggle and leave."""
     from qtpy.QtCore import QEvent, QPointF, Qt
     from qtpy.QtGui import QMouseEvent
 
-    combo = _make_combo(
-        qtbot, items=["a", "b", "c"], show_select_all_none=True
-    )
+    combo = _make_combo(qtbot, items=["a", "b", "c"])
     le = combo.lineEdit()
 
     def mouse(etype, x, y):
@@ -2907,18 +2789,13 @@ def test_checkable_combobox_event_filter(qtbot):
         return c.x(), c.y()
 
     # Hover move over the viewport.
-    mx, my = center_of(combo._header_count)
+    mx, my = center_of(0)
     combo.eventFilter(vp, mouse(QEvent.MouseMove, mx, my))
 
-    # Click the "All" then "None" header rows.
-    ax, ay = center_of(0)
-    combo.eventFilter(vp, mouse(QEvent.MouseButtonRelease, ax, ay))
-    nx, ny = center_of(1)
-    combo.eventFilter(vp, mouse(QEvent.MouseButtonRelease, nx, ny))
-
     # Toggle a data item.
-    dx, dy = center_of(combo._header_count)
+    dx, dy = center_of(0)
     combo.eventFilter(vp, mouse(QEvent.MouseButtonRelease, dx, dy))
+    assert combo.checkedItems() == ["a"]
 
     # Leave clears the hover state.
     combo.eventFilter(vp, QEvent(QEvent.Leave))
@@ -2931,15 +2808,13 @@ def test_primary_layer_delegate_paint(qtbot):
     from qtpy.QtGui import QBrush, QColor, QImage, QPainter
     from qtpy.QtWidgets import QStyleOptionViewItem
 
-    combo = _make_combo(qtbot, items=["a", "b"], show_select_all_none=True)
+    combo = _make_combo(qtbot, items=["a", "b"])
     delegate = combo._delegate
     model = combo.model()
 
     img = QImage(200, 120, QImage.Format_ARGB32)
     painter = QPainter(img)
     try:
-        # Includes the "All"/"None" header rows, which have no check state:
-        # painting them used to raise TypeError in _check_state_value(None).
         for row in range(model.rowCount()):
             idx = model.index(row, 0)
             opt = QStyleOptionViewItem()
@@ -2951,7 +2826,7 @@ def test_primary_layer_delegate_paint(qtbot):
         # Give a data item an explicit colour + checked + primary, then repaint
         # to cover the coloured-checkbox and primary-label branches.
         combo.setCheckedItems(["a"])
-        data_row = combo._header_count
+        data_row = 0
         item = model.item(data_row)
         item.setData(QBrush(QColor(255, 0, 0)), Qt.ForegroundRole)
         combo._set_primary_by_name("a")

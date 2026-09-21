@@ -1606,11 +1606,9 @@ def test_mask_assignment_dialog_label_items_colored_by_layer(
 
     label_combo = dialog._label_combos[layer1.name]
     model = label_combo.model()
-    offset = label_combo._header_count
-
     expected_bg = QColor(160, 160, 160, 160)
     for i, lbl in enumerate([1, 2]):
-        item = model.item(offset + i)
+        item = model.item(i)
         assert item is not None, f"Item for label {lbl} is missing"
         rgba = labels_layer.get_color(lbl)
         assert rgba is not None, f"Labels layer has no color for label {lbl}"
@@ -1647,11 +1645,9 @@ def test_single_layer_mask_label_items_colored_by_layer(make_viewer_model):
 
     combo = plotter.mask_labels_combobox
     model = combo.model()
-    offset = combo._header_count
-
     expected_bg = QColor(160, 160, 160, 160)
     for i, lbl in enumerate([1, 2]):
-        item = model.item(offset + i)
+        item = model.item(i)
         assert item is not None, f"Item for label {lbl} is missing"
         rgba = labels_layer.get_color(lbl)
         assert rgba is not None, f"Labels layer has no color for label {lbl}"
@@ -1676,7 +1672,6 @@ def test_apply_label_colors_to_combo(make_viewer_model):
         placeholder="All Labels",
         enable_primary_layer=False,
         unit="labels",
-        show_select_all_none=False,
         no_selection_text="No labels",
     )
     unique_labels = np.unique(labels_layer.data)
@@ -1686,9 +1681,8 @@ def test_apply_label_colors_to_combo(make_viewer_model):
     _apply_label_colors_to_combo(combo, labels_layer, unique_labels)
 
     expected_bg = QColor(160, 160, 160, 160)
-    offset = combo._header_count
     for i, lbl in enumerate([1, 2, 3]):
-        item = combo.model().item(offset + i)
+        item = combo.model().item(i)
         assert item is not None
         rgba = labels_layer.get_color(lbl)
         if rgba is not None:

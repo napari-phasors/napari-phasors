@@ -4186,7 +4186,7 @@ def _click_phasor_layer(qtbot, parent, layer_name):
     combo = parent.image_layers_checkable_combobox
     row = next(
         row
-        for row in range(combo._header_count, combo.model().rowCount())
+        for row in range(combo.model().rowCount())
         if combo.model().item(row).text() == layer_name
     )
     combo.showPopup()
