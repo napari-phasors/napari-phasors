@@ -705,14 +705,20 @@ def apply_mask_to_arrays(mask, mean, real, imag):
 
 
 def apply_filters_to_arrays(
-    filters, mean, real, imag, harmonics, *, on_error=None
+    filters, mean, real, imag, harmonics, *, on_error=None, context=None
 ):
     """Return ``(mean, real, imag, mask)`` with the stack applied.
 
     The arrays are treated as the baseline; nothing already NaN is restored.
     """
     mask = combined_mask(
-        filters, mean, real, imag, harmonics, on_error=on_error
+        filters,
+        mean,
+        real,
+        imag,
+        harmonics,
+        on_error=on_error,
+        context=context,
     )
     mean, real, imag = apply_mask_to_arrays(mask, mean, real, imag)
     return mean, real, imag, mask
@@ -767,15 +773,31 @@ def baseline_arrays(layer, filter_params=None):
 
 
 def rebuild_layer_from_filters(
-    layer, filters=None, *, filter_params=None, on_error=None
+    layer,
+    filters=None,
+    *,
+    filter_params=None,
+    on_error=None,
+    arrays=None,
+    context=None,
 ):
     """Rewrite *layer*'s phasor arrays from its baseline plus *filters*.
 
     Returns the "dropped pixel" mask, or ``None`` when nothing was filtered.
+
+    *arrays* and *context* are the baseline and the measuring context a
+    caller has already derived for this layer. Re-deriving the baseline
+    re-runs the median filter over the whole image, so a caller that holds
+    one -- the tab that is about to measure the very same arrays again for
+    its cards and its labels layers -- hands it over rather than paying for
+    it twice.
     """
     if filters is None:
         filters = get_filters(layer)
-    mean, real, imag = baseline_arrays(layer, filter_params)
+    borrowed = arrays is not None
+    mean, real, imag = (
+        arrays if borrowed else baseline_arrays(layer, filter_params)
+    )
     if mean is None:
         return None
     mean, real, imag, mask = apply_filters_to_arrays(
@@ -785,7 +807,15 @@ def rebuild_layer_from_filters(
         imag,
         layer.metadata.get('harmonics'),
         on_error=on_error,
+        context=context,
     )
+    # With nothing to mask the arrays come back untouched, so a borrowed
+    # baseline would be handed to the layer itself and the caller's copy
+    # would then follow every later edit of it.
+    if borrowed and mask is None:
+        mean = None if mean is None else mean.copy()
+        real = None if real is None else real.copy()
+        imag = None if imag is None else imag.copy()
     if real is not None:
         layer.metadata['G'] = real
     if imag is not None:
@@ -946,6 +976,9 @@ class FilterCard(QFrame):
         self.entry = dict(entry)
         self.scale = 1000
         self._updating = False
+        #: The criterion as last published, so an edit that lands back on it
+        #: does not rebuild everything downstream for no change.
+        self._published = None
         self._editable = bool(editable)
         self.setObjectName("mappingFilterCard")
         self.setStyleSheet(FILTER_CARD_STYLE)
@@ -1132,6 +1165,9 @@ class FilterCard(QFrame):
     def apply_entry(self, entry):
         """Show *entry* on this card without publishing it back."""
         self.entry = dict(entry)
+        # Shown, not published: the next edit publishes whatever it makes of
+        # this, even if that is the value the card last sent itself.
+        self._published = None
         self._updating = True
         try:
             self.metric_combobox.blockSignals(True)
@@ -1233,8 +1269,18 @@ class FilterCard(QFrame):
         self._commit()
 
     def _commit(self):
-        """Publish this card's edit to the owning list."""
+        """Publish this card's edit to the owning list, if it is a change.
+
+        A handle dragged with a pause in it is published twice -- once by
+        the timer, once again when it is released -- and each publication
+        re-derives the phasor arrays of every selected image. The second one
+        cannot change anything the first did not, so it is dropped.
+        """
         self._commit_timer.stop()
+        published = dict(self.entry)
+        if published == self._published:
+            return
+        self._published = published
         self.changed.emit(self.entry['id'])
 
 
@@ -1900,9 +1946,11 @@ class ComponentFilterList(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self._cards = {}
-        for index, _name, color in self._components:
+        for index, name, color in self._components:
             entry = self._entries[index]
             card = FilterCard(entry, metrics=None, removable=False)
+            # The card is the component's *filter*, not the component itself.
+            card.metric_label.setText(f"{name} Filter")
             card.set_bounds(*self.bounds_for(index))
             card.set_accent_color(color)
             card.enabled_check.setToolTip(_COMPONENT_ENABLE_TOOLTIP)

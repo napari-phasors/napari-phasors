@@ -636,7 +636,11 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         #: ``{layer name: (mean, MetricContext)}`` -- the memo that makes one
         #: component fit serve every criterion measured on those arrays.
         self._metric_context_cache = {}
-        self._derived_cache_expiry_scheduled = False
+        #: Frees the three caches above once they stop being asked for.
+        self._derived_cache_timer = QTimer(self)
+        self._derived_cache_timer.setSingleShot(True)
+        self._derived_cache_timer.setInterval(2000)
+        self._derived_cache_timer.timeout.connect(self._expire_derived_arrays)
         # Labels layers this tab created, keyed by
         # ``(image layer name, component index or None)``.
         self._component_label_layers = {}
@@ -5515,8 +5519,15 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             layer.metadata.get('original_mean'),
             layer.metadata.get('G_original'),
             layer.metadata.get('S_original'),
+            layer.metadata.get('mask'),
         )
-        token = _params_token(params)
+        # The mask is applied to the baseline too, so a mask edit has to
+        # invalidate it as surely as a change of threshold does.
+        token = (
+            _params_token(params),
+            _params_token(layer.metadata.get('mask_labels')),
+            bool(layer.metadata.get('mask_invert', False)),
+        )
         cached = self._baseline_cache.get(layer.name)
         if cached is not None:
             cached_token, cached_originals, arrays = cached
@@ -5540,18 +5551,18 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         return arrays
 
     def _schedule_derived_cache_expiry(self):
-        """Drop the derived arrays once the current interaction is over.
+        """Drop the derived arrays once the user has stopped editing.
 
-        The caches exist to stop one edit re-deriving the same arrays a
-        dozen times, not to remember them. Anything that rewrites the phasor
-        data does so between interactions, so keeping them only until
-        control goes back to the event loop is enough to collapse the
-        redundant work while leaving nothing stale behind.
+        The caches exist to stop an edit re-deriving the same arrays a dozen
+        times, not to remember them: they hold a full copy of every selected
+        image's phasor arrays. But a slider dragged across its range is one
+        edit after another over arrays none of them changes, so expiring
+        them the moment control goes back to the event loop made every step
+        of the drag re-run the median filter over every selected image. The
+        timer is restarted on each use instead, so the arrays live as long
+        as they keep being asked for and are released shortly after.
         """
-        if self._derived_cache_expiry_scheduled:
-            return
-        self._derived_cache_expiry_scheduled = True
-        QTimer.singleShot(0, self._expire_derived_arrays)
+        self._derived_cache_timer.start()
 
     def _expire_derived_arrays(self):
         """Forget the baselines, contexts and fraction maps measured so far."""
@@ -5559,9 +5570,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # loop, so this can land in the middle of the very interaction the
         # caches are there for. Wait for it to finish instead.
         if self._applying_mapping_filter:
-            QTimer.singleShot(0, self._expire_derived_arrays)
+            self._derived_cache_timer.start()
             return
-        self._derived_cache_expiry_scheduled = False
+        self._derived_cache_timer.stop()
         self._baseline_cache.clear()
         self._fraction_map_cache.clear()
         self._metric_context_cache.clear()
@@ -5974,11 +5985,17 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     if f['metric'] != COMPONENT_FRACTION
                 ]
                 stored = set_filters(layer, others + own)
+                # The baseline this is rebuilt from is the one the cards,
+                # the statistics and the labels layers are measured on, so
+                # it is derived once per layer and shared with them.
+                arrays = self._baseline_for(layer)
                 rebuild_layer_from_filters(
                     layer,
                     stored,
                     filter_params=self._layer_filter_params(layer),
                     on_error=problems.append,
+                    arrays=arrays if arrays[0] is not None else None,
+                    context=self._context_for(layer, arrays),
                 )
             self.parent_widget.refresh_phasor_data()
             self._recalculate_after_filter_change()
@@ -6106,16 +6123,18 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         return count
 
     def _invalidate_pixel_counts(self):
-        """Forget everything cached from a layer's baseline arrays.
+        """Forget the pixel counts a fraction filter is a share of.
 
-        The pixel counts, the baselines themselves and the fraction maps
-        measured on them all go together: they are the same derivation, and
-        the points that invalidate one have invalidated all of them.
+        The count is the only derived value with nothing to validate itself
+        against: it is measured through the *other* tabs' criteria, which
+        leave no trace in the arrays it was counted from. The baselines, the
+        contexts and the fraction maps are each keyed by what they were
+        derived from and drop themselves when that moves, so throwing them
+        out here would only re-run the median filter over every selected
+        image for nothing -- which is the whole cost of dragging a card's
+        slider.
         """
         self._reference_pixel_counts.clear()
-        self._baseline_cache.clear()
-        self._fraction_map_cache.clear()
-        self._metric_context_cache.clear()
 
     def _series_range_labels(self):
         """Return ``{component name: "in 0.2 - 0.8"}`` for the active filters.

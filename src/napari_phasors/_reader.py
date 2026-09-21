@@ -39,6 +39,12 @@ from ._utils import (
     show_activity_progress,
 )
 
+# The BrightEyes-MCS reader is optional, so import it only if present.
+_signal_from_brighteyes_mcs = getattr(io, "signal_from_brighteyes_mcs", None)
+
+BRIGHTEYES_MCS_AVAILABLE = _signal_from_brighteyes_mcs is not None
+"""Whether this phasorpy provides the BrightEyes-MCS HDF5 reader."""
+
 extension_mapping = {
     "raw": {
         ".ptu": lambda path, reader_options: _parse_and_call_io_function(
@@ -161,10 +167,112 @@ iter_index_mapping = {
     ".lif": None,
     ".bin": None,
     ".json": "C",
+    ".h5": None,
 }
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
 """
+
+COMPOUND_EXTENSIONS = frozenset(
+    key
+    for mapping in extension_mapping.values()
+    for key in mapping
+    if key.count(".") > 1
+)
+"""Extensions that are only recognised with more than one suffix."""
+
+
+def _read_brighteyes_mcs(path, reader_options):
+    """Read one BrightEyes-MCS selection, resolving the dataset first.
+
+    The dataset is resolved through :func:`list_h5_datasets` -- the same
+    listing the import dialog offers -- so an unspecified dataset lands on
+    the product the dialog would have preselected rather than on whatever
+    default the reader happens to apply.
+    """
+    options = dict(reader_options or {})
+    options["dataset"] = resolve_h5_dataset(path, options.get("dataset"))
+    return _parse_and_call_io_function(
+        path,
+        _signal_from_brighteyes_mcs,
+        {
+            "dataset": (None, False),
+            "time": (0, False),
+            "depth": (0, False),
+            "channel": (0, False),
+        },
+        options,
+    )
+
+
+if BRIGHTEYES_MCS_AVAILABLE:
+    extension_mapping["raw"][".h5"] = _read_brighteyes_mcs
+    iter_index_mapping[".h5"] = None
+
+
+def brighteyes_mcs_unavailable_message() -> str:
+    """Return the message shown when a ``.h5`` file cannot be read."""
+    return (
+        "BrightEyes-MCS HDF5 support requires phasorpy>=0.12 "
+        "(found "
+        f"{getattr(__import__('phasorpy'), '__version__', 'unknown')}"
+        "). Upgrade phasorpy to open .h5 files."
+    )
+
+
+def list_h5_datasets(path: str) -> list[dict]:
+    """Return the selectable BrightEyes-MCS datasets in *path*.
+
+    Both the import dialog and the reader go through this one function so
+    the datasets the user picks from are the same ones the reader resolves
+    and labels; reading the file through two different libraries let the
+    two disagree about what it contains.
+
+    Returns
+    -------
+    list of dict
+        One ``{"label", "path", "shape", "axes", "default"}`` entry per
+        data product, most preferred first. Empty when the file cannot be
+        described -- the caller decides how to report that.
+
+    Raises
+    ------
+    ImportError
+        If ``brighteyes-mcs-reader`` is not installed.
+    """
+    from brighteyes_mcs_reader import list_datasets
+
+    products = [
+        {
+            "label": info.label,
+            "path": info.path,
+            "shape": tuple(info.shape),
+            "axes": tuple(info.axes),
+            "default": bool(info.is_default),
+        }
+        for info in list_datasets(path)
+        if info.kind == "data"
+    ]
+    # A file's declared default should be what the dialog opens on and what
+    # the reader falls back to when no dataset was chosen.
+    products.sort(key=lambda product: not product["default"])
+    return products
+
+
+def resolve_h5_dataset(path: str, dataset: Any) -> Any:
+    """Return the dataset *dataset* names in *path*, or the file's default.
+
+    ``None`` means "whatever the file declares as its default"; the
+    calibration keywords are passed through untouched for phasorpy to
+    resolve.
+    """
+    if dataset is not None:
+        return dataset
+    with suppress(Exception):
+        products = list_h5_datasets(path)
+        if products:
+            return products[0]["path"]
+    return None
 
 
 def napari_get_reader(
@@ -480,10 +588,7 @@ def _split_widget_reader_options(reader_options):
         except (KeyError, ValueError, TypeError):
             filtered_reader_options.pop('phasor_axis', None)
 
-    # Opt-in flag (widget-level, never passed to IO functions): when set, keep
-    # the full per-pixel signal and its histogram/spectral axis in the layer
-    # metadata so callers (e.g. batch signal export) can average the signal
-    # over a masked region. This is memory-heavy, so it is off by default.
+    # Opt-in flag
     keep_signal = bool(filtered_reader_options.pop('_keep_signal', False))
 
     # Spatial binning is applied by the mosaic reader, never by the IO
@@ -593,6 +698,15 @@ def _phasor_layers_from_signal(
         and 'frequency' in raw_data.attrs
     ):
         settings['frequency'] = raw_data.attrs['frequency']
+    if file_extension == ".h5" and hasattr(raw_data, "attrs"):
+        settings.update(raw_data.attrs.get("h5_selection", {}))
+        if "h5_dataset" in raw_data.attrs:
+            settings["h5_dataset"] = raw_data.attrs["h5_dataset"]
+            settings.setdefault("dataset", raw_data.attrs["h5_dataset"])
+        if "reference_lifetime_ns" in raw_data.attrs:
+            settings["reference_lifetime_ns"] = raw_data.attrs[
+                "reference_lifetime_ns"
+            ]
 
     layers = []
     iter_axis = iter_index_mapping[file_extension]
@@ -643,7 +757,9 @@ def _phasor_layers_from_signal(
                 summed_signal = summed_signal.values
 
             # Only set channel for files that actually have channels (FLIM files)
-            if file_extension not in [".lsm", ".tif", ".tiff"]:
+            if file_extension == ".h5":
+                settings.setdefault('channel', 0)
+            elif file_extension not in [".lsm", ".tif", ".tiff"]:
                 settings['channel'] = 0
 
             # Determine number of histogram samples along selected axis
@@ -667,15 +783,16 @@ def _phasor_layers_from_signal(
                     raw_data, axis=axis, harmonic=harmonics_to_use
                 )
             )
-            # Downcast once, here, so every array the layer goes on to hold
-            # -- and every copy a filter makes of them -- is at the chosen
-            # storage precision.
             mean_intensity_image, G_image, S_image = cast_phasor_storage(
                 mean_intensity_image, G_image, S_image
             )
             pbr.update(n_steps)
             add_kwargs = {
-                "name": format_phasor_layer_name(filename),
+                "name": format_phasor_layer_name(
+                    _h5_layer_stem(filename, settings)
+                    if file_extension == ".h5"
+                    else filename
+                ),
                 "metadata": {
                     "original_mean": mean_intensity_image,
                     "settings": settings,
@@ -962,6 +1079,61 @@ def _phasor_layers_from_signal(
             layer[1]['blending'] = 'additive'
 
     return layers
+
+
+def _h5_layer_stem(filename, settings):
+    """Return the layer-name stem describing an MCS-H5 selection.
+
+    Upstream owns the layer-name convention (see
+    :func:`~napari_phasors._utils.format_phasor_layer_name`), and the channel
+    suffix it appends is parsed back out elsewhere, so the dataset, timepoint
+    and z-slice that distinguish one ``.h5`` import from the next are folded
+    into the stem instead of competing with it.
+    """
+    dataset = settings.get("h5_dataset", settings.get("dataset"))
+    if dataset in {"reference", "irf"}:
+        return f"{filename} [{'IRF' if dataset == 'irf' else 'Reference'}]"
+
+    parts = [_format_h5_dataset_label(dataset)]
+    if "time" in settings:
+        parts.append(f"T{settings['time']}")
+    if "depth" in settings:
+        parts.append(f"Z{settings['depth']}")
+    return f"{filename} [{', '.join(parts)}]"
+
+
+def _format_channel_label(channel):
+    """Return display label for a channel selection."""
+    return "Sum" if channel == "sum" else f"Channel {channel}"
+
+
+def _format_raw_view_label(name):
+    """Return display label for an MCS-H5 virtual raw channel."""
+    label = str(name).removeprefix("data_").replace("_", " ")
+    return f"Raw view: {label}"
+
+
+def _format_h5_dataset_label(path):
+    """Return display label for an MCS-H5 dataset path."""
+    if not path:
+        return "raw/spad"
+    path = str(path).strip("/")
+    parts = path.split("/")
+    if len(parts) >= 4 and parts[0] == "output" and parts[2] == "products":
+        return (
+            f"output/{parts[1]}"
+            if parts[3] == "image"
+            else f"output/{parts[1]}/products/{parts[3]}"
+        )
+    if len(parts) >= 4 and parts[:2] == ["output", "virtual_channels"]:
+        return _format_raw_view_label("/".join(parts[2:]))
+    if len(parts) >= 2 and parts[0] == "output":
+        name = parts[1]
+        if name.startswith(("data_channel_", "data_aux_channel_")):
+            return _format_raw_view_label(name)
+    if len(parts) >= 2 and parts[0] == "raw":
+        return _format_raw_view_label(path)
+    return path
 
 
 def _new_stack_channel(layer_data, n_files):
@@ -2689,5 +2861,16 @@ def _get_filename_extension(path: str) -> tuple[str, str]:
     """
     filename = os.path.basename(path)
     parts = filename.split(".", 1)
-    file_extension = "." + parts[1] if len(parts) > 1 else ""
-    return parts[0], file_extension.lower()
+    if len(parts) == 1:
+        return parts[0], ""
+    stem, file_extension = parts[0], "." + parts[1].lower()
+
+    # Splitting on the first dot is what makes compound extensions such as
+    # '.ome.tif' work, but it also turns an ordinary dotted filename into an
+    # extension nothing matches -- 'sample.mcs.h5' became '.mcs.h5', so the
+    # file silently read as unsupported. Compound extensions are a closed
+    # set, so anything outside it falls back to the final suffix.
+    if file_extension in COMPOUND_EXTENSIONS:
+        return stem, file_extension
+    root, _, last = filename.rpartition(".")
+    return root, "." + last.lower()

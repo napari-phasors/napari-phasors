@@ -39,7 +39,8 @@ dependencies = [
     "pawflim",
     "scipy",
     "czifile",
-    "lfdfiles"
+    "lfdfiles",
+    "brighteyes-mcs-reader>=0.1.0"
 ]
 
 [project.optional-dependencies]
@@ -68,7 +69,8 @@ testing = [
     "pawflim",
     "scipy",
     "czifile",
-    "lfdfiles"
+    "lfdfiles",
+    "brighteyes-mcs-reader>=0.1.0"
 ]
 
 [tool.pytest.ini_options]

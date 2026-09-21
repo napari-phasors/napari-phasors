@@ -4723,11 +4723,12 @@ class PlotterWidget(QWidget):
     def refresh_filter_tabs(self, source=None):
         """Re-read the shared metric filter stack in every tab that lists it.
 
-        The stack is one object: the Phasor Mapping tab lists every
-        criterion whoever made it, the FRET tab its efficiencies and the
-        Components tab its fractions. A criterion added in one of them
-        changes what the other two should be showing, so they are told to
-        re-read it rather than left to catch up on their next layer change.
+        The stack is one object, but each tab lists its own share of it:
+        the Phasor Mapping tab its lifetimes, phases and modulations, the
+        FRET tab its efficiencies and the Components tab its fractions. A
+        criterion added in one of them changes what the other two should be
+        showing, so they are told to re-read it rather than left to catch up
+        on their next layer change.
 
         Parameters
         ----------
@@ -4738,7 +4739,12 @@ class PlotterWidget(QWidget):
             tab = getattr(self, tab_attr, None)
             if tab is None or tab is source:
                 continue
-            sync = getattr(tab, '_sync_filter_ui', None)
+            # Re-reading the stack is all that is asked for here: a tab
+            # that can do that without re-measuring its cards' ranges
+            # against the image says so, and is spared the median filter.
+            sync = getattr(tab, '_sync_filter_stack', None) or getattr(
+                tab, '_sync_filter_ui', None
+            )
             if sync is None:
                 continue
             with contextlib.suppress(AttributeError, RuntimeError, ValueError):
@@ -6947,23 +6953,45 @@ class PlotterWidget(QWidget):
             return None
 
     def _sync_frequency_inputs_from_metadata(self):
-        """Sync the frequency widget input fields with metadata."""
+        """Sync frequency and reference lifetime inputs with metadata."""
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
         if not layer_name or layer_name not in self.viewer.layers:
             self._broadcast_frequency_value_across_tabs("")
+            self._set_calibration_lifetime_from_metadata("")
             return
 
         layer = self.viewer.layers[layer_name]
         frequency = self._as_frequency(
             self.settings_store.get(layer, 'frequency')
         )
+        reference_lifetime = self.settings_store.get(
+            layer, 'reference_lifetime_ns'
+        )
 
         if frequency is not None:
             self._broadcast_frequency_value_across_tabs(str(frequency))
         else:
             self._broadcast_frequency_value_across_tabs("")
+
+        if reference_lifetime is not None:
+            self._set_calibration_lifetime_from_metadata(
+                str(reference_lifetime)
+            )
+        else:
+            self._set_calibration_lifetime_from_metadata("")
+
+    def _set_calibration_lifetime_from_metadata(self, value):
+        """Set Calibration tab reference lifetime without feedback loops."""
+        field = (
+            self.calibration_tab.calibration_widget.lifetime_line_edit_widget
+        )
+        field.blockSignals(True)
+        field.setText(value)
+        field.blockSignals(False)
+        if hasattr(self.calibration_tab, '_refresh_calibrate_button'):
+            self.calibration_tab._refresh_calibrate_button()
 
     def _broadcast_frequency_value_across_tabs(self, value):
         """
