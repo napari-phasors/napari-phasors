@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 from napari.layers import Labels
+from phasorpy.cluster import phasor_cluster_kmeans
 from qtpy.QtCore import QEvent, Qt
 from qtpy.QtGui import QColor, QFocusEvent, QValidator
 from qtpy.QtWidgets import (
@@ -2527,33 +2528,6 @@ def test_automatic_clustering_reapply_variants(make_viewer_model, qtbot):
 # ---------------------------------------------------------------------------
 
 
-def _reference_kmeans(real, imag, /, *, clusters=1, **kwargs):
-    """Stand-in for ``phasor_cluster_kmeans`` on phasorpy < 0.13."""
-    from sklearn.cluster import KMeans
-
-    real = np.asarray(real, dtype=float)
-    imag = np.asarray(imag, dtype=float)
-    valid = ~(np.isnan(real) | np.isnan(imag))
-    kmeans = KMeans(n_clusters=clusters, **kwargs)
-    index = kmeans.fit_predict(np.stack([real[valid], imag[valid]], axis=-1))
-    labels = np.full(real.shape, -1, dtype=np.int8)
-    labels[valid] = index
-    centers = kmeans.cluster_centers_
-    return tuple(centers[:, 0]), tuple(centers[:, 1]), labels
-
-
-@pytest.fixture
-def kmeans(monkeypatch):
-    """Return ``phasor_cluster_kmeans``, standing in for it when missing."""
-    from napari_phasors import selection_tab
-
-    if selection_tab.phasor_cluster_kmeans is None:
-        monkeypatch.setattr(
-            selection_tab, "phasor_cluster_kmeans", _reference_kmeans
-        )
-    return selection_tab.phasor_cluster_kmeans
-
-
 def _clustering_setup(make_viewer_model, method="K-means", n_clusters=3):
     """Show the clustering mode of the Selection tab and apply *method*."""
     viewer = make_viewer_model()
@@ -2583,9 +2557,7 @@ def _plotted_ids(parent, layer, labels_data):
     return labels_data.ravel()[valid]
 
 
-def test_kmeans_apply_labels_every_valid_pixel(
-    make_viewer_model, qtbot, kmeans
-):
+def test_kmeans_apply_labels_every_valid_pixel(make_viewer_model, qtbot):
     """K-means assigns each valid pixel to a cluster and fills the table."""
     viewer, layer, _parent, widget = _clustering_setup(make_viewer_model)
 
@@ -2620,13 +2592,15 @@ def test_kmeans_apply_labels_every_valid_pixel(
     assert sum(percentages) == pytest.approx(100, abs=0.2)
 
 
-def test_kmeans_labels_match_phasorpy(make_viewer_model, qtbot, kmeans):
+def test_kmeans_labels_match_phasorpy(make_viewer_model, qtbot):
     """The labels layer holds phasorpy's k-means labels, shifted by one."""
     viewer, layer, _parent, widget = _clustering_setup(make_viewer_model)
     g = layer.metadata["G"][0]
     s = layer.metadata["S"][0]
 
-    center_real, center_imag, labels = kmeans(g, s, clusters=3, random_state=0)
+    center_real, center_imag, labels = phasor_cluster_kmeans(
+        g, s, clusters=3, random_state=0
+    )
 
     np.testing.assert_array_equal(
         _labels_layer(viewer, layer).data, labels.astype(np.int64) + 1
@@ -2636,7 +2610,7 @@ def test_kmeans_labels_match_phasorpy(make_viewer_model, qtbot, kmeans):
 
 
 def test_kmeans_gmm_table_switch_restores_radius_columns(
-    make_viewer_model, qtbot, kmeans
+    make_viewer_model, qtbot
 ):
     """Running GMM after k-means shows the radii columns again."""
     _viewer, _layer, _parent, widget = _clustering_setup(make_viewer_model)
@@ -2653,7 +2627,7 @@ def test_kmeans_gmm_table_switch_restores_radius_columns(
     assert len(widget._ellipse_patches) == 3
 
 
-def test_kmeans_colors_histogram_bins(make_viewer_model, qtbot, kmeans):
+def test_kmeans_colors_histogram_bins(make_viewer_model, qtbot):
     """Histogram bins are painted with the colour of their cluster."""
     viewer, layer, parent, widget = _clustering_setup(make_viewer_model)
     parent.plot_type = "HISTOGRAM2D"
@@ -2672,7 +2646,7 @@ def test_kmeans_colors_histogram_bins(make_viewer_model, qtbot, kmeans):
     assert parent._cluster_coloring_active
 
 
-def test_kmeans_color_toggle_restores_plot(make_viewer_model, qtbot, kmeans):
+def test_kmeans_color_toggle_restores_plot(make_viewer_model, qtbot):
     """Turning the colouring off restores the original overlay colormap."""
     viewer, layer, parent, widget = _clustering_setup(make_viewer_model)
     artist = parent.canvas_widget.artists["HISTOGRAM2D"]
@@ -2690,7 +2664,7 @@ def test_kmeans_color_toggle_restores_plot(make_viewer_model, qtbot, kmeans):
     assert "overlay_histogram_image" not in artist._mpl_artists
 
 
-def test_kmeans_colors_scatter_points(make_viewer_model, qtbot, kmeans):
+def test_kmeans_colors_scatter_points(make_viewer_model, qtbot):
     """Scatter points take the colour of their cluster."""
     viewer, layer, parent, widget = _clustering_setup(make_viewer_model)
     parent.plot_type = "SCATTER"
@@ -2707,7 +2681,7 @@ def test_kmeans_colors_scatter_points(make_viewer_model, qtbot, kmeans):
     )
 
 
-def test_kmeans_colors_contours(make_viewer_model, qtbot, kmeans):
+def test_kmeans_colors_contours(make_viewer_model, qtbot):
     """In contour mode each cluster gets contours in its own colour."""
     _viewer, _layer, parent, widget = _clustering_setup(make_viewer_model)
     parent.plot_type = "CONTOUR"
@@ -2749,7 +2723,7 @@ def test_gmm_contours_keep_unassigned_points(make_viewer_model, qtbot):
     assert not parent._render_contour_by_class(x, y, ids[:2], cmap)
 
 
-def test_kmeans_cluster_color_change(make_viewer_model, qtbot, kmeans):
+def test_kmeans_cluster_color_change(make_viewer_model, qtbot):
     """A new cluster colour reaches the plot, labels layer and centroid."""
     viewer, layer, parent, widget = _clustering_setup(make_viewer_model)
     red = QColor(255, 0, 0)
@@ -2770,7 +2744,7 @@ def test_kmeans_cluster_color_change(make_viewer_model, qtbot, kmeans):
     )
 
 
-def test_kmeans_centroids_toggle(make_viewer_model, qtbot, kmeans):
+def test_kmeans_centroids_toggle(make_viewer_model, qtbot):
     """Centroid markers sit on the cluster centers and can be hidden."""
     _viewer, _layer, parent, widget = _clustering_setup(make_viewer_model)
     ax = parent.canvas_widget.axes
@@ -2798,7 +2772,7 @@ def test_kmeans_centroids_toggle(make_viewer_model, qtbot, kmeans):
     assert len(widget._centroid_artists) == 3
 
 
-def test_kmeans_remove_cluster_relabels(make_viewer_model, qtbot, kmeans):
+def test_kmeans_remove_cluster_relabels(make_viewer_model, qtbot):
     """Removing a k-means cluster unassigns its pixels and shifts the ids."""
     viewer, layer, parent, widget = _clustering_setup(make_viewer_model)
     before = _labels_layer(viewer, layer).data.copy()
@@ -2835,9 +2809,7 @@ def test_kmeans_remove_cluster_relabels(make_viewer_model, qtbot, kmeans):
     assert f"Cluster Selection: {layer.name}" not in viewer.layers
 
 
-def test_kmeans_coloring_follows_mode_and_tab(
-    make_viewer_model, qtbot, kmeans
-):
+def test_kmeans_coloring_follows_mode_and_tab(make_viewer_model, qtbot):
     """Cluster colours and centroids only show in the clustering mode."""
     _viewer, _layer, parent, widget = _clustering_setup(make_viewer_model)
     selection_tab = parent.selection_tab
@@ -2864,7 +2836,7 @@ def test_kmeans_coloring_follows_mode_and_tab(
 
 
 def test_kmeans_coloring_and_centroids_follow_harmonic(
-    make_viewer_model, qtbot, kmeans
+    make_viewer_model, qtbot
 ):
     """Clusters of another harmonic neither colour the plot nor show."""
     _viewer, _layer, parent, widget = _clustering_setup(make_viewer_model)
@@ -2879,7 +2851,7 @@ def test_kmeans_coloring_and_centroids_follow_harmonic(
 
 
 def test_kmeans_coloring_with_layer_missing_cluster_map(
-    make_viewer_model, qtbot, kmeans
+    make_viewer_model, qtbot
 ):
     """Layers without matching cluster ids contribute unassigned points."""
     _viewer, layer, parent, widget = _clustering_setup(make_viewer_model)
@@ -2896,9 +2868,7 @@ def test_kmeans_coloring_with_layer_missing_cluster_map(
     assert widget.cluster_table.cellWidget(0, 6).text() == "-"
 
 
-def test_kmeans_selection_data_without_phasor_layers(
-    make_viewer_model, qtbot, kmeans
-):
+def test_kmeans_selection_data_without_phasor_layers(make_viewer_model, qtbot):
     """No selected layer with phasors means nothing to colour."""
     _viewer, _layer, parent, widget = _clustering_setup(make_viewer_model)
 
@@ -2906,7 +2876,7 @@ def test_kmeans_selection_data_without_phasor_layers(
         assert widget.phasor_plot_selection_data() is None
 
 
-def test_kmeans_ignores_infinite_coordinates(make_viewer_model, qtbot, kmeans):
+def test_kmeans_ignores_infinite_coordinates(make_viewer_model, qtbot):
     """Infinite phasor coordinates are left out of the clusters."""
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
@@ -2926,7 +2896,7 @@ def test_kmeans_ignores_infinite_coordinates(make_viewer_model, qtbot, kmeans):
 
 
 def test_kmeans_failure_clears_previous_clusters(
-    make_viewer_model, qtbot, kmeans, capsys
+    make_viewer_model, qtbot, capsys
 ):
     """A failing k-means run leaves no stale clusters behind."""
     viewer, layer, _parent, widget = _clustering_setup(make_viewer_model)
@@ -2942,27 +2912,6 @@ def test_kmeans_failure_clears_previous_clusters(
     assert widget._cluster_maps == {}
     assert not widget.clear_button.isEnabled()
     assert f"Cluster Selection: {layer.name}" not in viewer.layers
-
-
-def test_kmeans_requires_recent_phasorpy(
-    make_viewer_model, qtbot, monkeypatch
-):
-    """Without ``phasor_cluster_kmeans`` the k-means run is not offered."""
-    from napari_phasors import selection_tab
-
-    monkeypatch.setattr(selection_tab, "phasor_cluster_kmeans", None)
-    viewer = make_viewer_model()
-    viewer.add_layer(create_image_layer_with_phasors())
-    parent = PlotterWidget(viewer)
-    widget = parent.selection_tab.automatic_clustering_widget
-
-    assert widget._clustering_validation() is None
-    widget.clustering_method_combobox.setCurrentText("K-means")
-    assert "phasorpy 0.13" in widget._clustering_validation()
-    assert "phasorpy 0.13" in widget.apply_button.toolTip()
-
-    widget.apply_button.click()
-    assert widget._clusters == []
 
 
 def test_kmeans_refresh_without_phasor_data(make_viewer_model, qtbot):

@@ -73,7 +73,7 @@ Each of these four bounds is one edge of the wedge, and can be dragged directly 
 Cluster phasors automatically with one of two methods, picked in the **Clustering Method** list:
 
 - **GMM (Gaussian Mixture Model)** fits one ellipse per cluster. Pixels inside an ellipse belong to that cluster; pixels outside every ellipse stay unassigned.
-- **K-means** partitions the phasor coordinates, assigning every valid pixel to the cluster with the nearest centroid. It needs phasorpy 0.13 or newer.
+- **K-means** partitions the phasor coordinates, assigning every valid pixel to the cluster with the nearest centroid.
 
 Set the **Number of Clusters** and click **Apply Clustering**. The result is mapped back to the image as a labels layer where each pixel carries the label of its cluster. The table lists each cluster's center, pixel count and percentage; use its **Color** button to recolor a cluster (on the phasor plot and in the labels layer) and **×** to remove one.
 

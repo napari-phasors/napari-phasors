@@ -7,12 +7,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Ellipse, Wedge
 from napari.layers import Labels
 from napari.utils import DirectLabelColormap
-from phasorpy.cluster import phasor_cluster_gmm
-
-try:
-    from phasorpy.cluster import phasor_cluster_kmeans
-except ImportError:  # pragma: no cover - phasorpy < 0.13
-    phasor_cluster_kmeans = None
+from phasorpy.cluster import phasor_cluster_gmm, phasor_cluster_kmeans
 from phasorpy.cursor import (
     mask_from_circular_cursor,
     mask_from_elliptic_cursor,
@@ -2939,11 +2934,6 @@ class AutomaticClusteringWidget(QWidget):
         """Return ``None`` if clustering can run, else the missing-input msg."""
         if self.parent_widget is None or not self._get_selected_layers():
             return "Select at least one image layer with phasor features."
-        if (
-            self._selected_method() == self.METHOD_KMEANS
-            and phasor_cluster_kmeans is None
-        ):
-            return "K-means clustering requires phasorpy 0.13 or newer."
         return None
 
     def _refresh_apply_button_if_ready(self):

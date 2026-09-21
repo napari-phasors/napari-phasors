@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization"
 ]
 dependencies = [
-    "phasorpy>=0.10",
+    "phasorpy>=0.13",
     "qtpy",
     "fbdfile==2026.8.30",
     "sdtfile",
@@ -60,7 +60,7 @@ testing = [
     "isort",
     "ruff",
     "pre-commit",
-    "phasorpy>=0.10",
+    "phasorpy>=0.13",
     "tifffile",
     "fbdfile==2026.8.30",
     "sdtfile",
