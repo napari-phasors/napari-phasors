@@ -1265,7 +1265,10 @@ class FilterCard(QFrame):
             low, high = high, low
         self.entry['min'] = low
         self.entry['max'] = high
-        self.set_bounds(low, high)
+        self.set_bounds(
+            self.range_slider.minimum() / self.scale,
+            self.range_slider.maximum() / self.scale,
+        )
         self._commit()
 
     def _commit(self):
