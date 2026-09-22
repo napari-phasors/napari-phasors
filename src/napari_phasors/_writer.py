@@ -107,6 +107,24 @@ def _extract_z_spacing_um(
     return value if value > 0 else None
 
 
+def _resolution_tags(metadata_dict):
+    """Return TIFF resolution tags matching the OME physical sizes.
+
+    Fiji's own TIFF reader ignores the OME-XML and calibrates from these
+    tags instead, so writing both is what makes an export open calibrated
+    whichever reader picks it up.
+    """
+    size_x = metadata_dict.get('PhysicalSizeX')
+    size_y = metadata_dict.get('PhysicalSizeY')
+    if not size_x or not size_y:
+        return {}
+    # Pixels per centimeter; PhysicalSize* are micrometers.
+    return {
+        'resolution': (1e4 / float(size_x), 1e4 / float(size_y)),
+        'resolutionunit': 'CENTIMETER',
+    }
+
+
 def _largest_layer_bytes(layers):
     """Return the byte size of the largest layer's data, or ``0``.
 
@@ -290,24 +308,28 @@ def write_ome_tiff(
             metadata_dict['PhysicalSizeZ'] = z_spacing_um
             metadata_dict['PhysicalSizeZUnit'] = 'µm'
 
-        if hasattr(current_layer, 'scale'):
-            scale = getattr(current_layer, 'scale', None)
-            if scale is not None:
-                y_idx, x_idx = -2, -1
-                labels = getattr(current_layer, 'axis_labels', None)
-                if labels is not None:
-                    for i_label, label in enumerate(labels):
-                        if str(label).lower() == 'y':
-                            y_idx = i_label
-                        if str(label).lower() == 'x':
-                            x_idx = i_label
-
-                if len(scale) > abs(y_idx) and scale[y_idx] > 0:
-                    metadata_dict['PhysicalSizeY'] = float(scale[y_idx])
-                    metadata_dict['PhysicalSizeYUnit'] = 'µm'
-                if len(scale) > abs(x_idx) and scale[x_idx] > 0:
-                    metadata_dict['PhysicalSizeX'] = float(scale[x_idx])
-                    metadata_dict['PhysicalSizeXUnit'] = 'µm'
+        scale = getattr(current_layer, 'scale', None)
+        if scale is not None:
+            labels = [
+                str(label).lower()
+                for label in (
+                    getattr(current_layer, 'axis_labels', None) or ()
+                )
+            ]
+            # Unlabelled axes fall back to napari's trailing Y, X convention,
+            # which is a negative index, so the bounds check has to accept
+            # one: ``scale[-2]`` is in range for a 2D layer.
+            for axis, fallback in (('Y', -2), ('X', -1)):
+                index = (
+                    labels.index(axis.lower())
+                    if axis.lower() in labels
+                    else fallback
+                )
+                if not -len(scale) <= index < len(scale):
+                    continue
+                if scale[index] > 0:
+                    metadata_dict[f'PhysicalSize{axis}'] = float(scale[index])
+                    metadata_dict[f'PhysicalSize{axis}Unit'] = 'µm'
 
         pbr = show_activity_progress(
             desc=f"Saving OME-TIFF {layer_name}...", total=2
@@ -373,6 +395,7 @@ def write_ome_tiff(
                     description=description,
                     dims=dims,
                     metadata=metadata_dict,
+                    **_resolution_tags(metadata_dict),
                 )
             else:
                 # Export without phasor data - just save the raw image data
@@ -419,6 +442,7 @@ def write_ome_tiff(
                     data,
                     metadata=metadata_dict if metadata_dict else None,
                     description=description,
+                    **_resolution_tags(metadata_dict),
                 )
             return current_path
         finally:

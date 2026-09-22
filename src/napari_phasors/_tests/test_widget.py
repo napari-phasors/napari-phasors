@@ -2472,26 +2472,48 @@ def test_widget_pure_helpers(tmp_path):
     )
     assert bad.shape == data.shape
 
-    # --- _set_layer_z_scale ---
+    # --- _set_layer_scale ---
     kw = {}
-    AdvancedOptionsWidget._set_layer_z_scale(kw, np.ones((3, 4, 4)), 2.5)
+    AdvancedOptionsWidget._set_layer_scale(kw, np.ones((3, 4, 4)), 2.5)
     assert kw["scale"] == (2.5, 1.0, 1.0)
+    assert kw["units"] == ("um", "", "")
     # Existing scale shorter than ndim is padded; longer is truncated.
     kw = {"scale": (1.0,)}
-    AdvancedOptionsWidget._set_layer_z_scale(kw, np.ones((3, 4, 4)), 2.0)
+    AdvancedOptionsWidget._set_layer_scale(kw, np.ones((3, 4, 4)), 2.0)
     assert kw["scale"] == (2.0, 1.0, 1.0)
     kw = {"scale": (1.0, 1.0, 1.0, 1.0)}
-    AdvancedOptionsWidget._set_layer_z_scale(kw, np.ones((3, 4, 4)), 2.0)
+    AdvancedOptionsWidget._set_layer_scale(kw, np.ones((3, 4, 4)), 2.0)
     assert len(kw["scale"]) == 3
-    # Guards: None, 2D data, non-numeric, non-positive.
+    # An XY pixel size calibrates the trailing two axes, with or without Z.
+    kw = {}
+    AdvancedOptionsWidget._set_layer_scale(
+        kw, np.ones((3, 4, 4)), 2.5, pixel_size=0.5
+    )
+    assert kw["scale"] == (2.5, 0.5, 0.5)
+    assert kw["units"] == ("um", "um", "um")
+    kw = {}
+    AdvancedOptionsWidget._set_layer_scale(
+        kw, np.ones((4, 4)), pixel_size=0.25
+    )
+    assert kw["scale"] == (0.25, 0.25)
+    assert kw["units"] == ("um", "um")
+    # A stale units tuple of the wrong length is replaced, not padded.
+    kw = {"units": ("um",)}
+    AdvancedOptionsWidget._set_layer_scale(
+        kw, np.ones((4, 4)), pixel_size=0.25
+    )
+    assert kw["units"] == ("um", "um")
+    # Guards: None, 2D data with only z, non-numeric, non-positive, 1D.
     for args in (
         ({}, np.ones((3, 4, 4)), None),
         ({}, np.ones((4, 4)), 2.0),
         ({}, np.ones((3, 4, 4)), "abc"),
         ({}, np.ones((3, 4, 4)), -1.0),
+        ({}, np.ones(4), 2.0),
+        ({}, object(), 2.0),
     ):
         kw = args[0]
-        AdvancedOptionsWidget._set_layer_z_scale(*args)
+        AdvancedOptionsWidget._set_layer_scale(*args)
         assert "scale" not in kw
 
     # --- _try_get_z_spacing_from_ome_tiff ---
