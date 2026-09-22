@@ -194,6 +194,21 @@ into the **Additional kwargs** section here and in the batch analysis widget
 (`laser_factor`, `scanner_line_start`, `refine`; use `iotech` as the laser
 factor to derive it).
 
+## Pixel size calibration
+
+Layers are calibrated from the file whenever the format stores a pixel size.
+PTU, LSM, LIF and CZI records are read and applied as the layer's `scale`, in
+micrometers, so the napari scale bar and any measurement made on the layer are
+in real units rather than pixels. Exporting to OME-TIFF writes those sizes back
+as `PhysicalSizeX/Y/Z` and as the TIFF resolution tags, so Fiji and other
+Bio-Formats readers open the export calibrated, and re-importing it into
+napari-phasors restores the same scale.
+
+Formats that store no pixel size at all, such as FBD, SDT and the SimFCS
+referenced files, can be calibrated by hand: the **Phasor Custom Import**
+widget has an **XY pixel size (um)** field. Leave it empty to use whatever the
+file provides; type a value to override it.
+
 ## Notes
 
 - Multi-file stacking requires all selected files to have the same extension.

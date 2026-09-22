@@ -62,6 +62,7 @@ from ._reader import (
     iter_index_mapping,
     list_h5_datasets,
     napari_get_reader,
+    physical_sizes_from_ome_tiff,
     probe_tile_axes,
     raw_file_stack_reader,
     resolve_h5_dataset,
@@ -597,6 +598,8 @@ class AdvancedOptionsWidget(QWidget):
         self.path = path
         self._stack_z_spacing_layout = None
         self._stack_z_spacing_edit = None
+        self._pixel_size_layout = None
+        self._pixel_size_edit = None
         self._tile_paths = None
         self._tile_axis = None
         self._tile_geometry = None
@@ -1252,8 +1255,50 @@ class AdvancedOptionsWidget(QWidget):
         axes_to_sum = tuple(i for i in range(array.ndim) if i != signal_axis)
         return np.sum(array, axis=axes_to_sum)
 
+    def _insert_calibration_row(self, layout):
+        """Put *layout* just above the shape preview, or at the end."""
+        if hasattr(self, 'shape_preview_label'):
+            index = self.mainLayout.indexOf(self.shape_preview_label)
+            if index >= 0:
+                self.mainLayout.insertLayout(index, layout)
+                return
+        self.mainLayout.addLayout(layout)
+
+    def _sync_pixel_size_widget(self):
+        """Build the XY pixel-size editor, once.
+
+        Formats such as FBD, SDT and the SimFCS referenced files carry no
+        pixel size at all, so typing one is the only way those imports get
+        calibrated. It stays empty by default, which means "use whatever the
+        file says".
+        """
+        if self._pixel_size_layout is not None:
+            return
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("XY pixel size (um): "))
+        self._pixel_size_edit = QLineEdit()
+        self._pixel_size_edit.setValidator(QDoubleValidator(0.0, 1e12, 8))
+        self._pixel_size_edit.setPlaceholderText("from file")
+        self._pixel_size_edit.setToolTip(
+            "Pixel size along Y and X in micrometers (um). Leave empty to "
+            "use the size stored in the file, if it has one."
+        )
+        row.addWidget(self._pixel_size_edit)
+        row.addStretch()
+
+        self._insert_calibration_row(row)
+        self._pixel_size_layout = row
+
+    def _get_pixel_size(self):
+        """Return the XY pixel size typed by the user, or ``None``."""
+        if self._pixel_size_edit is None:
+            return None
+        return _parse_optional(self._pixel_size_edit.text(), float)
+
     def _sync_stack_z_spacing_widget_visibility(self):
         """Show a z-spacing editor only for stacked multi-file imports."""
+        self._sync_pixel_size_widget()
         is_stack_mode = len(getattr(self, '_multi_file_paths', []) or []) > 1
 
         if is_stack_mode and self._stack_z_spacing_layout is None:
@@ -1278,15 +1323,7 @@ class AdvancedOptionsWidget(QWidget):
             z_layout.addWidget(self._stack_z_spacing_edit)
             z_layout.addStretch()
 
-            inserted = False
-            if hasattr(self, 'shape_preview_label'):
-                idx = self.mainLayout.indexOf(self.shape_preview_label)
-                if idx >= 0:
-                    self.mainLayout.insertLayout(idx, z_layout)
-                    inserted = True
-
-            if not inserted:
-                self.mainLayout.addLayout(z_layout)
+            self._insert_calibration_row(z_layout)
             self._stack_z_spacing_layout = z_layout
 
         if not is_stack_mode and self._stack_z_spacing_layout is not None:
@@ -1879,6 +1916,7 @@ class AdvancedOptionsWidget(QWidget):
         multi_paths = getattr(self, '_multi_file_paths', None)
         self._on_stack_z_spacing_changed()
         z_spacing = getattr(self, '_stack_z_spacing', None)
+        pixel_size = self._get_pixel_size()
         axis_order = getattr(self, '_stack_axis_order', None)
         axis_labels = getattr(self, '_stack_axis_labels', None)
         if grouped_paths and len(grouped_paths) > 1:
@@ -1900,7 +1938,9 @@ class AdvancedOptionsWidget(QWidget):
                         layer_data = self._apply_axis_transform(
                             add_kw, layer[0], axis_order, axis_labels
                         )
-                        self._set_layer_z_scale(add_kw, layer_data, z_spacing)
+                        self._set_layer_scale(
+                            add_kw, layer_data, z_spacing, pixel_size
+                        )
                         self.viewer.add_image(
                             layer_data,
                             name=add_kw.pop("name"),
@@ -1930,7 +1970,9 @@ class AdvancedOptionsWidget(QWidget):
                 layer_data = self._apply_axis_transform(
                     add_kw, layer[0], axis_order, axis_labels
                 )
-                self._set_layer_z_scale(add_kw, layer_data, z_spacing)
+                self._set_layer_scale(
+                    add_kw, layer_data, z_spacing, pixel_size
+                )
                 self.viewer.add_image(
                     layer_data,
                     name=add_kw.pop("name"),
@@ -1946,7 +1988,9 @@ class AdvancedOptionsWidget(QWidget):
                 layer_data = self._apply_axis_transform(
                     add_kw, layer[0], axis_order, axis_labels
                 )
-                self._set_layer_z_scale(add_kw, layer_data, z_spacing)
+                self._set_layer_scale(
+                    add_kw, layer_data, z_spacing, pixel_size
+                )
                 self.viewer.add_image(
                     layer_data,
                     name=add_kw.pop("name"),
@@ -2024,19 +2068,35 @@ class AdvancedOptionsWidget(QWidget):
         return transformed
 
     @staticmethod
-    def _set_layer_z_scale(add_kwargs, data, z_spacing):
-        """Set first-axis scale to z-spacing for 3D+ data."""
-        if z_spacing is None:
-            return
-        if not hasattr(data, 'ndim') or data.ndim < 3:
+    def _set_layer_scale(add_kwargs, data, z_spacing=None, pixel_size=None):
+        """Override the layer's spatial scale with values typed by the user.
+
+        *z_spacing* calibrates the first axis of 3D+ data, *pixel_size* the
+        trailing two. Either may be ``None``, which leaves whatever the file
+        itself provided.
+        """
+        if not hasattr(data, 'ndim'):
             return
 
-        try:
-            z_value = float(z_spacing)
-        except (TypeError, ValueError):
-            return
+        wanted = {}
+        if data.ndim >= 3:
+            wanted[0] = z_spacing
+        if data.ndim >= 2:
+            wanted[data.ndim - 2] = pixel_size
+            wanted[data.ndim - 1] = pixel_size
 
-        if z_value <= 0:
+        values = {}
+        for axis, raw in wanted.items():
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                values[axis] = value
+
+        if not values:
             return
 
         existing_scale = add_kwargs.get("scale")
@@ -2049,8 +2109,16 @@ class AdvancedOptionsWidget(QWidget):
             elif len(scale) > data.ndim:
                 scale = scale[: data.ndim]
 
-        scale[0] = z_value
+        units = list(add_kwargs.get("units") or [""] * data.ndim)
+        if len(units) != data.ndim:
+            units = [""] * data.ndim
+
+        for axis, value in values.items():
+            scale[axis] = value
+            units[axis] = "um"
+
         add_kwargs["scale"] = tuple(scale)
+        add_kwargs["units"] = tuple(units)
 
 
 def _try_get_z_spacing_from_ome_tiff(path):
@@ -2062,29 +2130,14 @@ def _try_get_z_spacing_from_ome_tiff(path):
     if extension != ".ome.tif":
         return None
 
+    z_value = physical_sizes_from_ome_tiff(path).get("Z")
+    if z_value is not None:
+        return z_value
+
     try:
         import tifffile
 
         with tifffile.TiffFile(path) as tif:
-            ome_xml = tif.ome_metadata
-            if ome_xml:
-                ome_dict = tifffile.xml2dict(ome_xml)
-                ome_root = ome_dict.get("OME", {})
-                images = ome_root.get("Image", [])
-                if isinstance(images, dict):
-                    images = [images]
-
-                if images:
-                    pixels = images[0].get("Pixels", {})
-                    z_value = pixels.get("@PhysicalSizeZ")
-                    if z_value is None:
-                        z_value = pixels.get("PhysicalSizeZ")
-
-                    if isinstance(z_value, dict):
-                        z_value = z_value.get("#text")
-                    if z_value is not None:
-                        return float(z_value)
-
             # Fallback to napari-phasors settings embedded in description.
             if not tif.pages:
                 return None

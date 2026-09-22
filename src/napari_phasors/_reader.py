@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import replace
 from typing import Any, Union
+from xml.etree import ElementTree
 
 import numpy as np
 import phasorpy.io as io
@@ -172,6 +173,32 @@ iter_index_mapping = {
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
 """
+
+COORD_UNITS_TO_UM = {
+    ".ptu": 1e6,
+    ".lsm": 1e6,
+    ".lif": 1e6,
+}
+"""Factor turning a format's spatial coordinates into micrometers.
+
+The readers behind these formats label their spatial axes in SI metres, so
+the step between two coordinates has to be converted before it can be used
+as a napari scale. Formats absent from this mapping carry no usable pixel
+size and are left uncalibrated.
+"""
+
+OME_UNITS_TO_UM = {
+    "m": 1e6,
+    "cm": 1e4,
+    "mm": 1e3,
+    "\u00b5m": 1.0,
+    "um": 1.0,
+    "micron": 1.0,
+    "nm": 1e-3,
+    "pm": 1e-6,
+    "\u00c5": 1e-4,
+}
+"""Factor turning an OME ``PhysicalSize*Unit`` into micrometers."""
 
 COMPOUND_EXTENSIONS = frozenset(
     key
@@ -653,6 +680,108 @@ def load_raw_signal(path, io_options=None):
     return extension_mapping["raw"][file_extension](path, io_options)
 
 
+def _ome_attr(container, key):
+    """Return an OME-XML attribute, however ``xml2dict`` spelled it."""
+    value = container.get(f"@{key}", container.get(key))
+    if isinstance(value, dict):
+        value = value.get("#text")
+    return value
+
+
+def physical_sizes_from_ome_tiff(path):
+    """Return ``{'Z'|'Y'|'X': size}`` in micrometers from an OME-TIFF.
+
+    Sizes are converted from whatever unit the file declares rather than
+    assumed to be micrometers, so calibration written by other software
+    survives the trip. Anything unreadable yields an empty dict: pixel
+    calibration is best effort and never worth failing an import over.
+    """
+    sizes = {}
+    try:
+        with tifffile.TiffFile(path) as tif:
+            ome_xml = tif.ome_metadata
+            if not ome_xml:
+                return sizes
+            images = tifffile.xml2dict(ome_xml).get("OME", {}).get("Image", [])
+            if isinstance(images, dict):
+                images = [images]
+            if not images:
+                return sizes
+            pixels = images[0].get("Pixels", {})
+            for axis in "ZYX":
+                value = _ome_attr(pixels, f"PhysicalSize{axis}")
+                if value is None:
+                    continue
+                unit = _ome_attr(pixels, f"PhysicalSize{axis}Unit")
+                factor = OME_UNITS_TO_UM.get(str(unit) if unit else "um")
+                if factor is None:
+                    continue
+                size = float(value) * factor
+                if size > 0:
+                    sizes[axis] = size
+    except Exception:  # noqa: BLE001 - calibration metadata is best effort
+        return {}
+    return sizes
+
+
+def pixel_size_um(raw_data, file_extension):
+    """Return ``{'Z'|'Y'|'X': size}`` in micrometers for a raw signal.
+
+    A reader that already knows its pixel size says so in
+    ``attrs['pixel_size_um']``. Otherwise the size is the step between the
+    spatial coordinates the format's reader attaches to the signal, in the
+    units :data:`COORD_UNITS_TO_UM` records for that format.
+    """
+    attrs = getattr(raw_data, "attrs", None) or {}
+    known = attrs.get("pixel_size_um")
+    if known:
+        return {str(axis).upper(): float(v) for axis, v in known.items()}
+
+    factor = COORD_UNITS_TO_UM.get(file_extension)
+    coords = getattr(raw_data, "coords", None)
+    if factor is None or coords is None:
+        return {}
+
+    sizes = {}
+    for axis in "ZYX":
+        if axis not in coords:
+            continue
+        with suppress(TypeError, ValueError):
+            values = np.asarray(coords[axis].values, dtype=np.float64).ravel()
+            if values.size < 2:
+                continue
+            step = float(np.median(np.abs(np.diff(values))))
+            if step > 0:
+                sizes[axis] = step * factor
+    return sizes
+
+
+def _set_scale_and_units(add_kwargs, ndim, axis_names, sizes):
+    """Put pixel *sizes* on ``add_kwargs`` as napari ``scale`` and ``units``.
+
+    *axis_names* names the layer's axes and is aligned to the right, so a
+    signal whose histogram and channel axes were consumed by the phasor
+    transform still lands its Y and X sizes on the right axes. Axes with no
+    known size stay one dimensionless pixel wide, and a layer that gained no
+    size at all keeps napari's defaults rather than an all-ones scale.
+    """
+    if not sizes or ndim < 1:
+        return
+    scale = [1.0] * ndim
+    units = [""] * ndim
+    for offset, name in enumerate(reversed(list(axis_names or ()))):
+        if offset >= ndim:
+            break
+        size = sizes.get(str(name).upper())
+        if size:
+            scale[-1 - offset] = float(size)
+            units[-1 - offset] = "um"
+    if "um" not in units:
+        return
+    add_kwargs["scale"] = tuple(scale)
+    add_kwargs["units"] = tuple(units)
+
+
 def _phasor_layers_from_signal(
     raw_data,
     *,
@@ -1077,6 +1206,12 @@ def _phasor_layers_from_signal(
         for layer, cmap in zip(layers, itertools.cycle(CYMRGB)):
             layer[1]["colormap"] = cmap
             layer[1]['blending'] = 'additive'
+
+    sizes = pixel_size_um(raw_data, file_extension)
+    if sizes:
+        spatial = [axis for axis in raw_dims if axis in ("Z", "Y", "X")]
+        for data, add_kwargs in layers:
+            _set_scale_and_units(add_kwargs, np.ndim(data), spatial, sizes)
 
     return layers
 
@@ -1668,6 +1803,9 @@ class CziMosaic:
         min_x = min(position[1] for position in raw)
         self.positions = [(y - min_y, x - min_x) for y, x in raw]
 
+        self.pixel_size_um = _czi_pixel_size_um(self._czi)
+        """Pixel size of an unbinned tile, in micrometers."""
+
     @property
     def n_tiles(self):
         """Number of tiles in the mosaic."""
@@ -1714,7 +1852,19 @@ class CziMosaic:
         ]
         cube = np.stack(planes)
         cube = _bin_spatial(cube, binning)
-        return xr.DataArray(cube, dims=("C", "Y", "X"))
+        # Binning a tile makes its pixels that many times larger.
+        factor = max(1, int(binning))
+        attrs = (
+            {
+                "pixel_size_um": {
+                    axis: size * factor
+                    for axis, size in self.pixel_size_um.items()
+                }
+            }
+            if self.pixel_size_um
+            else {}
+        )
+        return xr.DataArray(cube, dims=("C", "Y", "X"), attrs=attrs)
 
     def binned_positions(self, binning=1):
         """Return the tile positions in the binned pixel grid."""
@@ -1750,6 +1900,27 @@ class CziMosaic:
 
     def __exit__(self, *exc_info):
         self.close()
+
+
+def _czi_pixel_size_um(czi):
+    """Return ``{'Z'|'Y'|'X': size}`` in micrometers from a CZI's scaling.
+
+    CZI records its scaling in metres, under one ``Distance`` element per
+    axis. Returns an empty dict when the file carries none.
+    """
+    sizes = {}
+    try:
+        root = ElementTree.fromstring(czi.metadata())
+        for distance in root.iter("Distance"):
+            axis = str(distance.get("Id", "")).upper()
+            if axis not in ("Z", "Y", "X"):
+                continue
+            value = distance.findtext("Value")
+            if value and float(value) > 0:
+                sizes[axis] = float(value) * 1e6
+    except Exception:  # noqa: BLE001 - calibration is best effort
+        return {}
+    return sizes
 
 
 def _bin_spatial(cube, factor):
@@ -2238,7 +2409,7 @@ class TileSet:
             )
 
             add_kwargs = {"name": name, "metadata": metadata}
-            for key in ("colormap", "blending"):
+            for key in ("colormap", "blending", "scale", "units"):
                 if key in template:
                     add_kwargs[key] = template[key]
             layers.append((mean, add_kwargs))
@@ -2764,22 +2935,20 @@ def processed_file_reader(
         elif "axes" in attrs:
             add_kwargs["axis_labels"] = tuple(attrs["axes"])
 
+        sizes = physical_sizes_from_ome_tiff(path)
         z_spacing_um = settings.get("z_spacing_um")
-        if z_spacing_um is not None and mean_intensity_image.ndim >= 3:
-            try:
-                z_idx = 0
-                if "axis_labels" in add_kwargs:
-                    labels = [
-                        str(label).upper()
-                        for label in add_kwargs["axis_labels"]
-                    ]
-                    if 'Z' in labels:
-                        z_idx = labels.index('Z')
-                scale = [1.0] * mean_intensity_image.ndim
-                scale[z_idx] = float(z_spacing_um)
-                add_kwargs["scale"] = tuple(scale)
-            except (ValueError, TypeError):
-                pass
+        if z_spacing_um is not None and "Z" not in sizes:
+            with suppress(TypeError, ValueError):
+                if float(z_spacing_um) > 0:
+                    sizes["Z"] = float(z_spacing_um)
+        _set_scale_and_units(
+            add_kwargs,
+            mean_intensity_image.ndim,
+            add_kwargs.get(
+                "axis_labels", tuple("ZYX"[-mean_intensity_image.ndim :])
+            ),
+            sizes,
+        )
 
         layers.append((mean_intensity_image, add_kwargs))
     finally:
@@ -2865,11 +3034,6 @@ def _get_filename_extension(path: str) -> tuple[str, str]:
         return parts[0], ""
     stem, file_extension = parts[0], "." + parts[1].lower()
 
-    # Splitting on the first dot is what makes compound extensions such as
-    # '.ome.tif' work, but it also turns an ordinary dotted filename into an
-    # extension nothing matches -- 'sample.mcs.h5' became '.mcs.h5', so the
-    # file silently read as unsupported. Compound extensions are a closed
-    # set, so anything outside it falls back to the final suffix.
     if file_extension in COMPOUND_EXTENSIONS:
         return stem, file_extension
     root, _, last = filename.rpartition(".")
