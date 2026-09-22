@@ -22,7 +22,18 @@ from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image, Labels
 from napari.utils import progress as _napari_progress
 from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
-from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
+from qtpy.QtCore import (
+    QEvent,
+    QLineF,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+)
 from qtpy.QtGui import (
     QColor,
     QCursor,
@@ -33,6 +44,7 @@ from qtpy.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QPolygonF,
     QStandardItem,
     QStandardItemModel,
 )
@@ -65,6 +77,7 @@ from qtpy.QtWidgets import (
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -2721,10 +2734,11 @@ class CheckableComboBox(QComboBox):
         Parent widget.
     enable_primary_layer : bool, optional
         Whether to enable primary layer functionality (default: True).
-    show_select_all_none : bool, optional
-        When True, prepend "All" and "None" shortcut rows at the top of
-        the dropdown so the user can select or deselect all items with
-        one click (default: False).
+    show_select_all_buttons : bool, optional
+        When True, build :attr:`select_all_buttons`, a compact segmented
+        pair of buttons that check or uncheck every item. The widget is
+        not placed for you: add it to the layout next to the combobox
+        (default: False).
     """
 
     selectionChanged = Signal()
@@ -2733,19 +2747,15 @@ class CheckableComboBox(QComboBox):
     primaryLayerChanged = Signal(str)
     """Signal emitted with the name of the new primary (main) layer."""
 
-    # Use a plain int rather than Qt.UserRole + 21 to avoid psygnal
-    # inspecting Qt enum values as type hints.
-    _CONTROL_ROLE = int(Qt.UserRole) + 21
-
     def __init__(
         self,
         parent=None,
         enable_primary_layer=True,
         placeholder="Select Layers...",
         unit="layers",
-        show_select_all_none=False,
         no_selection_text=None,
         show_checked_list=False,
+        show_select_all_buttons=False,
     ):
         """Build the combobox and its checkable item model.
 
@@ -2759,13 +2769,11 @@ class CheckableComboBox(QComboBox):
         self.lineEdit().setReadOnly(True)
         self._placeholder_text = placeholder
         self._unit = unit
-        self._show_select_all_none = show_select_all_none
         self._no_selection_text = no_selection_text
         # When True the line edit lists the checked items verbatim (e.g.
         # "PNG, CSV") instead of the primary/count/"all" summary. Suited to
         # small fixed option sets where every state should read literally.
         self._show_checked_list = show_checked_list
-        self._header_count = 0  # number of non-checkable header rows at top
         # Items kept in the model but not offered in the dropdown.
         self._hidden_items = set()
         self.lineEdit().setPlaceholderText(self._placeholder_text)
@@ -2800,41 +2808,185 @@ class CheckableComboBox(QComboBox):
         self.view().viewport().installEventFilter(self)
         self.view().setMouseTracking(True)
 
-    # ------------------------------------------------------------------
-    # Header control helpers
-    # ------------------------------------------------------------------
+        # Optional segmented "check all / uncheck all" buttons
+        self._select_all_buttons = None
+        if show_select_all_buttons:
+            self._build_select_all_buttons()
 
-    def _add_header_controls(self):
-        """Prepend 'All' and 'None' control rows at the top of the model."""
-        for row_idx, (label, action) in enumerate(
-            [("All", "all"), ("None", "none")]
-        ):
-            item = QStandardItem(label)
-            # Not checkable — acts as a button
-            item.setFlags(Qt.ItemIsEnabled)
-            item.setData(action, self._CONTROL_ROLE)
-            font = item.font()
-            font.setBold(True)
-            item.setFont(font)
-            self.model().insertRow(row_idx, item)
-        self._header_count = 2
+    # ------------------------------------------------------------------
+    # Select all / none buttons
+    # ------------------------------------------------------------------
 
     @property
-    def header_count(self):
-        """Number of non-checkable header rows at the top of the dropdown."""
-        return self._header_count
+    def select_all_buttons(self):
+        """Segmented check-all/uncheck-all widget, or None if not enabled.
 
-    def _is_header_row(self, row):
-        """Return True if *row* is a header control row (not a data item)."""
-        item = self.model().item(row)
-        return item is not None and item.data(self._CONTROL_ROLE) is not None
+        Built when the combobox is constructed with
+        ``show_select_all_buttons=True``. The caller owns the placement:
+        add it to the same row as the combobox.
+        """
+        return self._select_all_buttons
+
+    # Both marks are drawn inside an identical square so the two buttons
+    # read as a matched pair. Green says "fill the selection", red says
+    # "empty it"; a disabled button drops to gray so colour only ever means
+    # "this action would do something".
+    _SELECT_ALL_COLOR = "#2f9e44"
+    _SELECT_NONE_COLOR = "#e03131"
+    _SELECT_DISABLED_COLOR = "#878787"
+    _ICON_SIZE = 16
+
+    @classmethod
+    def _make_box_icon(cls, mark, color):
+        """Return a two-mode icon: *color* when enabled, gray when not."""
+        icon = QIcon()
+        icon.addPixmap(cls._draw_box_pixmap(mark, color), QIcon.Normal)
+        icon.addPixmap(
+            cls._draw_box_pixmap(mark, cls._SELECT_DISABLED_COLOR),
+            QIcon.Disabled,
+        )
+        return icon
+
+    @classmethod
+    def _draw_box_pixmap(cls, mark, color, scale=None):
+        """Draw a square outline with a check or a cross inside it.
+
+        Drawn rather than taken from a glyph: the ballot-box characters
+        render at different sizes in whatever font each platform falls
+        back to, which made the two buttons visibly mismatched.
+
+        The artwork is rendered at the screen's own pixel ratio so it
+        stays crisp on a retina display without being drawn oversized on
+        a 1x one. The scaling is applied to the painter and the device
+        pixel ratio is only attached afterwards: a QPainter already
+        multiplies by a paint device's ratio, so setting it up front and
+        scaling as well would draw everything at twice its size, and not
+        every Qt build makes the ratio stick on a pixmap anyway.
+        """
+        if scale is None:
+            app = QApplication.instance()
+            scale = int(round(app.devicePixelRatio())) if app else 1
+            scale = max(1, scale)
+        size = cls._ICON_SIZE
+        pixmap = QPixmap(size * scale, size * scale)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.scale(scale, scale)
+            pen = QPen(QColor(color))
+            pen.setWidthF(1.4)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.drawRoundedRect(
+                QRectF(1.2, 1.2, size - 2.4, size - 2.4), 2.5, 2.5
+            )
+            if mark == "check":
+                painter.drawPolyline(
+                    QPolygonF(
+                        [
+                            QPointF(4.4, 8.3),
+                            QPointF(6.8, 10.9),
+                            QPointF(11.6, 5.3),
+                        ]
+                    )
+                )
+            else:
+                painter.drawLine(QLineF(5.4, 5.4, 10.6, 10.6))
+                painter.drawLine(QLineF(10.6, 5.4, 5.4, 10.6))
+        finally:
+            painter.end()
+
+        # Attach the ratio now that nothing else will paint on it. Where a
+        # Qt build ignores this the pixmap simply stays a 1x image and the
+        # button scales it down to its icon size, which still looks right.
+        pixmap.setDevicePixelRatio(scale)
+        return pixmap
+
+    def _build_select_all_buttons(self):
+        """Create the segmented check-all / uncheck-all button pair."""
+        container = QWidget()
+        container.setObjectName("selectAllButtons")
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._select_all_button = QToolButton()
+        self._select_all_button.setObjectName("selectAllButton")
+        self._select_all_button.setIcon(
+            self._make_box_icon("check", self._SELECT_ALL_COLOR)
+        )
+        self._select_none_button = QToolButton()
+        self._select_none_button.setObjectName("selectNoneButton")
+        self._select_none_button.setIcon(
+            self._make_box_icon("cross", self._SELECT_NONE_COLOR)
+        )
+
+        for button in (self._select_all_button, self._select_none_button):
+            button.setFixedSize(22, 22)
+            button.setIconSize(QSize(self._ICON_SIZE, self._ICON_SIZE))
+            button.setAutoRaise(True)
+            button.setFocusPolicy(Qt.NoFocus)
+            layout.addWidget(button)
+
+        # Segmented look: one border around the pair, a hairline between
+        # them. Translucent grays rather than palette() roles: napari themes
+        # the app through a stylesheet and leaves QPalette at the light
+        # default, so palette(midlight) would paint a near-white block on a
+        # dark theme. A gray wash lightens a dark background and darkens a
+        # light one, so it reads as a hover in either.
+        container.setStyleSheet(
+            "QWidget#selectAllButtons {"
+            "  border: 1px solid rgba(135, 135, 135, 0.6);"
+            "  border-radius: 4px;"
+            "}"
+            "QWidget#selectAllButtons QToolButton {"
+            "  border: none;"
+            "  border-radius: 0px;"
+            "  background: transparent;"
+            "  padding: 0px;"
+            "}"
+            "QWidget#selectAllButtons QToolButton:hover:enabled {"
+            "  background: rgba(135, 135, 135, 0.25);"
+            "}"
+            "QWidget#selectAllButtons QToolButton:pressed:enabled {"
+            "  background: rgba(135, 135, 135, 0.45);"
+            "}"
+            "QWidget#selectAllButtons QToolButton#selectNoneButton {"
+            "  border-left: 1px solid rgba(135, 135, 135, 0.6);"
+            "}"
+        )
+
+        self._select_all_button.clicked.connect(self.selectAll)
+        self._select_none_button.clicked.connect(self.deselectAll)
+
+        self._select_all_buttons = container
+        self._sync_select_all_buttons()
+
+    def _sync_select_all_buttons(self):
+        """Enable each button only when it would change the selection."""
+        if getattr(self, "_select_all_buttons", None) is None:
+            return
+        total = self.model().rowCount()
+        checked = len(self.checkedItems())
+        self._select_all_button.setEnabled(total > 0 and checked < total)
+        self._select_none_button.setEnabled(checked > 0)
+        state = f"{checked} of {total} selected"
+        self._select_all_button.setToolTip(
+            f"Select all {self._unit} ({state})"
+        )
+        self._select_none_button.setToolTip(
+            f"Deselect all {self._unit} ({state})"
+        )
 
     def selectAll(self):
         """Check all items (emits one selectionChanged)."""
         already_blocked = self.signalsBlocked()
         if not already_blocked:
             self.blockSignals(True)
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             self.model().item(i).setCheckState(Qt.Checked)
         if not already_blocked:
             self.blockSignals(False)
@@ -2848,7 +3000,7 @@ class CheckableComboBox(QComboBox):
         already_blocked = self.signalsBlocked()
         if not already_blocked:
             self.blockSignals(True)
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             self.model().item(i).setCheckState(Qt.Unchecked)
         if not already_blocked:
             self.blockSignals(False)
@@ -2879,15 +3031,6 @@ class CheckableComboBox(QComboBox):
             elif event.type() == QEvent.MouseButtonRelease:
                 index = self.view().indexAt(event.pos())
                 if index.isValid():
-                    # Check if this is a header control row (All / None)
-                    control = index.data(self._CONTROL_ROLE)
-                    if control == "all":
-                        self.selectAll()
-                        return True
-                    if control == "none":
-                        self.deselectAll()
-                        return True
-
                     vis_rect = self.view().visualRect(index)
                     option = QStyleOptionViewItem()
                     option.rect = vis_rect
@@ -2943,11 +3086,6 @@ class CheckableComboBox(QComboBox):
         """Add multiple items to the combobox."""
         for text in texts:
             self.addItem(text)
-        # Insert All/None header rows at the top after data rows are appended.
-        # _add_header_controls uses insertRow(0/1) so they end up before data.
-        # Only call on the first addItems invocation (_header_count == 0).
-        if self._show_select_all_none and self._header_count == 0 and texts:
-            self._add_header_controls()
 
     def clear(self):
         """Clear all items."""
@@ -2957,7 +3095,6 @@ class CheckableComboBox(QComboBox):
         for i in range(self.model().rowCount()):
             view.setRowHidden(i, False)
         self.model().clear()
-        self._header_count = 0
         self._hidden_items = set()
         self._primary_layer_name = ""
         self._last_emitted_primary = ""
@@ -2966,7 +3103,7 @@ class CheckableComboBox(QComboBox):
     def checkedItems(self):
         """Return list of checked item texts in list order (top to bottom)."""
         checked = []
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             item = self.model().item(i)
             if item and item.checkState() == Qt.Checked:
                 checked.append(item.text())
@@ -2976,7 +3113,7 @@ class CheckableComboBox(QComboBox):
         """Return list of all item texts in list order."""
         return [
             self.model().item(i).text()
-            for i in range(self._header_count, self.model().rowCount())
+            for i in range(self.model().rowCount())
             if self.model().item(i)
         ]
 
@@ -2996,7 +3133,7 @@ class CheckableComboBox(QComboBox):
         hidden = set(texts)
         self._hidden_items = hidden
         view = self.view()
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             item = self.model().item(i)
             if item is not None:
                 view.setRowHidden(i, item.text() in hidden)
@@ -3036,7 +3173,7 @@ class CheckableComboBox(QComboBox):
         if not signals_were_blocked:
             self.blockSignals(True)
 
-        for i in range(self._header_count, self.model().rowCount()):
+        for i in range(self.model().rowCount()):
             item = self.model().item(i)
             if item.text() in texts:
                 item.setCheckState(Qt.Checked)
@@ -3121,6 +3258,7 @@ class CheckableComboBox(QComboBox):
 
     def _update_display_text(self):
         """Update the display text to show primary layer and selection count."""
+        self._sync_select_all_buttons()
         checked = self.checkedItems()
         line_edit = self.lineEdit()
 
@@ -3138,7 +3276,7 @@ class CheckableComboBox(QComboBox):
                 line_edit.setPlaceholderText(self._placeholder_text)
             return
 
-        all_count = self.model().rowCount() - self._header_count
+        all_count = self.model().rowCount()
         if not checked:
             if self._no_selection_text is not None:
                 line_edit.setText(self._no_selection_text)

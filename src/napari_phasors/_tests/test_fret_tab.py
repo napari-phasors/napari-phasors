@@ -2572,7 +2572,7 @@ def _click_fret_source(qtbot, parent, source_name):
     combo = parent.image_layers_checkable_combobox
     row = next(
         row
-        for row in range(combo._header_count, combo.model().rowCount())
+        for row in range(combo.model().rowCount())
         if combo.model().item(row).text() == source_name
     )
     combo.showPopup()

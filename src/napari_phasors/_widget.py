@@ -3999,38 +3999,14 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             QLabel("Select Image/Labels Layer(s) to be Exported: ")
         )
 
-        # Create horizontal layout for combobox and All/None controls
+        # Create horizontal layout for combobox and bulk-selection buttons
         export_layer_layout = QHBoxLayout()
         self.export_layer_combobox = CheckableComboBox(
-            enable_primary_layer=False
+            enable_primary_layer=False, show_select_all_buttons=True
         )
         export_layer_layout.addWidget(self.export_layer_combobox, 1)
-
-        # "All | None" clickable labels for quick bulk selection
-        select_all_label = QLabel('<a href="all" style="color: gray;">All</a>')
-        select_all_label.setTextFormat(Qt.RichText)
-        select_all_label.setCursor(Qt.PointingHandCursor)
-        select_all_label.setToolTip("Select all layers")
-        export_layer_layout.addWidget(select_all_label)
-
-        separator_label = QLabel("|")
-        separator_label.setStyleSheet("color: gray;")
-        export_layer_layout.addWidget(separator_label)
-
-        deselect_all_label = QLabel(
-            '<a href="none" style="color: gray;">None</a>'
-        )
-        deselect_all_label.setTextFormat(Qt.RichText)
-        deselect_all_label.setCursor(Qt.PointingHandCursor)
-        deselect_all_label.setToolTip("Deselect all layers")
-        export_layer_layout.addWidget(deselect_all_label)
-
-        # Connect All/None labels (use lambdas to consume the href argument)
-        select_all_label.linkActivated.connect(
-            lambda _: self.export_layer_combobox.selectAll()
-        )
-        deselect_all_label.linkActivated.connect(
-            lambda _: self.export_layer_combobox.deselectAll()
+        export_layer_layout.addWidget(
+            self.export_layer_combobox.select_all_buttons
         )
 
         self.main_layout.addLayout(export_layer_layout)
