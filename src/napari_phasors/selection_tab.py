@@ -3544,7 +3544,7 @@ class CursorSelectionWidget(QWidget):
                 )
             )
         color_button.color_changed.connect(
-            lambda _c, c=cursor: self._on_cursor_changed(c)
+            lambda _c, c=cursor: self._on_cursor_color_changed(c)
         )
         visibility_button.clicked.connect(
             lambda _=False, c=cursor: self._on_cursor_visibility_toggled(c)
@@ -3930,6 +3930,18 @@ class CursorSelectionWidget(QWidget):
                 self._apply_selection()
             else:
                 self._update_cursor_statistics()
+
+    def _on_cursor_color_changed(self, cursor):
+        """Recolor a cursor's patch and its region in the labels layer."""
+        if cursor not in self._cursors:
+            return
+        self._sync_cursor_from_widgets(cursor)
+        self._update_cursor_patch(cursor)
+        # Unlike a geometry edit, a colour change must reach an already
+        # computed selection even with autoupdate off, as hiding and
+        # showing the cursor would.
+        if self._autoupdate_enabled or self._selection_active:
+            self._apply_selection()
 
     def _remove_cursor(self, cursor_or_idx):
         """Remove a cursor row."""

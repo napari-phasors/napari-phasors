@@ -9,7 +9,7 @@ from napari.layers import Image, Labels
 from phasorpy.component import phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QColor
+from qtpy.QtGui import QColor, QFont
 from qtpy.QtWidgets import QColorDialog
 
 from napari_phasors._mapping_filters import (
@@ -6253,3 +6253,24 @@ def test_the_run_button_is_pinned_under_the_settings(make_viewer_model):
         comp_widget.calculate_button,
         comp_widget.autoupdate_container,
     )
+
+
+def test_components_card_fields_are_bold_for_added_components(
+    make_viewer_model, qtbot
+):
+    """Every card's text fields are bold, including cards added later."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    comp_widget._add_component()
+    assert len(comp_widget.components) >= 3
+
+    for comp in comp_widget.components:
+        for edit in (
+            comp.name_edit,
+            comp.g_edit,
+            comp.s_edit,
+            comp.lifetime_edit,
+        ):
+            edit.ensurePolished()
+            assert edit.font().weight() >= QFont.DemiBold

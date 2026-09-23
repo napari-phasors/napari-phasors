@@ -3913,3 +3913,53 @@ def test_the_selection_run_buttons_are_pinned_under_the_settings(
         == QSizePolicy.Fixed
     )
     assert widget.layout().stretch(0) == 1
+
+
+def test_polar_cursor_color_change_recolors_labels_layer(
+    make_viewer_model, qtbot
+):
+    """Changing a cursor's colour recolours an already computed selection."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget.autoupdate_check.setChecked(False)
+    widget._add_cursor(cursor_type="polar")
+    cursor = widget._cursors[0]
+    widget._apply_selection()
+    labels_layer = viewer.layers[
+        f"Cursor Selection: {intensity_image_layer.name}"
+    ]
+
+    cursor["color_button"].set_color(QColor(10, 200, 30))
+    cursor["color_button"].color_changed.emit(QColor(10, 200, 30))
+
+    color = labels_layer.colormap.color_dict[1]
+    np.testing.assert_allclose(color[:3], (10 / 255, 200 / 255, 30 / 255))
+
+
+def test_cursor_color_change_without_selection_skips_labels(
+    make_viewer_model, qtbot
+):
+    """With no computed selection, a colour change creates no labels."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget.autoupdate_check.setChecked(False)
+    widget._add_cursor(cursor_type="polar")
+    cursor = widget._cursors[0]
+    cursor["color_button"].set_color(QColor(10, 200, 30))
+    cursor["color_button"].color_changed.emit(QColor(10, 200, 30))
+    assert cursor["color"] == QColor(10, 200, 30)
+    assert (
+        f"Cursor Selection: {intensity_image_layer.name}" not in viewer.layers
+    )
+
+    # A removed cursor's stale signal is ignored.
+    widget._remove_cursor(cursor)
+    widget._on_cursor_color_changed(cursor)
