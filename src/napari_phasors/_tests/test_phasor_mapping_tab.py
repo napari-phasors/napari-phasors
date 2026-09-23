@@ -2002,6 +2002,55 @@ def test_mesh_overlay_colorbar_and_transparency_updates(
     assert parent.mapping_cax is None
 
 
+@pytest.mark.parametrize(
+    ("width", "height"), [(700, 400), (900, 500), (1000, 700)]
+)
+def test_mesh_colorbar_labels_fit_in_figure(
+    make_viewer_model, qtbot, width, height
+):
+    """Both colorbars and their labels stay inside the figure after one draw.
+
+    The mapping colorbar used to sit at a fixed fraction of the plot width,
+    which a single tight-layout pass could not account for on an
+    aspect-locked plot, so its ticks and label were drawn past the edge.
+    """
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    fig = parent.canvas_widget.figure
+    fig.set_dpi(100)
+    fig.set_size_inches(width / 100, height / 100)
+    for _ in range(3):  # settle the layout with the density colorbar only
+        fig.canvas.draw()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    mapping_widget.mesh_colorbar_checkbox.setChecked(True)
+    assert parent.mapping_colorbar is not None
+
+    fig.set_size_inches(width / 100, height / 100)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    fig_box = fig.bbox
+    for cax in (parent.cax, parent.mapping_cax):
+        box = cax.get_tightbbox(renderer)
+        assert box.x1 <= fig_box.x1
+        assert box.y0 >= fig_box.y0
+        assert box.y1 <= fig_box.y1
+    # The mapping colorbar sits right of the density colorbar's labels.
+    assert (
+        parent.mapping_cax.get_window_extent(renderer).x0
+        > parent.cax.get_tightbbox(renderer).x1
+    )
+
+
 def test_mesh_overlay_range_edits_and_sliders(make_viewer_model, qtbot):
     """Text edits to phase/modulation limits should synchronize with the sliders and trigger a redraw."""
     viewer = make_viewer_model()
