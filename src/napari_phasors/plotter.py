@@ -12,6 +12,7 @@ from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Patch
+from matplotlib.transforms import Bbox
 from napari.layers import Image, Labels, Shapes
 from napari.utils import notifications
 from phasorpy.lifetime import phasor_from_lifetime
@@ -9972,6 +9973,7 @@ class PlotterWidget(QWidget):
         # Determine which axes to use for inset
         ax = self.canvas_widget.axes
         self.cax = ax.inset_axes([1.05, 0, 0.05, 1])
+        self.cax.set_axes_locator(self._colorbar_locator(ax))
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -10040,10 +10042,12 @@ class PlotterWidget(QWidget):
             return
 
         ax = self.canvas_widget.axes
-        # Position mapping colorbar to the right at 1.35 for compact right-hand labels.
         try:
-            # Create an inset axes for the mapping colorbar to match the density colorbar's dimensions exactly
+            # Same size as the density colorbar, placed just past its labels.
             self.mapping_cax = ax.inset_axes([1.35, 0, 0.05, 1])
+            self.mapping_cax.set_axes_locator(
+                self._colorbar_locator(ax, after=lambda: self.cax)
+            )
             self.mapping_colorbar = self.canvas_widget.figure.colorbar(
                 mappable, cax=self.mapping_cax, orientation='vertical'
             )
@@ -10066,6 +10070,35 @@ class PlotterWidget(QWidget):
             self.canvas_widget.figure.canvas.draw_idle()
         except ValueError:
             self._remove_mapping_colorbar()
+
+    #: Gap (pt) between a colorbar and whatever sits to its left.
+    _COLORBAR_GAP_PT = 8
+
+    @classmethod
+    def _colorbar_locator(cls, ax, after=None):
+        """Return an axes locator that places a colorbar right of *ax*.
+
+        The colorbar keeps the height of the plot and 5 % of its width, and
+        sits a fixed ``_COLORBAR_GAP_PT`` past the plot, or past the ticks and
+        label of the colorbar returned by *after* when that one is shown.
+        Fixed gaps, unlike offsets in axes fractions, do not grow and shrink
+        with the plot, so the layout engine can reserve room for them in one
+        pass instead of pushing the outer colorbar's labels off the figure.
+        """
+
+        def locate(cax, renderer):
+            fig = ax.figure
+            ax.apply_aspect()
+            pos = ax.get_position(original=False)
+            fig_w = fig.bbox.width
+            gap = cls._COLORBAR_GAP_PT * fig.dpi / 72 / fig_w
+            x0 = pos.x1 + gap
+            left_bar = after() if after is not None else None
+            if left_bar is not None and left_bar.get_visible():
+                x0 = left_bar.get_tightbbox(renderer).x1 / fig_w + gap
+            return Bbox.from_bounds(x0, pos.y0, 0.05 * pos.width, pos.height)
+
+        return locate
 
     def _remove_colorbar(self):
         """Remove colorbar if it exists."""

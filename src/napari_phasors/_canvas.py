@@ -15,6 +15,7 @@ from typing import (
     Union,
 )
 
+import matplotlib as mpl
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,6 +25,8 @@ from matplotlib.backends.backend_qtagg import (
 )
 from matplotlib.colors import ListedColormap, LogNorm, Normalize, to_rgba
 from matplotlib.figure import Figure
+from matplotlib.font_manager import FontProperties
+from matplotlib.layout_engine import TightLayoutEngine
 from matplotlib.path import Path as mplPath
 from matplotlib.widgets import (
     EllipseSelector,
@@ -2295,6 +2298,66 @@ class SelectionToolbarWidget(QWidget):
                 )
 
 
+class AspectTightLayoutEngine(TightLayoutEngine):
+    """Tight layout that is exact in one pass for a single aspect-locked axes.
+
+    Matplotlib's tight layout measures the decorations against the current
+    axes box and assumes they keep their size. With a locked aspect that
+    does not hold: changing the top/bottom margins also resizes the plot
+    horizontally (and vice versa), so a single pass can leave the colorbars
+    on the right hanging past the figure edge until a few more redraws
+    settle it. Here the decorations are measured once in pixels around the
+    active (aspect-applied) box and the largest box of the same aspect that
+    fits between them is placed directly, centred together with them.
+    Figures with other than one subplot fall back to the plain tight layout.
+    """
+
+    def execute(self, fig):
+        subplots = [
+            ax
+            for ax in fig.axes
+            if ax.get_subplotspec() is not None and ax.get_visible()
+        ]
+        if len(subplots) != 1:
+            return super().execute(fig)
+        ax = subplots[0]
+        renderer = fig._get_renderer()
+        ax.apply_aspect()
+        box = ax.get_window_extent(renderer)
+        tight = ax.get_tightbbox(renderer, for_layout_only=True)
+        if tight is None or box.width <= 0 or box.height <= 0:
+            return super().execute(fig)
+
+        fig_w, fig_h = fig.bbox.width, fig.bbox.height
+        font_px = (
+            FontProperties(size=mpl.rcParams["font.size"]).get_size_in_points()
+            / 72
+            * fig.dpi
+        )
+        pad = self.get()["pad"] * font_px
+        left = box.x0 - tight.x0 + pad
+        right = tight.x1 - box.x1 + pad
+        bottom = box.y0 - tight.y0 + pad
+        top = tight.y1 - box.y1 + pad
+        avail_w = fig_w - left - right
+        avail_h = fig_h - bottom - top
+        if avail_w <= 0 or avail_h <= 0:
+            return None
+
+        ratio = box.width / box.height
+        axes_w = min(avail_w, avail_h * ratio)
+        axes_h = axes_w / ratio
+        x0 = left + (avail_w - axes_w) / 2
+        y0 = bottom + (avail_h - axes_h) / 2
+        fig.subplots_adjust(
+            left=x0 / fig_w,
+            right=(x0 + axes_w) / fig_w,
+            bottom=y0 / fig_h,
+            top=(y0 + axes_h) / fig_h,
+        )
+        return None
+
+
 class PhasorCanvasWidget(QWidget):
     """Main plotting canvas and selector container widget for napari-phasors.
 
@@ -2315,7 +2378,7 @@ class PhasorCanvasWidget(QWidget):
         self.viewer = napari_viewer
         self.highlight_enabled = highlight_enabled
 
-        self.figure = Figure(tight_layout=True)
+        self.figure = Figure(layout=AspectTightLayoutEngine())
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.axes = self.figure.add_subplot(111)
 
