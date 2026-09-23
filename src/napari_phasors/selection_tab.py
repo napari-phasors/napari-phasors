@@ -3175,7 +3175,6 @@ class CursorSelectionWidget(QWidget):
         if angle is None:
             angle = 0.0
 
-        # Polar defaults from the center position.
         if (
             phase_min is None
             or phase_max is None
@@ -3183,17 +3182,17 @@ class CursorSelectionWidget(QWidget):
             or modulation_max is None
         ):
             center_phase_deg = np.rad2deg(np.arctan2(center_s, center_g))
-            center_modulation = np.sqrt(center_g**2 + center_s**2)
             if phase_min is None:
                 phase_min = center_phase_deg - 10.0
             if phase_max is None:
                 phase_max = center_phase_deg + 10.0
+            # A fixed modulation band keeps both edges well inside the
+            # universal circle, where they are easy to grab and drag.
             if modulation_min is None:
-                modulation_min = max(0.0, center_modulation - 0.1)
+                modulation_min = 0.2
             if modulation_max is None:
-                modulation_max = min(1.0, center_modulation + 0.1)
+                modulation_max = 0.5
 
-        # Clamp/validate modulation range.
         modulation_min = max(0.0, min(1.0, modulation_min))
         modulation_max = max(0.0, min(1.0, modulation_max))
         if modulation_min > modulation_max:
@@ -3428,8 +3427,6 @@ class CursorSelectionWidget(QWidget):
         polar_grid.addWidget(mod_max_spin, 1, 3)
         polar_grid.setColumnStretch(4, 1)
 
-        # Assemble the editor page. The radius label/spin are placed onto the
-        # circular+elliptic grid by ``_apply_type_visibility``.
         detail = QWidget()
         detail_layout = QVBoxLayout(detail)
         detail_layout.setContentsMargins(0, 0, 0, 0)
@@ -3517,11 +3514,9 @@ class CursorSelectionWidget(QWidget):
         ):
             lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
-        # Wire signals (lambdas capture the cursor dict directly).
         frame.clicked.connect(
             lambda c=cursor, f=frame: self._on_row_clicked(c, f)
         )
-        # Interacting with the row's shape combo also selects the cursor.
         type_combo.activated.connect(
             lambda _=0, c=cursor: self._select_cursor(c)
         )
@@ -3535,16 +3530,14 @@ class CursorSelectionWidget(QWidget):
                     c, p, val
                 )
             )
-            # A value typed into a field showing the "values differ" dash
-            # may equal the one already held, which valueChanged would not
-            # report — so take it from the dedicated signal instead.
+
             spin.valueCommitted.connect(
                 lambda val, c=cursor, p=param: self._on_param_changed(
                     c, p, val
                 )
             )
         color_button.color_changed.connect(
-            lambda _c, c=cursor: self._on_cursor_changed(c)
+            lambda _c, c=cursor: self._on_cursor_color_changed(c)
         )
         visibility_button.clicked.connect(
             lambda _=False, c=cursor: self._on_cursor_visibility_toggled(c)
@@ -3581,9 +3574,7 @@ class CursorSelectionWidget(QWidget):
         cursor["visible"] = not cursor["visible"]
         self._update_visibility_button(cursor)
         self._update_cursor_patch(cursor)
-        # Recompute the selection so hidden cursors are excluded (and shown
-        # cursors re-included) whenever a selection has been computed or
-        # autoupdate is on.
+
         if self._autoupdate_enabled or self._selection_active:
             self._apply_selection()
         else:
@@ -3663,8 +3654,7 @@ class CursorSelectionWidget(QWidget):
         ):
             if cursor in self._selected_cursors:
                 self._selected_cursors.remove(cursor)
-                # A row that was just deselected must not stay the anchor
-                # of the next Shift-click range.
+
                 if self._last_clicked_cursor is cursor:
                     self._last_clicked_cursor = (
                         self._selected_cursors[-1]
@@ -3707,8 +3697,6 @@ class CursorSelectionWidget(QWidget):
             self._refresh_editor_title()
             return
 
-        # Multi-cursor selection: prefer showing an elliptic cursor if selected
-        # so non-shared fields (minor radius, angle) are displayed disabled.
         active = None
         for c in reversed(self._selected_cursors):
             if c['type'] == 'elliptic':
@@ -3735,8 +3723,7 @@ class CursorSelectionWidget(QWidget):
             if param not in shared_params or len(self._selected_cursors) < 2:
                 spin.setMixed(False)
                 continue
-            # Compare as displayed: values that round to the same text are
-            # not a disagreement the user can act on.
+
             decimals = spin.decimals()
             values = {
                 round(other[param], decimals)
@@ -3770,9 +3757,7 @@ class CursorSelectionWidget(QWidget):
             is_enabled = enable_all or (param in shared_params)
             for w in widgets:
                 w.setEnabled(is_enabled)
-                # Batch tooltips explain a state that only exists while
-                # several cursors are selected, so the widget's own
-                # description has to come back with a single selection.
+
                 base_tip = w.property("base_tooltip")
                 if base_tip is None:
                     base_tip = w.toolTip()
@@ -3832,8 +3817,7 @@ class CursorSelectionWidget(QWidget):
             if visible:
                 cursor["number_label"].setText(f"{number}.")
                 number += 1
-        # Keep the selection on a visible row: after a harmonic switch the
-        # selected cursor's row may have been hidden.
+
         harmonic_cursors = self._current_harmonic_cursors()
         self._selected_cursors = [
             c for c in self._selected_cursors if c in harmonic_cursors
@@ -3888,9 +3872,7 @@ class CursorSelectionWidget(QWidget):
         if cursor not in self._cursors:
             return
         if cursor[self.PARAM_SPINS[param]].isMixed():
-            # The field still shows the dash: this is Qt interpreting what
-            # is being typed, not a value the user has settled on. The
-            # committed value arrives separately, via ``valueCommitted``.
+
             return
         cursor[param] = value
         self._update_cursor_patch(cursor)
@@ -3907,8 +3889,7 @@ class CursorSelectionWidget(QWidget):
                 spin = other[spin_key]
                 spin.blockSignals(True)
                 spin.setValue(value)
-                # Read back, so a value the other spin box clamps is
-                # what gets stored on that cursor.
+
                 other[param] = spin.value()
                 spin.blockSignals(False)
                 self._update_cursor_patch(other)
@@ -3930,6 +3911,16 @@ class CursorSelectionWidget(QWidget):
                 self._apply_selection()
             else:
                 self._update_cursor_statistics()
+
+    def _on_cursor_color_changed(self, cursor):
+        """Recolor a cursor's patch and its region in the labels layer."""
+        if cursor not in self._cursors:
+            return
+        self._sync_cursor_from_widgets(cursor)
+        self._update_cursor_patch(cursor)
+
+        if self._autoupdate_enabled or self._selection_active:
+            self._apply_selection()
 
     def _remove_cursor(self, cursor_or_idx):
         """Remove a cursor row."""

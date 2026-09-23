@@ -103,6 +103,9 @@ COMPONENT_CARD_STYLE = (
     "  border: 1px solid rgba(30, 144, 255, 0.85);"
     "  background-color: rgba(30, 144, 255, 0.06);"
     "}"
+    "QFrame#componentCard QLineEdit {"
+    "  font-weight: 600;"
+    "}"
     "QPushButton#componentRemoveBtn {"
     "  background: transparent;"
     "  border: none;"
@@ -147,11 +150,6 @@ COMPONENT_COLOR_TOOLTIP = (
     "Colour of this component: the tint of its fraction filter card and the "
     "colour of the pixels it paints in a labels layer.\n"
     "Click to choose another one."
-)
-#: What the button beside it offers, once a colour has been chosen.
-COMPONENT_COLOR_RESET_TOOLTIP = (
-    "Reset this component's colour to the one it is drawn in on the phasor "
-    "plot."
 )
 
 
@@ -316,7 +314,6 @@ class ComponentState:
     coords_label: QLabel | None = None
     remove_button: QPushButton | None = None
     color_button: QPushButton | None = None
-    color_reset_button: QPushButton | None = None
     detail_widget: QWidget | None = None
     histogram_checkbox: QCheckBox | None = None
     ui_elements: dict = field(default_factory=dict)
@@ -647,6 +644,13 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         #: ``{component index: '#rrggbb'}`` chosen by the user, overriding
         #: the colour the component is drawn in on the phasor plot.
         self._component_label_colors = {}
+        #: Names of the colormaps built from card colours. napari registers
+        #: a colormap's name once a layer uses it, so these would otherwise
+        #: pass for built-in colormaps and be stored without their colours.
+        self._card_colormap_names = set()
+        #: Set while a card colour is applied to a fraction layer, so the
+        #: colormap change it causes does not undo the card colour.
+        self._applying_card_colormap = False
         # Guards against re-entering the filter sync, and against pruning a
         # criterion while the component list is halfway through a removal.
         self._syncing_filter_ui = False
@@ -1027,14 +1031,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         color_button.setVisible(False)
         row2.addWidget(color_button)
 
-        color_reset_button = QPushButton("Reset")
-        color_reset_button.setObjectName("componentColorResetBtn")
-        color_reset_button.setMaximumWidth(52)
-        color_reset_button.setCursor(Qt.PointingHandCursor)
-        color_reset_button.setToolTip(COMPONENT_COLOR_RESET_TOOLTIP)
-        color_reset_button.setVisible(False)
-        row2.addWidget(color_reset_button)
-
         card_layout.addLayout(row2)
 
         # 3. Histogram / statistics toggle row
@@ -1067,7 +1063,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             row_frame=card_frame,
             remove_button=remove_button,
             color_button=color_button,
-            color_reset_button=color_reset_button,
             histogram_checkbox=histogram_checkbox,
             ui_elements={
                 'comp_layout': row2,
@@ -1093,9 +1088,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         )
         color_button.clicked.connect(
             lambda _, c=comp: self._pick_component_color(c.idx)
-        )
-        color_reset_button.clicked.connect(
-            lambda _, c=comp: self._on_component_color_changed(c.idx, None)
         )
         # Only the card's own labels follow every keystroke; renaming layers,
         # metadata and the histogram is deferred to Enter / focus-out so a
@@ -1134,7 +1126,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             lambda *_, c=comp: self._select_component_item(c)
         )
         lifetime_edit.editingFinished.connect(
-            lambda c=comp: self._update_component_from_lifetime(c.idx)
+            lambda c=comp: self._on_lifetime_edited(c.idx)
         )
         lifetime_edit.cursorPositionChanged.connect(
             lambda *_, c=comp: self._select_component_item(c)
@@ -3236,10 +3228,20 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                             QSizePolicy.Ignored, QSizePolicy.Ignored
                         )
 
+        # A component follows its lifetime (and so the frequency) only when
+        # it has no position yet or the lifetime was typed in. A pinned
+        # component keeps its coordinates: the lifetime shown for a point
+        # inside the semicircle is its projection onto it, so placing from it
+        # would pull the component onto the semicircle.
         if has_freq:
+            harmonic = getattr(self.parent_widget, 'harmonic', 1)
             for i, comp in enumerate(self.components):
                 if (
                     comp is not None
+                    and (
+                        comp.dot is None
+                        or self._is_placed_from_lifetime(i, harmonic)
+                    )
                     and comp.lifetime_edit is not None
                     and comp.lifetime_edit.text().strip()
                 ):
@@ -3298,6 +3300,17 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 self._update_component_input_styling(comp.idx)
         self._refresh_component_color_buttons()
 
+    def _is_placed_from_lifetime(self, idx: int, harmonic: int) -> bool:
+        """Return whether component *idx* was placed by typing its lifetime."""
+        block = self._read_component_settings(self._current_layer()) or {}
+        entry = (
+            (block.get('components') or {})
+            .get(str(idx), {})
+            .get('gs_harmonics', {})
+            .get(str(harmonic), {})
+        )
+        return bool(entry.get('from_lifetime'))
+
     def _compute_phasor_from_lifetime(self, lifetime_text, harmonic: int = 1):
         """Compute (G,S) from lifetime string; return tuple or (None,None)."""
         try:
@@ -3314,6 +3327,19 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         if np.ndim(im) > 0:
             im = float(np.array(im).ravel()[0])
         return re, im
+
+    def _on_lifetime_edited(self, idx: int):
+        """Place component *idx* from a lifetime the user typed.
+
+        Qt also reports leaving the box as a finished edit, which would
+        snap a pinned component onto the semicircle from the lifetime shown
+        for it, so only a changed text is applied.
+        """
+        edit = self.components[idx].lifetime_edit
+        if not edit.isModified():
+            return
+        edit.setModified(False)
+        self._update_component_from_lifetime(idx)
 
     def _update_component_from_lifetime(self, idx: int):
         """Update component G/S coordinates based on lifetime input for all available harmonics."""
@@ -3352,7 +3378,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 im = float(np.asarray(im).ravel()[0])
 
                 self._update_component_gs_coords(idx, harmonic, re, im)
-                self._update_component_lifetime(idx, harmonic, lifetime)
+                self._update_component_lifetime(
+                    idx, harmonic, lifetime, from_lifetime=True
+                )
 
                 if harmonic == current_harmonic:
                     # The text boxes show three decimals, but the component is
@@ -4657,7 +4685,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self.fractions_gamma = layer.gamma
 
         colormap_name = getattr(layer.colormap, 'name', 'custom')
-        is_standard_colormap = self._is_standard_colormap(colormap_name)
+        is_standard_colormap = (
+            colormap_name not in self._card_colormap_names
+            and self._is_standard_colormap(colormap_name)
+        )
 
         if is_standard_colormap:
             colormap_colors = None
@@ -4683,7 +4714,25 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self._sync_component_layers_colormap(comp_idx, layer.colormap)
         self._sync_component_layers_gamma(comp_idx, layer.gamma)
 
+        # Whichever was changed last sets a component's colour: the colormap
+        # replaces a colour picked on the card. A Linear Projection's one
+        # colormap colours both of its components.
+        recoloured = (
+            [0, 1]
+            if self.analysis_type == "Linear Projection" and comp_idx == 0
+            else [comp_idx]
+        )
+        for index in recoloured:
+            if self._applying_card_colormap:
+                break
+            if self._component_label_colors.pop(index, None) is not None:
+                self._update_component_label_color(index, None)
+            self._clear_histogram_color_override(index)
+
         self._update_component_colors()
+        self._refresh_component_color_buttons()
+        self._sync_filter_ui()
+        self._update_label_layers()
         self.draw_line_between_components()
 
         # Refresh histogram if the changed layer is the currently displayed one
@@ -5388,15 +5437,28 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self._component_settings_edited(self._current_layer())
 
     def _update_component_lifetime(
-        self, idx: int, harmonic: int, lifetime: float
+        self,
+        idx: int,
+        harmonic: int,
+        lifetime: float,
+        from_lifetime: bool = False,
     ):
-        """Update component lifetime for a specific harmonic."""
+        """Update component lifetime for a specific harmonic.
+
+        ``from_lifetime`` marks a component placed by typing its lifetime,
+        which then moves with the frequency. Otherwise the lifetime only
+        describes where the component was pinned.
+        """
         comp_data = self._ensure_component_metadata(idx, harmonic)
         if comp_data is None:
             return
 
-        harmonic_key = str(harmonic)
-        comp_data['gs_harmonics'][harmonic_key]['lifetime'] = lifetime
+        entry = comp_data['gs_harmonics'][str(harmonic)]
+        entry['lifetime'] = lifetime
+        if from_lifetime:
+            entry['from_lifetime'] = True
+        else:
+            entry.pop('from_lifetime', None)
         self._component_settings_edited(self._current_layer())
 
     def _update_component_name(self, idx: int, name: str):
@@ -6195,7 +6257,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self._on_component_color_changed(index, picked.name())
 
     def _refresh_component_color_buttons(self):
-        """Paint each card's swatch, and offer a reset only where one applies.
+        """Paint each card's colour swatch.
 
         A component with no position yet is drawn in no colour, so it has no
         swatch to show either.
@@ -6206,9 +6268,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 continue
             color = _as_hex(colors.get(comp.idx))
             comp.color_button.setVisible(bool(color))
-            comp.color_reset_button.setVisible(
-                bool(color) and comp.idx in self._component_label_colors
-            )
             if color:
                 comp.color_button.setStyleSheet(
                     "border: 1px solid rgba(255, 255, 255, 0.45);"
@@ -6217,27 +6276,97 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 )
 
     def _on_component_color_changed(self, index, color):
-        """Adopt the colour the user picked for one component's labels.
+        """Adopt the colour the user picked for one component.
 
-        *color* is ``None`` when they asked for the component's plot colour
-        back. The choice is remembered on the layer, so it survives a reload
+        The choice is remembered on the layer, so it survives a reload
         rather than being re-picked every session, and the card and the
-        labels layer are repainted together so they never disagree.
+        labels layer are repainted together so they never disagree. It
+        stands until the component's fraction colormap is changed.
         """
         index = int(index)
-        hex_color = _as_hex(color) if color else None
-        if hex_color is None:
-            if self._component_label_colors.pop(index, None) is None:
-                return
-        else:
-            if self._component_label_colors.get(index) == hex_color:
-                return
-            self._component_label_colors[index] = hex_color
+        hex_color = _as_hex(color)
+        if hex_color is None or (
+            self._component_label_colors.get(index) == hex_color
+        ):
+            return
+        self._component_label_colors[index] = hex_color
         self._update_component_label_color(index, hex_color)
+        self._clear_histogram_color_override(index)
+        self._apply_card_colormap(index)
         self._update_component_colors()
         self._refresh_component_color_buttons()
         self._sync_filter_ui()
         self._update_label_layers()
+        self._refresh_histogram_series_colormaps()
+
+    def _card_colormap(self, index):
+        """Return the fraction colormap that shows component *index*'s colour.
+
+        A component fit gives each component a layer, drawn from black to
+        the colour picked on its card. A Linear Projection has one layer for
+        both components, so its colormap runs from the second component's
+        colour to the first's; an end with no picked colour keeps the colour
+        it has.
+        """
+        picked = self._component_label_colors
+        if self.analysis_type != "Linear Projection":
+            color = picked[index]
+            name = f"black to {color}"
+            stops = [(0.0, 0.0, 0.0, 1.0), mcolors.to_rgba(color)]
+        else:
+            if index > 1:
+                return None
+            layers = self._get_all_layers_for_component(0)
+            current = np.asarray(layers[0].colormap.colors)
+            ends = []
+            # The second component sits at fraction 0, the first at 1.
+            for comp_idx, end in ((1, 0), (0, -1)):
+                if comp_idx in picked:
+                    ends.append(mcolors.to_rgba(picked[comp_idx]))
+                else:
+                    ends.append(tuple(current[end]))
+            name = f"{mcolors.to_hex(ends[0])} to {mcolors.to_hex(ends[1])}"
+            stops = ends
+        self._card_colormap_names.add(name)
+        return Colormap(colors=np.asarray(stops, dtype=float), name=name)
+
+    def _apply_card_colormap(self, index):
+        """Draw component *index*'s fraction layers in its card colour.
+
+        Does nothing before the analysis has made the layers, or when they
+        already show that colour.
+        """
+        layer_idx = 0 if self.analysis_type == "Linear Projection" else index
+        layers = self._get_all_layers_for_component(layer_idx)
+        if not layers:
+            return
+        colormap = self._card_colormap(index)
+        if colormap is None:
+            return
+        current = layers[0].colormap
+        if current.colors.shape == colormap.colors.shape and np.allclose(
+            current.colors, colormap.colors
+        ):
+            return
+        self._applying_card_colormap = True
+        try:
+            # The colormap handler follows it on the component's other
+            # layers and stores it with the component's settings.
+            layers[0].colormap = colormap
+        finally:
+            self._applying_card_colormap = False
+
+    def _clear_histogram_color_override(self, index):
+        """Let component *index*'s histogram curve follow its new colour.
+
+        A colour picked for the curve in the Histogram Settings dialog
+        would otherwise keep winning over the card and the colormap.
+        """
+        histogram = getattr(self, 'histogram_widget', None)
+        if histogram is not None:
+            histogram.clear_series_color_override(
+                self._component_display_name(index)
+            )
 
     def _update_component_label_color(self, idx: int, color):
         """Persist one component's chosen labels colour on the current layer."""
@@ -6435,6 +6564,11 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self._run_linear_projection()
         else:
             self._run_component_fit()
+
+        # A colour picked on a card before the layers existed colours them
+        # now.
+        for index in list(self._component_label_colors):
+            self._apply_card_colormap(index)
 
         self.on_layer_selection_changed()
 
@@ -7739,7 +7873,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 sources[label] = img_name
                 series[label] = comp_name
             series_colors[comp_name] = self._component_curve_color(
-                layers_map, invert
+                comp_name, layers_map, invert
             )
             series_colormaps[comp_name] = self._component_colormap(
                 comp_name, layers_map, invert
@@ -8049,7 +8183,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             colormaps[comp_name] = self._component_colormap(
                 comp_name, layers_map, invert
             )
-            colors[comp_name] = self._component_curve_color(layers_map, invert)
+            colors[comp_name] = self._component_curve_color(
+                comp_name, layers_map, invert
+            )
         if not colormaps:
             return
         histogram.set_dataset_series(
@@ -8057,15 +8193,18 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         )
         histogram.set_series_colormaps(colormaps)
 
-    def _component_curve_color(self, layers_map, invert):
+    def _component_curve_color(self, comp_name, layers_map, invert):
         """Return the color standing for a component in the histogram.
 
-        The end of the component's own fraction colormap is the color its
-        pixels are drawn with in the image, so using it for the curve ties the
-        histogram to what is on screen. The inverted (Linear Projection
-        second) component reads the colormap from the other end, matching its
-        reversed fraction scale.
+        The colour picked on the component's card, if there is one, so the
+        curve matches its dot and card. Otherwise the end of the component's
+        own fraction colormap, the color its pixels are drawn with in the
+        image. The inverted (Linear Projection second) component reads the
+        colormap from the other end, matching its reversed fraction scale.
         """
+        for index in self._component_label_colors:
+            if self._component_display_name(index) == comp_name:
+                return mcolors.to_rgb(self._component_label_colors[index])
         layer = next(iter(layers_map.values()))
         colors = np.asarray(layer.colormap.colors)
         if colors.size == 0:
