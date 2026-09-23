@@ -452,7 +452,7 @@ def test_cursor_add_elliptic_defaults(make_viewer_model, qtbot):
 
 
 def test_cursor_add_polar_defaults(make_viewer_model, qtbot):
-    """Polar cursors derive phase/modulation from the axes center."""
+    """Polar cursors take phase from the axes center, modulation 0.2-0.5."""
     viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
@@ -468,14 +468,13 @@ def test_cursor_add_polar_defaults(make_viewer_model, qtbot):
     center_g = (xlim[0] + xlim[1]) / 2.0
     center_s = (ylim[0] + ylim[1]) / 2.0
     center_phase = np.rad2deg(np.arctan2(center_s, center_g))
-    center_modulation = np.sqrt(center_g**2 + center_s**2)
-    expected_mod_min = max(0.0, min(1.0, center_modulation - 0.1))
-    expected_mod_max = max(0.0, min(1.0, center_modulation + 0.1))
 
     assert np.allclose(cursor["phase_min"], center_phase - 10.0)
     assert np.allclose(cursor["phase_max"], center_phase + 10.0)
-    assert np.allclose(cursor["modulation_min"], expected_mod_min)
-    assert np.allclose(cursor["modulation_max"], expected_mod_max)
+    assert np.allclose(cursor["modulation_min"], 0.2)
+    assert np.allclose(cursor["modulation_max"], 0.5)
+    assert np.allclose(cursor["mod_min_spin"].value(), 0.2)
+    assert np.allclose(cursor["mod_max_spin"].value(), 0.5)
 
 
 def test_cursor_type_change_field_visibility(make_viewer_model, qtbot):

@@ -103,8 +103,6 @@ COMPONENT_CARD_STYLE = (
     "  border: 1px solid rgba(30, 144, 255, 0.85);"
     "  background-color: rgba(30, 144, 255, 0.06);"
     "}"
-    # Bold the card's text fields explicitly: the section box's bold font
-    # otherwise reaches only the cards built with the tab, not added ones.
     "QFrame#componentCard QLineEdit {"
     "  font-weight: 600;"
     "}"
