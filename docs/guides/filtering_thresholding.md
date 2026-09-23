@@ -46,11 +46,8 @@ Select **Manual** from the threshold dropdown and drag either handle of the rang
 ## Filtering by a derived quantity
 
 The threshold on this tab restricts the image by **intensity**. To restrict it
-by a quantity derived from the phasor coordinates instead — an apparent
-lifetime, the phase, the modulation or a FRET efficiency — use the **Filter**
-section of the **Phasor Mapping** tab (see {doc}`phasor_mapping`) or of the
-**FRET** tab (see {doc}`fret_analysis`). Those filters are applied on top of
-this one and are reapplied automatically whenever the threshold here changes.
+by a quantity derived from the phasor coordinates instead (a component fraction, an apparent lifetime, the phase, the modulation or a FRET efficiency) use the **Filter**
+section of the **Components** tab (see {doc}`component_analysis`), **Phasor Mapping** tab (see {doc}`phasor_mapping`) or of the **FRET** tab (see {doc}`fret_analysis`). Those filters are applied on top of this one and are reapplied automatically whenever the threshold here changes.
 
 ## How it works
 

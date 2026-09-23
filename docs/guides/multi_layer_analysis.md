@@ -35,8 +35,8 @@ and it can be reproduced from its own metadata (or from the OME-TIF it is
 exported to).
 
 > [!TIP]
-> You can quickly select or deselect all layers using the **All** and **None**
-> links next to the layer selection dropdown.
+> You can quickly select or deselect all layers using the checkmark and cross
+> buttons next to the layer selection dropdown.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/multi-layer.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/multi-layer.mp4" type="video/mp4">

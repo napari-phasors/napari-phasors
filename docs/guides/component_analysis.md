@@ -126,6 +126,10 @@ Filters always evaluate against **the fractions of the latest analysis run**. Mo
 > [!IMPORTANT]
 > Fraction filters belong to the **same stack** as the criteria in the **Phasor Mapping** and **FRET** tabs. A pixel is kept only when *every* enabled criterion across all tabs keeps it. Because each criterion evaluates independently against the unfiltered data, the order you add them in does not change the result.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20filter.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20filter.mp4" type="video/mp4">
+</video>
+
 ### Pixel counts and percentages in the filter
 
 The **Statistics** dock reports these metrics directly. Once a filter is active, the columns reflect the configured range—for example, *Component 1 Pixels in 0.2 – 0.8* and *Component 1 % in 0.2 – 0.8*.
