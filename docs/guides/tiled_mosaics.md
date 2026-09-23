@@ -24,6 +24,10 @@ single-file and 3D-stack import paths described in {doc}`open_files`:
 4. Set the import options as usual (harmonics, frames, channels, and any
    format-specific option), then click **Stitch Mosaic (N tiles)**.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/tiles.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/tiles.mp4" type="video/mp4">
+</video>
+
 A mosaic can also live inside a *single* file — a Zeiss CZI mosaic, or any
 file with a mosaic, view, block or scene dimension. Select that one file and
 the dialog offers its tile dimension under **Tiles inside each file**.

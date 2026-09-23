@@ -48,6 +48,10 @@ In `Current timepoint` mode:
   analysis, FRET) summarises only that frame;
 - the **statistics table** switches to one row per timepoint (see below).
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/timelapse.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/timelapse.mp4" type="video/mp4">
+</video>
+
 ## Statistics table
 
 In `All timepoints` mode the table keeps its usual layout: one row per layer,

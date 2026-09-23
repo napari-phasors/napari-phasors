@@ -103,6 +103,10 @@ Filters **combine as conditions, not as steps**: a pixel is kept only when it
 satisfies every enabled criterion, and each criterion is always evaluated
 against the unfiltered data. The order you add filters in does not change the result.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20mapping%20filter.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20mapping%20filter.mp4" type="video/mp4">
+</video>
+
 ## Arc Overlay Tool
 
 The **Phase & Modulation Arcs** tool helps visualize analysis boundaries by
