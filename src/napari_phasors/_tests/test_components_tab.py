@@ -5566,7 +5566,7 @@ def test_labels_layers_are_updated_in_place(make_viewer_model):
     assert first.data.astype(bool).sum() <= before
 
 
-def test_a_component_labels_colour_can_be_picked_and_given_back(
+def test_a_component_labels_colour_can_be_picked(
     make_viewer_model,
 ):
     """A chosen colour reaches the card, the labels layer and the layer."""
@@ -5595,8 +5595,6 @@ def test_a_component_labels_colour_can_be_picked_and_given_back(
     )
     painted = viewer.layers[f"Component 1 filtered: {layer.name}"]
     assert np.allclose(painted.colormap.color_dict[1], (1.0, 0.0, 0.0, 1.0))
-    # The component card now offers to give the inherited colour back.
-    assert comp_widget.components[0].color_reset_button.isHidden() is False
     # Like a rename, the choice is a draft until the analysis runs...
     draft = comp_widget._read_component_settings(layer)['components']
     assert draft['0']['label_color'] == "#ff0000"
@@ -5610,17 +5608,139 @@ def test_a_component_labels_colour_can_be_picked_and_given_back(
     # Picking the same colour again is not a change.
     assert comp_widget._on_component_color_changed(0, "#ff0000") is None
 
-    # Asking for the component's own colour back removes the override
-    # everywhere rather than freezing the inherited value in its place.
-    comp_widget._on_component_color_changed(0, None)
-    assert comp_widget._component_label_colors == {}
-    assert _as_hex(comp_widget._component_filter_colors()[0]) == inherited
-    assert (
-        mcolors.to_hex(comp_widget.components[0].dot.get_color()) == inherited
+
+def test_the_last_colour_change_wins_between_colormap_and_card(
+    make_viewer_model, monkeypatch
+):
+    """A colormap change and a card colour each replace the other.
+
+    The dot, the card swatch, the filter card and the histogram's solid
+    colour all show whichever was changed last.
+    """
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._utils import HistogramSettingsDialog
+
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    comp_widget._add_component()
+    _setup_component_fit(
+        comp_widget, (("0.2", "0.1"), ("0.8", "0.4"), ("0.5", "0.3"))
     )
+    _check_histogram_components(
+        comp_widget, ["Component 1", "Component 2", "Component 3"]
+    )
+    histogram = comp_widget.histogram_widget
+    comp = comp_widget.components[0]
+
+    # Pressing OK in the histogram settings freezes no colour.
+    monkeypatch.setattr(
+        HistogramSettingsDialog, 'exec', lambda self: QDialog.Accepted
+    )
+    histogram._open_settings_dialog()
+
+    def shown():
+        swatch = comp.color_button.styleSheet()
+        return {
+            "dot": mcolors.to_hex(comp.dot.get_color()),
+            "swatch": swatch.split("background-color: ")[-1].rstrip(";"),
+            "card": comp_widget.filter_list._cards[0].accent_color,
+            "histogram": _as_hex(
+                histogram._series_color(
+                    "Component 1",
+                    histogram._series_names().index("Component 1"),
+                )
+            ),
+        }
+
+    comp_widget.fraction_layers[0].colormap = "red"
+    assert set(shown().values()) == {"#ff0000"}
+
+    comp_widget._on_component_color_changed(0, "#00ff00")
+    assert set(shown().values()) == {"#00ff00"}
+
+    comp_widget.fraction_layers[0].colormap = "cyan"
+    assert set(shown().values()) == {"#00ffff"}
+    assert comp_widget._component_label_colors == {}
     draft = comp_widget._read_component_settings(layer)['components']
     assert 'label_color' not in draft['0']
-    assert comp_widget._on_component_color_changed(0, None) is None
+    # The other components are left alone.
+    assert _as_hex(comp_widget._component_filter_colors()[1]) == "#00ffff"
+    assert _as_hex(comp_widget._component_filter_colors()[2]) == "#ffff00"
+
+    # A card colour also replaces one picked in the histogram settings.
+    histogram._series_color_overrides["Component 1"] = (0.0, 0.0, 1.0)
+    comp_widget._on_component_color_changed(0, "#ff8800")
+    assert set(shown().values()) == {"#ff8800"}
+
+
+def test_a_card_colour_draws_the_fraction_layer_from_black_to_it(
+    make_viewer_model,
+):
+    """Picking a card colour recolours the component's fraction layer."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    comp_widget._add_component()
+    coords = (("0.2", "0.1"), ("0.8", "0.4"), ("0.5", "0.3"))
+    _setup_component_fit(comp_widget, coords)
+    fraction = comp_widget.fraction_layers[1]
+
+    comp_widget._on_component_color_changed(1, "#00ff00")
+    assert np.allclose(fraction.colormap.colors[0], (0, 0, 0, 1))
+    assert np.allclose(fraction.colormap.colors[-1], (0, 1, 0, 1))
+    # The card colour stays: it is what set the colormap.
+    assert comp_widget._component_label_colors == {1: "#00ff00"}
+    # The colormap is stored by its colours, since its name only exists in
+    # this session.
+    stored = comp_widget._read_component_settings(layer)['components']['1']
+    entry = stored['gs_harmonics']['1']
+    assert entry['colormap_name'] is None
+    assert np.allclose(entry['colormap_colors'][-1], (0, 1, 0, 1))
+    # The other components keep their colormaps.
+    assert comp_widget.fraction_layers[0].colormap.name == "magenta"
+
+    # A re-run keeps it.
+    comp_widget._run_analysis()
+    fraction = comp_widget.fraction_layers[1]
+    assert np.allclose(fraction.colormap.colors[-1], (0, 1, 0, 1))
+
+    # A colour picked before the layers exist colours them once made.
+    comp_widget._on_component_color_changed(2, "#ff8800")
+    comp_widget._run_analysis()
+    fraction = comp_widget.fraction_layers[2]
+    assert np.allclose(fraction.colormap.colors[0], (0, 0, 0, 1))
+    assert _as_hex(fraction.colormap.colors[-1]) == "#ff8800"
+
+
+def test_a_card_colour_sets_its_end_of_the_linear_projection_colormap(
+    make_viewer_model,
+):
+    """Linear Projection's one layer runs from one card colour to the other."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    fraction = comp_widget.comp1_fractions_layer
+    jet = np.asarray(fraction.colormap.colors)
+
+    comp_widget._on_component_color_changed(1, "#00ff00")
+    colors = np.asarray(fraction.colormap.colors)
+    assert np.allclose(colors[0], (0, 1, 0, 1))
+    assert np.allclose(colors[-1], jet[-1])
+
+    comp_widget._on_component_color_changed(0, "#ff0000")
+    colors = np.asarray(fraction.colormap.colors)
+    assert np.allclose(colors[0], (0, 1, 0, 1))
+    assert np.allclose(colors[-1], (1, 0, 0, 1))
+    assert comp_widget._component_label_colors == {
+        0: "#ff0000",
+        1: "#00ff00",
+    }
+
+    # The two stay in step on a re-run.
+    comp_widget._run_analysis()
+    colors = np.asarray(comp_widget.comp1_fractions_layer.colormap.colors)
+    assert np.allclose(colors[0], (0, 1, 0, 1))
+    assert np.allclose(colors[-1], (1, 0, 0, 1))
 
 
 def test_the_swatch_opens_a_picker_and_a_cancelled_pick_changes_nothing(
@@ -5638,17 +5758,11 @@ def test_the_swatch_opens_a_picker_and_a_cancelled_pick_changes_nothing(
         comp.color_button.click()
     assert comp_widget._component_label_colors == {1: "#123456"}
     assert comp_widget.filter_list._cards[1].accent_color == "#123456"
-    assert comp.color_reset_button.isHidden() is False
 
     # An invalid colour is what a cancelled dialog returns.
     with patch.object(QColorDialog, "getColor", return_value=QColor()):
         comp.color_button.click()
     assert comp_widget._component_label_colors == {1: "#123456"}
-
-    # The reset button beside it goes through the same path.
-    comp.color_reset_button.click()
-    assert comp_widget._component_label_colors == {}
-    assert comp.color_reset_button.isHidden() is True
 
 
 def test_a_picked_colour_stays_with_its_component_and_is_restored(

@@ -4824,6 +4824,15 @@ class HistogramWidget(QWidget):
             name, default_colors[index % len(default_colors)][:3]
         )
 
+    def clear_series_color_override(self, name) -> None:
+        """Drop the colour picked in the settings dialog for series *name*.
+
+        Tabs call this when the colour they propose for a series was just
+        changed, so the latest choice is the one drawn. It does not redraw:
+        the tab sends the new colours next, which does.
+        """
+        self._series_color_overrides.pop(name, None)
+
     def _series_names(self) -> list:
         """Return the series names currently drawn, in dataset order."""
         return [
@@ -5014,7 +5023,13 @@ class HistogramWidget(QWidget):
             if dlg._layer_color_buttons:
                 self._layer_colors = dlg.get_layer_colors()
             if dlg._series_color_buttons:
-                self._series_color_overrides = dlg.get_series_colors()
+                # Only a colour the user changed becomes an override; the
+                # others keep following the colour the tab proposes.
+                for name, color in dlg.get_series_colors().items():
+                    if not np.allclose(
+                        color, series_colors.get(name, color)[:3], atol=1e-3
+                    ):
+                        self._series_color_overrides[name] = color
                 self._series_style = dlg.get_series_style()
                 self._series_style_explicit = True
             if split_changed or bins_changed:
