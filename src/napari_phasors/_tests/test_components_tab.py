@@ -52,6 +52,13 @@ def _setup_linear_projection(comp_widget):
     comp_widget._run_analysis()
 
 
+def _type_lifetime(comp, text):
+    """Type *text* into a component's lifetime box and commit it."""
+    comp.lifetime_edit.setText(text)
+    comp.lifetime_edit.setModified(True)
+    comp.lifetime_edit.editingFinished.emit()
+
+
 def _rename_component(comp_widget, idx, name):
     """Type *name* into a component's field and commit it (as Enter does)."""
     comp_widget.components[idx].name_edit.setText(name)
@@ -186,8 +193,7 @@ def test_components_lifetime_moves_component_on_plot(make_viewer_model, qtbot):
 
     canvas = parent.canvas_widget.canvas
     with patch.object(canvas, "draw", wraps=canvas.draw) as forced_draw:
-        comp.lifetime_edit.setText("3.0")
-        comp.lifetime_edit.editingFinished.emit()
+        _type_lifetime(comp, "3.0")
 
     expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
     x, y = comp.dot.get_data()
@@ -198,8 +204,7 @@ def test_components_lifetime_moves_component_on_plot(make_viewer_model, qtbot):
     assert forced_draw.call_count >= 1
 
     # Moving it again keeps it on the circle and leaves the guard flag clear.
-    comp.lifetime_edit.setText("1.0")
-    comp.lifetime_edit.editingFinished.emit()
+    _type_lifetime(comp, "1.0")
     expected_g, expected_s = phasor_from_lifetime(80.0, 1.0)
     x, y = comp.dot.get_data()
     assert abs(x[0] - expected_g) < 1e-3
@@ -229,8 +234,7 @@ def test_components_lifetime_lands_on_universal_circle(
     for harmonic in (1, 2, 3):
         parent.harmonic = harmonic
         for lifetime in (0.1, 0.5, 1.0, 3.0, 8.0, 20.0):
-            comp.lifetime_edit.setText(str(lifetime))
-            comp.lifetime_edit.editingFinished.emit()
+            _type_lifetime(comp, str(lifetime))
 
             x, y = comp.dot.get_data()
             assert abs(np.hypot(x[0] - 0.5, y[0]) - 0.5) < 1e-12
@@ -266,8 +270,7 @@ def test_components_lifetime_without_harmonics_metadata(
     assert comp_widget._get_available_harmonics() == []
 
     comp = comp_widget.components[0]
-    comp.lifetime_edit.setText("3.0")
-    comp.lifetime_edit.editingFinished.emit()
+    _type_lifetime(comp, "3.0")
 
     expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
     assert abs(float(comp.g_edit.text()) - expected_g) < 1e-3
@@ -2132,6 +2135,154 @@ def test_components_selection_calculates_lifetime(make_viewer_model, qtbot):
     assert (
         abs(float(comp.lifetime_edit.text()) - expected_drag_lifetime) < 1e-3
     )
+
+
+@pytest.mark.parametrize(
+    "analysis_type", ["Linear Projection", "Component Fit"]
+)
+def test_components_inside_semicircle_stay_after_run(
+    make_viewer_model, qtbot, analysis_type
+):
+    """Running the analysis leaves components placed inside the semicircle.
+
+    Placing a component fills its lifetime box with the projection onto the
+    semicircle; the refresh after the run used to re-place every component
+    from that lifetime, pulling them all onto the semicircle.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp_widget.analysis_type_combo.setCurrentText(analysis_type)
+
+    positions = [(0.3, 0.2), (0.7, 0.25)]
+
+    class Event:
+        inaxes = True
+
+    for idx, (g, s) in enumerate(positions):
+        event = Event()
+        event.xdata, event.ydata = g, s
+        comp_widget._select_component(idx)
+        comp_widget._handle_component_selection_event(event)
+        assert comp_widget.components[idx].lifetime_edit.text() != ""
+
+    comp_widget._run_analysis()
+    # Switching layers restores the tab through the same refresh.
+    comp_widget._restore_on_layer_change()
+
+    for idx, (g, s) in enumerate(positions):
+        x, y = comp_widget.components[idx].dot.get_data()
+        assert abs(x[0] - g) < 1e-9
+        assert abs(y[0] - s) < 1e-9
+        stored = parent.layer_settings(layer)["component_analysis"][
+            "components"
+        ][str(idx)]["gs_harmonics"]["1"]
+        assert abs(stored["g"] - g) < 1e-9
+        assert abs(stored["s"] - s) < 1e-9
+
+    # Nor does changing the frequency move a pinned component.
+    parent._broadcast_frequency_value_across_tabs("40")
+    for idx, (g, s) in enumerate(positions):
+        x, y = comp_widget.components[idx].dot.get_data()
+        assert abs(x[0] - g) < 1e-9
+        assert abs(y[0] - s) < 1e-9
+
+
+def test_components_lifetime_box_reacts_only_to_typing(
+    make_viewer_model, qtbot
+):
+    """Leaving the lifetime box unedited keeps a pinned component in place.
+
+    Qt reports leaving the box as a finished edit, which used to place the
+    component from the lifetime shown for it, onto the semicircle.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp = comp_widget.components[0]
+
+    class Event:
+        inaxes = True
+        xdata = 0.3
+        ydata = 0.2
+
+    comp_widget._select_component(0)
+    comp_widget._handle_component_selection_event(Event())
+    assert comp.lifetime_edit.text() != ""
+
+    comp.lifetime_edit.editingFinished.emit()
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - 0.3) < 1e-9
+    assert abs(y[0] - 0.2) < 1e-9
+
+    comp.lifetime_edit.clear()
+    qtbot.keyClicks(comp.lifetime_edit, "3.0")
+    qtbot.keyClick(comp.lifetime_edit, Qt.Key_Return)
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-12
+    assert abs(y[0] - expected_s) < 1e-12
+
+    # Committing the same text again is not a new edit.
+    comp_widget._apply_component_coords(0, 0.3, 0.2)
+    comp.lifetime_edit.setText("3.0")
+    comp.lifetime_edit.editingFinished.emit()
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - 0.3) < 1e-9
+
+
+def test_components_typed_lifetime_follows_frequency(make_viewer_model, qtbot):
+    """A component placed by typing its lifetime moves with the frequency.
+
+    Moving it by other means pins it, after which it stays put.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp = comp_widget.components[0]
+
+    _type_lifetime(comp, "3.0")
+
+    parent._broadcast_frequency_value_across_tabs("40")
+    expected_g, expected_s = phasor_from_lifetime(40.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-12
+    assert abs(y[0] - expected_s) < 1e-12
+
+    # The run keeps the mark, so it still follows after being stored.
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.2")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+    parent._broadcast_frequency_value_across_tabs("80")
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-12
+    assert abs(y[0] - expected_s) < 1e-12
+
+    # Typing coordinates pins the component.
+    comp.g_edit.setText("0.3")
+    comp.s_edit.setText("0.2")
+    comp_widget._on_component_coords_changed(0)
+    parent._broadcast_frequency_value_across_tabs("40")
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - 0.3) < 1e-9
+    assert abs(y[0] - 0.2) < 1e-9
 
 
 def test_components_auto_placement_calculates_lifetime(

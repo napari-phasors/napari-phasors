@@ -1134,7 +1134,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             lambda *_, c=comp: self._select_component_item(c)
         )
         lifetime_edit.editingFinished.connect(
-            lambda c=comp: self._update_component_from_lifetime(c.idx)
+            lambda c=comp: self._on_lifetime_edited(c.idx)
         )
         lifetime_edit.cursorPositionChanged.connect(
             lambda *_, c=comp: self._select_component_item(c)
@@ -3236,10 +3236,20 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                             QSizePolicy.Ignored, QSizePolicy.Ignored
                         )
 
+        # A component follows its lifetime (and so the frequency) only when
+        # it has no position yet or the lifetime was typed in. A pinned
+        # component keeps its coordinates: the lifetime shown for a point
+        # inside the semicircle is its projection onto it, so placing from it
+        # would pull the component onto the semicircle.
         if has_freq:
+            harmonic = getattr(self.parent_widget, 'harmonic', 1)
             for i, comp in enumerate(self.components):
                 if (
                     comp is not None
+                    and (
+                        comp.dot is None
+                        or self._is_placed_from_lifetime(i, harmonic)
+                    )
                     and comp.lifetime_edit is not None
                     and comp.lifetime_edit.text().strip()
                 ):
@@ -3298,6 +3308,17 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 self._update_component_input_styling(comp.idx)
         self._refresh_component_color_buttons()
 
+    def _is_placed_from_lifetime(self, idx: int, harmonic: int) -> bool:
+        """Return whether component *idx* was placed by typing its lifetime."""
+        block = self._read_component_settings(self._current_layer()) or {}
+        entry = (
+            (block.get('components') or {})
+            .get(str(idx), {})
+            .get('gs_harmonics', {})
+            .get(str(harmonic), {})
+        )
+        return bool(entry.get('from_lifetime'))
+
     def _compute_phasor_from_lifetime(self, lifetime_text, harmonic: int = 1):
         """Compute (G,S) from lifetime string; return tuple or (None,None)."""
         try:
@@ -3314,6 +3335,19 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         if np.ndim(im) > 0:
             im = float(np.array(im).ravel()[0])
         return re, im
+
+    def _on_lifetime_edited(self, idx: int):
+        """Place component *idx* from a lifetime the user typed.
+
+        Qt also reports leaving the box as a finished edit, which would
+        snap a pinned component onto the semicircle from the lifetime shown
+        for it, so only a changed text is applied.
+        """
+        edit = self.components[idx].lifetime_edit
+        if not edit.isModified():
+            return
+        edit.setModified(False)
+        self._update_component_from_lifetime(idx)
 
     def _update_component_from_lifetime(self, idx: int):
         """Update component G/S coordinates based on lifetime input for all available harmonics."""
@@ -3352,7 +3386,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 im = float(np.asarray(im).ravel()[0])
 
                 self._update_component_gs_coords(idx, harmonic, re, im)
-                self._update_component_lifetime(idx, harmonic, lifetime)
+                self._update_component_lifetime(
+                    idx, harmonic, lifetime, from_lifetime=True
+                )
 
                 if harmonic == current_harmonic:
                     # The text boxes show three decimals, but the component is
@@ -5388,15 +5424,28 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self._component_settings_edited(self._current_layer())
 
     def _update_component_lifetime(
-        self, idx: int, harmonic: int, lifetime: float
+        self,
+        idx: int,
+        harmonic: int,
+        lifetime: float,
+        from_lifetime: bool = False,
     ):
-        """Update component lifetime for a specific harmonic."""
+        """Update component lifetime for a specific harmonic.
+
+        ``from_lifetime`` marks a component placed by typing its lifetime,
+        which then moves with the frequency. Otherwise the lifetime only
+        describes where the component was pinned.
+        """
         comp_data = self._ensure_component_metadata(idx, harmonic)
         if comp_data is None:
             return
 
-        harmonic_key = str(harmonic)
-        comp_data['gs_harmonics'][harmonic_key]['lifetime'] = lifetime
+        entry = comp_data['gs_harmonics'][str(harmonic)]
+        entry['lifetime'] = lifetime
+        if from_lifetime:
+            entry['from_lifetime'] = True
+        else:
+            entry.pop('from_lifetime', None)
         self._component_settings_edited(self._current_layer())
 
     def _update_component_name(self, idx: int, name: str):
