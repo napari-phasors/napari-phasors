@@ -667,6 +667,13 @@ def test_histogram_settings_dialog_edits_series_colors(qtbot, monkeypatch):
     assert widget._series_style == "solid"
     assert widget._series_color_overrides["A"] == (0.0, 1.0, 0.0)
     assert widget._series_style_explicit is True
+    # Only the colour that was changed is kept: B follows the tab.
+    assert "B" not in widget._series_color_overrides
+
+    # The tab can hand a series back to the colour it proposes.
+    widget.clear_series_color_override("A")
+    widget.set_dataset_series({"A": "A", "B": "B"}, colors={"A": (1, 0, 0)})
+    assert widget._series_color("A", 0) == (1, 0, 0)
 
 
 def test_statistics_columns_name_the_quantity(qtbot):

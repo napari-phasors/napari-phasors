@@ -52,6 +52,13 @@ def _setup_linear_projection(comp_widget):
     comp_widget._run_analysis()
 
 
+def _type_lifetime(comp, text):
+    """Type *text* into a component's lifetime box and commit it."""
+    comp.lifetime_edit.setText(text)
+    comp.lifetime_edit.setModified(True)
+    comp.lifetime_edit.editingFinished.emit()
+
+
 def _rename_component(comp_widget, idx, name):
     """Type *name* into a component's field and commit it (as Enter does)."""
     comp_widget.components[idx].name_edit.setText(name)
@@ -186,8 +193,7 @@ def test_components_lifetime_moves_component_on_plot(make_viewer_model, qtbot):
 
     canvas = parent.canvas_widget.canvas
     with patch.object(canvas, "draw", wraps=canvas.draw) as forced_draw:
-        comp.lifetime_edit.setText("3.0")
-        comp.lifetime_edit.editingFinished.emit()
+        _type_lifetime(comp, "3.0")
 
     expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
     x, y = comp.dot.get_data()
@@ -198,8 +204,7 @@ def test_components_lifetime_moves_component_on_plot(make_viewer_model, qtbot):
     assert forced_draw.call_count >= 1
 
     # Moving it again keeps it on the circle and leaves the guard flag clear.
-    comp.lifetime_edit.setText("1.0")
-    comp.lifetime_edit.editingFinished.emit()
+    _type_lifetime(comp, "1.0")
     expected_g, expected_s = phasor_from_lifetime(80.0, 1.0)
     x, y = comp.dot.get_data()
     assert abs(x[0] - expected_g) < 1e-3
@@ -229,8 +234,7 @@ def test_components_lifetime_lands_on_universal_circle(
     for harmonic in (1, 2, 3):
         parent.harmonic = harmonic
         for lifetime in (0.1, 0.5, 1.0, 3.0, 8.0, 20.0):
-            comp.lifetime_edit.setText(str(lifetime))
-            comp.lifetime_edit.editingFinished.emit()
+            _type_lifetime(comp, str(lifetime))
 
             x, y = comp.dot.get_data()
             assert abs(np.hypot(x[0] - 0.5, y[0]) - 0.5) < 1e-12
@@ -266,8 +270,7 @@ def test_components_lifetime_without_harmonics_metadata(
     assert comp_widget._get_available_harmonics() == []
 
     comp = comp_widget.components[0]
-    comp.lifetime_edit.setText("3.0")
-    comp.lifetime_edit.editingFinished.emit()
+    _type_lifetime(comp, "3.0")
 
     expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
     assert abs(float(comp.g_edit.text()) - expected_g) < 1e-3
@@ -2132,6 +2135,154 @@ def test_components_selection_calculates_lifetime(make_viewer_model, qtbot):
     assert (
         abs(float(comp.lifetime_edit.text()) - expected_drag_lifetime) < 1e-3
     )
+
+
+@pytest.mark.parametrize(
+    "analysis_type", ["Linear Projection", "Component Fit"]
+)
+def test_components_inside_semicircle_stay_after_run(
+    make_viewer_model, qtbot, analysis_type
+):
+    """Running the analysis leaves components placed inside the semicircle.
+
+    Placing a component fills its lifetime box with the projection onto the
+    semicircle; the refresh after the run used to re-place every component
+    from that lifetime, pulling them all onto the semicircle.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp_widget.analysis_type_combo.setCurrentText(analysis_type)
+
+    positions = [(0.3, 0.2), (0.7, 0.25)]
+
+    class Event:
+        inaxes = True
+
+    for idx, (g, s) in enumerate(positions):
+        event = Event()
+        event.xdata, event.ydata = g, s
+        comp_widget._select_component(idx)
+        comp_widget._handle_component_selection_event(event)
+        assert comp_widget.components[idx].lifetime_edit.text() != ""
+
+    comp_widget._run_analysis()
+    # Switching layers restores the tab through the same refresh.
+    comp_widget._restore_on_layer_change()
+
+    for idx, (g, s) in enumerate(positions):
+        x, y = comp_widget.components[idx].dot.get_data()
+        assert abs(x[0] - g) < 1e-9
+        assert abs(y[0] - s) < 1e-9
+        stored = parent.layer_settings(layer)["component_analysis"][
+            "components"
+        ][str(idx)]["gs_harmonics"]["1"]
+        assert abs(stored["g"] - g) < 1e-9
+        assert abs(stored["s"] - s) < 1e-9
+
+    # Nor does changing the frequency move a pinned component.
+    parent._broadcast_frequency_value_across_tabs("40")
+    for idx, (g, s) in enumerate(positions):
+        x, y = comp_widget.components[idx].dot.get_data()
+        assert abs(x[0] - g) < 1e-9
+        assert abs(y[0] - s) < 1e-9
+
+
+def test_components_lifetime_box_reacts_only_to_typing(
+    make_viewer_model, qtbot
+):
+    """Leaving the lifetime box unedited keeps a pinned component in place.
+
+    Qt reports leaving the box as a finished edit, which used to place the
+    component from the lifetime shown for it, onto the semicircle.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp = comp_widget.components[0]
+
+    class Event:
+        inaxes = True
+        xdata = 0.3
+        ydata = 0.2
+
+    comp_widget._select_component(0)
+    comp_widget._handle_component_selection_event(Event())
+    assert comp.lifetime_edit.text() != ""
+
+    comp.lifetime_edit.editingFinished.emit()
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - 0.3) < 1e-9
+    assert abs(y[0] - 0.2) < 1e-9
+
+    comp.lifetime_edit.clear()
+    qtbot.keyClicks(comp.lifetime_edit, "3.0")
+    qtbot.keyClick(comp.lifetime_edit, Qt.Key_Return)
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-12
+    assert abs(y[0] - expected_s) < 1e-12
+
+    # Committing the same text again is not a new edit.
+    comp_widget._apply_component_coords(0, 0.3, 0.2)
+    comp.lifetime_edit.setText("3.0")
+    comp.lifetime_edit.editingFinished.emit()
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - 0.3) < 1e-9
+
+
+def test_components_typed_lifetime_follows_frequency(make_viewer_model, qtbot):
+    """A component placed by typing its lifetime moves with the frequency.
+
+    Moving it by other means pins it, after which it stays put.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp = comp_widget.components[0]
+
+    _type_lifetime(comp, "3.0")
+
+    parent._broadcast_frequency_value_across_tabs("40")
+    expected_g, expected_s = phasor_from_lifetime(40.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-12
+    assert abs(y[0] - expected_s) < 1e-12
+
+    # The run keeps the mark, so it still follows after being stored.
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.2")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+    parent._broadcast_frequency_value_across_tabs("80")
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-12
+    assert abs(y[0] - expected_s) < 1e-12
+
+    # Typing coordinates pins the component.
+    comp.g_edit.setText("0.3")
+    comp.s_edit.setText("0.2")
+    comp_widget._on_component_coords_changed(0)
+    parent._broadcast_frequency_value_across_tabs("40")
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - 0.3) < 1e-9
+    assert abs(y[0] - 0.2) < 1e-9
 
 
 def test_components_auto_placement_calculates_lifetime(
@@ -5415,7 +5566,7 @@ def test_labels_layers_are_updated_in_place(make_viewer_model):
     assert first.data.astype(bool).sum() <= before
 
 
-def test_a_component_labels_colour_can_be_picked_and_given_back(
+def test_a_component_labels_colour_can_be_picked(
     make_viewer_model,
 ):
     """A chosen colour reaches the card, the labels layer and the layer."""
@@ -5444,8 +5595,6 @@ def test_a_component_labels_colour_can_be_picked_and_given_back(
     )
     painted = viewer.layers[f"Component 1 filtered: {layer.name}"]
     assert np.allclose(painted.colormap.color_dict[1], (1.0, 0.0, 0.0, 1.0))
-    # The component card now offers to give the inherited colour back.
-    assert comp_widget.components[0].color_reset_button.isHidden() is False
     # Like a rename, the choice is a draft until the analysis runs...
     draft = comp_widget._read_component_settings(layer)['components']
     assert draft['0']['label_color'] == "#ff0000"
@@ -5459,17 +5608,139 @@ def test_a_component_labels_colour_can_be_picked_and_given_back(
     # Picking the same colour again is not a change.
     assert comp_widget._on_component_color_changed(0, "#ff0000") is None
 
-    # Asking for the component's own colour back removes the override
-    # everywhere rather than freezing the inherited value in its place.
-    comp_widget._on_component_color_changed(0, None)
-    assert comp_widget._component_label_colors == {}
-    assert _as_hex(comp_widget._component_filter_colors()[0]) == inherited
-    assert (
-        mcolors.to_hex(comp_widget.components[0].dot.get_color()) == inherited
+
+def test_the_last_colour_change_wins_between_colormap_and_card(
+    make_viewer_model, monkeypatch
+):
+    """A colormap change and a card colour each replace the other.
+
+    The dot, the card swatch, the filter card and the histogram's solid
+    colour all show whichever was changed last.
+    """
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._utils import HistogramSettingsDialog
+
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    comp_widget._add_component()
+    _setup_component_fit(
+        comp_widget, (("0.2", "0.1"), ("0.8", "0.4"), ("0.5", "0.3"))
     )
+    _check_histogram_components(
+        comp_widget, ["Component 1", "Component 2", "Component 3"]
+    )
+    histogram = comp_widget.histogram_widget
+    comp = comp_widget.components[0]
+
+    # Pressing OK in the histogram settings freezes no colour.
+    monkeypatch.setattr(
+        HistogramSettingsDialog, 'exec', lambda self: QDialog.Accepted
+    )
+    histogram._open_settings_dialog()
+
+    def shown():
+        swatch = comp.color_button.styleSheet()
+        return {
+            "dot": mcolors.to_hex(comp.dot.get_color()),
+            "swatch": swatch.split("background-color: ")[-1].rstrip(";"),
+            "card": comp_widget.filter_list._cards[0].accent_color,
+            "histogram": _as_hex(
+                histogram._series_color(
+                    "Component 1",
+                    histogram._series_names().index("Component 1"),
+                )
+            ),
+        }
+
+    comp_widget.fraction_layers[0].colormap = "red"
+    assert set(shown().values()) == {"#ff0000"}
+
+    comp_widget._on_component_color_changed(0, "#00ff00")
+    assert set(shown().values()) == {"#00ff00"}
+
+    comp_widget.fraction_layers[0].colormap = "cyan"
+    assert set(shown().values()) == {"#00ffff"}
+    assert comp_widget._component_label_colors == {}
     draft = comp_widget._read_component_settings(layer)['components']
     assert 'label_color' not in draft['0']
-    assert comp_widget._on_component_color_changed(0, None) is None
+    # The other components are left alone.
+    assert _as_hex(comp_widget._component_filter_colors()[1]) == "#00ffff"
+    assert _as_hex(comp_widget._component_filter_colors()[2]) == "#ffff00"
+
+    # A card colour also replaces one picked in the histogram settings.
+    histogram._series_color_overrides["Component 1"] = (0.0, 0.0, 1.0)
+    comp_widget._on_component_color_changed(0, "#ff8800")
+    assert set(shown().values()) == {"#ff8800"}
+
+
+def test_a_card_colour_draws_the_fraction_layer_from_black_to_it(
+    make_viewer_model,
+):
+    """Picking a card colour recolours the component's fraction layer."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    comp_widget._add_component()
+    coords = (("0.2", "0.1"), ("0.8", "0.4"), ("0.5", "0.3"))
+    _setup_component_fit(comp_widget, coords)
+    fraction = comp_widget.fraction_layers[1]
+
+    comp_widget._on_component_color_changed(1, "#00ff00")
+    assert np.allclose(fraction.colormap.colors[0], (0, 0, 0, 1))
+    assert np.allclose(fraction.colormap.colors[-1], (0, 1, 0, 1))
+    # The card colour stays: it is what set the colormap.
+    assert comp_widget._component_label_colors == {1: "#00ff00"}
+    # The colormap is stored by its colours, since its name only exists in
+    # this session.
+    stored = comp_widget._read_component_settings(layer)['components']['1']
+    entry = stored['gs_harmonics']['1']
+    assert entry['colormap_name'] is None
+    assert np.allclose(entry['colormap_colors'][-1], (0, 1, 0, 1))
+    # The other components keep their colormaps.
+    assert comp_widget.fraction_layers[0].colormap.name == "magenta"
+
+    # A re-run keeps it.
+    comp_widget._run_analysis()
+    fraction = comp_widget.fraction_layers[1]
+    assert np.allclose(fraction.colormap.colors[-1], (0, 1, 0, 1))
+
+    # A colour picked before the layers exist colours them once made.
+    comp_widget._on_component_color_changed(2, "#ff8800")
+    comp_widget._run_analysis()
+    fraction = comp_widget.fraction_layers[2]
+    assert np.allclose(fraction.colormap.colors[0], (0, 0, 0, 1))
+    assert _as_hex(fraction.colormap.colors[-1]) == "#ff8800"
+
+
+def test_a_card_colour_sets_its_end_of_the_linear_projection_colormap(
+    make_viewer_model,
+):
+    """Linear Projection's one layer runs from one card colour to the other."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    fraction = comp_widget.comp1_fractions_layer
+    jet = np.asarray(fraction.colormap.colors)
+
+    comp_widget._on_component_color_changed(1, "#00ff00")
+    colors = np.asarray(fraction.colormap.colors)
+    assert np.allclose(colors[0], (0, 1, 0, 1))
+    assert np.allclose(colors[-1], jet[-1])
+
+    comp_widget._on_component_color_changed(0, "#ff0000")
+    colors = np.asarray(fraction.colormap.colors)
+    assert np.allclose(colors[0], (0, 1, 0, 1))
+    assert np.allclose(colors[-1], (1, 0, 0, 1))
+    assert comp_widget._component_label_colors == {
+        0: "#ff0000",
+        1: "#00ff00",
+    }
+
+    # The two stay in step on a re-run.
+    comp_widget._run_analysis()
+    colors = np.asarray(comp_widget.comp1_fractions_layer.colormap.colors)
+    assert np.allclose(colors[0], (0, 1, 0, 1))
+    assert np.allclose(colors[-1], (1, 0, 0, 1))
 
 
 def test_the_swatch_opens_a_picker_and_a_cancelled_pick_changes_nothing(
@@ -5487,17 +5758,11 @@ def test_the_swatch_opens_a_picker_and_a_cancelled_pick_changes_nothing(
         comp.color_button.click()
     assert comp_widget._component_label_colors == {1: "#123456"}
     assert comp_widget.filter_list._cards[1].accent_color == "#123456"
-    assert comp.color_reset_button.isHidden() is False
 
     # An invalid colour is what a cancelled dialog returns.
     with patch.object(QColorDialog, "getColor", return_value=QColor()):
         comp.color_button.click()
     assert comp_widget._component_label_colors == {1: "#123456"}
-
-    # The reset button beside it goes through the same path.
-    comp.color_reset_button.click()
-    assert comp_widget._component_label_colors == {}
-    assert comp.color_reset_button.isHidden() is True
 
 
 def test_a_picked_colour_stays_with_its_component_and_is_restored(
