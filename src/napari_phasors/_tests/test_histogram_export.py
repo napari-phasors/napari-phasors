@@ -486,21 +486,19 @@ def test_export_dialog_preview_has_the_export_proportions(qtbot):
     assert pixmap.width() == pytest.approx(pixmap.height(), abs=2)
 
 
-def test_export_dialog_preview_note_describes_the_background(qtbot):
-    widget = _histogram(qtbot)
-    dlg = _dialog(qtbot, widget)
-    assert "transparent" in dlg.preview_note.text()
+def test_export_dialog_background_is_opaque_for_white_and_jpg(qtbot):
+    dlg = _dialog(qtbot)
+    assert not dlg.is_opaque()
 
     # JPG has no transparency.
     _select(dlg.format_combo, "jpg")
-    assert "transparent" not in dlg.preview_note.text()
+    assert dlg.is_opaque()
 
     _select(dlg.format_combo, "svg")
-    assert "transparent" in dlg.preview_note.text()
+    assert not dlg.is_opaque()
 
     dlg.white_bg_checkbox.setChecked(True)
     _select(dlg.format_combo, "png")
-    assert "transparent" not in dlg.preview_note.text()
     assert dlg.is_opaque()
 
 

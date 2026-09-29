@@ -3655,7 +3655,6 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.legend_checkbox.setChecked(show_legend)
         layout.addWidget(self.legend_checkbox)
 
-        # --- Legend location ---
         legend_placement, legend_position = normalize_legend_location(
             legend_placement, legend_position
         )
@@ -4176,7 +4175,6 @@ class HistogramExportDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        # --- Format ---
         format_row = QHBoxLayout()
         format_row.addWidget(QLabel("Format:"))
         self.format_combo = QComboBox()
@@ -4186,7 +4184,6 @@ class HistogramExportDialog(QDialog):
         format_row.addStretch()
         layout.addLayout(format_row)
 
-        # --- Image options ---
         self._image_options = QWidget()
         image_layout = QVBoxLayout(self._image_options)
         image_layout.setContentsMargins(0, 0, 0, 0)
@@ -4296,7 +4293,6 @@ class HistogramExportDialog(QDialog):
                 widget.setToolTip(no_legend)
         layout.addWidget(self._image_options)
 
-        # --- Preview ---
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setFixedSize(*self.PREVIEW_SIZE)
@@ -4307,7 +4303,6 @@ class HistogramExportDialog(QDialog):
         self.preview_note.setStyleSheet("color: gray; font-size: 11px;")
         layout.addWidget(self.preview_note)
 
-        # --- Buttons ---
         buttons = QHBoxLayout()
         self.save_button = QPushButton("Save…")
         self.save_button.setDefault(True)
@@ -4389,7 +4384,6 @@ class HistogramExportDialog(QDialog):
             combo.setCurrentIndex(max(index, 0))
         unit = self.unit_combo.currentText()
         self._configure_size_spinboxes(unit)
-        # A width of about 12 cm suits a figure in a paper column.
         default_width = self._SIZE_SPEC[unit][4]
         self.width_spin.setValue(
             _number_or(options.get("width"), default_width)
@@ -4534,8 +4528,6 @@ class HistogramExportDialog(QDialog):
         """Draw the histogram at the export size, scaled to fit the preview."""
         width_in, height_in = self.size_inches()
         max_width, max_height = self.PREVIEW_SIZE
-        # Pixels per inch that make the figure fill the preview: the figure
-        # keeps its proportions, only the resolution is lower than the export.
         preview_dpi = max(
             min(max_width / width_in, max_height / height_in),
             self.MIN_PREVIEW_DPI,
@@ -4735,7 +4727,6 @@ class HistogramWidget(QWidget):
         self._show_legend = True
         self._legend_placement = "inside"
         self._legend_position = default_legend_position("inside")
-        # Text sizes in points. The export dialog overrides them for a file.
         self._label_fontsize = self.DEFAULT_LABEL_FONTSIZE
         self._tick_fontsize = self.DEFAULT_TICK_FONTSIZE
         self._legend_fontsize = self.DEFAULT_LEGEND_FONTSIZE
@@ -4744,8 +4735,6 @@ class HistogramWidget(QWidget):
         self._white_background = False
         self._smooth_curves = True
         self._log_scale = False
-        # What the export dialog was last set to, so the next export starts
-        # from the same format, size and DPI.
         self._export_options = None
 
         # Range slider state
@@ -4992,7 +4981,6 @@ class HistogramWidget(QWidget):
                 fmt, width_in, height_in, dlg.dpi(), style=dlg.style()
             )
 
-    #: File suffixes accepted for each image export format.
     _IMAGE_SUFFIXES = {
         "png": (".png",),
         "svg": (".svg",),
