@@ -1922,7 +1922,9 @@ def test_components_rename_is_applied_only_once_committed(
 
     # Committing the edit (Enter, or leaving the field) applies it everywhere.
     name_edit.editingFinished.emit()
-    assert comp_widget.comp1_fractions_layer.name.startswith("Free")
+    assert comp_widget.comp1_fractions_layer.name.endswith(
+        "[2 Component Analysis: Free]"
+    )
     assert comp_widget._selected_histogram_components() == ["Free"]
 
     # Re-committing an unchanged name is a no-op.

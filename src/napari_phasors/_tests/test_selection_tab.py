@@ -2747,7 +2747,7 @@ def test_selection_widget_manual_overlay_and_selection_id(
     sel.manual_selection_changed(np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0]))
     sel.selection_id = "sel_a"
     sel.create_phasors_selected_layer()
-    overlay_name = f"sel_a: {layer.name}"
+    overlay_name = analysis_layer_name("sel_a", layer.name)
     assert overlay_name in [ly.name for ly in viewer.layers]
 
     sel._on_show_color_overlay(True)
@@ -2770,7 +2770,7 @@ def test_recreate_manual_selection_layer(make_viewer_model, qtbot):
     selection_map[0, 0] = 1
     sel._recreate_manual_selection_layer("stored_sel", selection_map)
 
-    name = f"stored_sel: {layer.name}"
+    name = analysis_layer_name("stored_sel", layer.name)
     assert name in [ly.name for ly in viewer.layers]
     recreated = viewer.layers[name]
     assert recreated.visible is False

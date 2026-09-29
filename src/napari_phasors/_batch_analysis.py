@@ -590,7 +590,7 @@ def _apply_phasor_mapping(layer, mapping):
         layers.append(
             _make_output_image(
                 values,
-                f"{output_type}: {layer.name}",
+                analysis_layer_name(output_type, layer.name),
                 colormap=mapping.get("colormap"),
                 contrast_limits=mapping.get("contrast_limits"),
             )

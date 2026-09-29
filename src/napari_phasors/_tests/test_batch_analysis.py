@@ -521,7 +521,7 @@ def test_n_component_fit_pipeline():
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 3
     assert [lyr.name for lyr in extra_layers] == [
-        f"FLIM data [3 Component Fit: {name}]" for name in "ABC"
+        f"FLIM data Intensity [3 Component Fit: {name}]" for name in "ABC"
     ]
 
 
@@ -558,7 +558,8 @@ def test_multiharmonic_component_fit_pipeline():
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 4
     assert all(
-        "Component Fit" in lyr.name and lyr.name.startswith("FLIM data [")
+        "Component Fit" in lyr.name
+        and lyr.name.startswith("FLIM data Intensity [")
         for lyr in extra_layers
     )
 
@@ -620,7 +621,7 @@ def test_phasor_mapping_pipeline():
         )
         extra_layers = apply_pipeline(layer, pipeline)
         assert len(extra_layers) == 1
-        assert extra_layers[0].name == f"FLIM data [{output_type}]"
+        assert extra_layers[0].name == f"FLIM data Intensity [{output_type}]"
         assert extra_layers[0].data.shape == layer.data.shape
 
 
@@ -639,7 +640,7 @@ def test_fret_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 1
-    assert extra_layers[0].name == "FLIM data [FRET efficiency]"
+    assert extra_layers[0].name == "FLIM data Intensity [FRET efficiency]"
     finite = extra_layers[0].data[np.isfinite(extra_layers[0].data)]
     assert np.all((finite >= 0) & (finite <= 1))
 
@@ -658,7 +659,7 @@ def test_selection_pipeline():
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 1
     selection = extra_layers[0]
-    assert selection.name == "FLIM data [Cursor selection]"
+    assert selection.name == "FLIM data Intensity [Cursor selection]"
     assert selection.data.shape == layer.data.shape
     # Labels are 0 (unselected) plus one id per cursor that matched.
     assert set(np.unique(selection.data)).issubset({0, 1, 2})
@@ -891,8 +892,8 @@ def test_mapping_multi_output_pipeline():
     out = apply_pipeline(layer, pipeline)
     names = [lyr.name for lyr in out]
     assert len(out) == 3
-    assert any(n.startswith("Phase:") for n in names)
-    assert any(n.startswith("Modulation:") for n in names)
+    assert any(n.endswith("[Phase]") for n in names)
+    assert any(n.endswith("[Modulation]") for n in names)
 
 
 def test_mapping_mesh_plot_jobs(qtbot, make_viewer_model):
@@ -1464,7 +1465,7 @@ def test_selection_cluster_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 1
-    assert extra_layers[0].name == "FLIM data [Cluster selection]"
+    assert extra_layers[0].name == "FLIM data Intensity [Cluster selection]"
     assert extra_layers[0].data.shape == layer.data.shape
 
 
@@ -3005,9 +3006,9 @@ def test_linear_projection_exports_both_fractions():
     }
     outputs = _apply_component_fraction(layer, config)
     assert len(outputs) == 2
-    assert [o.name.split(":")[0] for o in outputs] == [
-        "A fraction",
-        "B fraction",
+    assert [o.name for o in outputs] == [
+        "FLIM data Intensity [2 Component Analysis: A]",
+        "FLIM data Intensity [2 Component Analysis: B]",
     ]
     first = np.asarray(outputs[0].data)
     second = np.asarray(outputs[1].data)

@@ -2851,15 +2851,15 @@ def test_mapping_output_controls_refresh_after_first_calculation(
                 mapping.histogram_widget._datasets
             )
             == {
-                f"{output_type}: mapping_a",
-                f"{output_type}: mapping_b",
+                f"mapping_a [{output_type}]",
+                f"mapping_b [{output_type}]",
             },
             timeout=5000,
         )
 
         assert mapping.histogram_widget.xlabel == xlabel
         for source_name in ("mapping_a", "mapping_b"):
-            output_layer = viewer.layers[f"{output_type}: {source_name}"]
+            output_layer = viewer.layers[f"{source_name} [{output_type}]"]
             assert output_layer.metadata['phasor_mapping_output'] == {
                 'source_layer': source_name,
                 'output_type': output_type,
@@ -2990,7 +2990,7 @@ def test_mapping_invalid_reactive_choice_clears_stale_histogram(
     qtbot.waitUntil(
         lambda: bool(mapping.histogram_widget._datasets)
         and all(
-            name.startswith("Phase:")
+            name.endswith("[Phase]")
             for name in mapping.histogram_widget._datasets
         ),
         timeout=5000,
@@ -3400,7 +3400,7 @@ def test_mapping_display_range_is_kept_per_output_type(
         mapping.lifetime_type_combobox.setCurrentText(output_type)
         mapping._on_calculate_lifetime_clicked()
         return np.asarray(
-            viewer.layers[f"{output_type}: mapping_source"].data
+            viewer.layers[f"mapping_source [{output_type}]"].data
         ).copy()
 
     phase_full = run("Apparent Phase Lifetime")
@@ -4241,7 +4241,7 @@ def test_mapping_output_name_puts_analysis_in_brackets(
     viewer.add_layer(layer)
     parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
 
-    for output_type in ("Phase", "Apparent Phase Lifetime"):
+    for output_type in ("Phase", "Modulation"):
         mapping_widget.output_mode_combobox.setCurrentText(output_type)
         mapping_widget._on_calculate_lifetime_clicked()
         name = f"FLIM data Intensity [{output_type}]"
@@ -4253,7 +4253,7 @@ def test_mapping_output_name_puts_analysis_in_brackets(
 
     mapping_widget.rename_layer(layer.name, "renamed Intensity [Phasor]")
     assert "renamed Intensity [Phase]" in viewer.layers
-    assert "renamed Intensity [Apparent Phase Lifetime]" in viewer.layers
+    assert "renamed Intensity [Modulation]" in viewer.layers
 
 
 def test_the_calculate_button_is_pinned_under_the_settings(make_viewer_model):

@@ -876,8 +876,8 @@ def test_update_layer_visibility_leaves_unrelated_layers_untouched(
 
 
 def test_update_layer_visibility_longest_suffix_wins(make_viewer_model):
-    """When one intensity name is a suffix of another, the most specific
-    (longest) intensity name claims the analysis layer."""
+    """An analysis layer belongs only to the intensity layer whose name it
+    carries, even when another intensity name is a suffix of it."""
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
 
@@ -888,8 +888,8 @@ def test_update_layer_visibility_longest_suffix_wins(make_viewer_model):
     long.name = "other img"
     viewer.add_layer(long)
 
-    # Name ends with ": other img" which contains ": img" as well; the
-    # longer intensity name must win so this is associated with "other img".
+    # "other img" ends with "img", but the analysis layer is derived from
+    # "other img" only.
     analysis = viewer.add_image(
         np.zeros((5, 5)), name=_lp_name("Component 1", "other img")
     )

@@ -104,6 +104,7 @@ from ._utils import (
     make_solid_contour_cmap,
     normalize_rgb,
     parse_component_analysis_label,
+    phasor_layer_base_name,
     phasor_storage_dtype,
     populate_colormap_combobox,
     rank_mask_candidates,
@@ -7346,10 +7347,23 @@ class PlotterWidget(QWidget):
 
             # If image layers were renamed, update selections and notify tabs
             old_image_layers_by_id = getattr(self, '_image_layers_by_id', {})
+            # Only phasor source images: renaming an analysis output (which
+            # the tabs do themselves when a component is renamed) is not a
+            # source rename.
+            phasor_layer_ids = {
+                id(layer)
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "G" in layer.metadata
+                and "S" in layer.metadata
+                and "G_original" in layer.metadata
+                and "S_original" in layer.metadata
+            }
             renamed_images = {
                 old_name: new_name
                 for layer_id, new_name in image_layers_by_id.items()
-                if layer_id in old_image_layers_by_id
+                if layer_id in phasor_layer_ids
+                and layer_id in old_image_layers_by_id
                 and (old_name := old_image_layers_by_id[layer_id]) != new_name
             }
             if renamed_images:
@@ -7853,8 +7867,8 @@ class PlotterWidget(QWidget):
         their derived analysis layers.
 
         Association is determined by napari-phasors' layer naming
-        convention: analysis layers are named ``"<descriptor>: <intensity
-        layer name>"``. Layers that are not associated with any phasor
+        convention: analysis layers are named ``"<intensity layer name without
+        [Phasor]> [<analysis>]"``. Layers that are not associated with any phasor
         intensity layer (e.g. unrelated reference layers) are left
         untouched. Redundant writes to ``layer.visible`` are skipped so
         napari does not emit unnecessary redraw events.
@@ -7864,25 +7878,22 @@ class PlotterWidget(QWidget):
         selected_names : set of str
             Names of the currently selected intensity layers.
         """
-        # Intensity layer names sorted longest-first so the most specific
-        # suffix wins when one layer name is a suffix of another.
-        intensity_names = sorted(
-            (
-                layer.name
-                for layer in self.viewer.layers
-                if self._is_phasor_intensity_layer(layer)
-            ),
-            key=len,
-            reverse=True,
-        )
-        intensity_name_set = set(intensity_names)
+        intensity_name_set = {
+            layer.name
+            for layer in self.viewer.layers
+            if self._is_phasor_intensity_layer(layer)
+        }
+        intensity_by_base = {
+            phasor_layer_base_name(name): name
+            for name in sorted(intensity_name_set)
+        }
 
         def associated_intensity_name(layer_name):
             """Return the intensity layer this layer derives from, or None."""
-            for intensity_name in intensity_names:
-                if layer_name.endswith(f": {intensity_name}"):
-                    return intensity_name
-            return None
+            base, analysis = split_analysis_layer_name(layer_name)
+            if analysis is None:
+                return None
+            return intensity_by_base.get(base)
 
         for layer in self.viewer.layers:
             if layer.name in intensity_name_set:
