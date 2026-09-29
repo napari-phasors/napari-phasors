@@ -890,7 +890,9 @@ def test_export_dialog_pixel_size_limit(qtbot):
 
 
 def test_export_dialog_pixel_options_round_trip(qtbot):
-    dlg = _dialog(qtbot, options={"unit": "px"})
+    # "As shown" takes the height from the plot's own size, which differs
+    # between machines, so the shape is fixed here.
+    dlg = _dialog(qtbot, options={"unit": "px", "aspect": "Custom"})
     assert dlg.width_spin.value() == 1500
     assert dlg.height_spin.value() == 750
     dlg.width_spin.setValue(2000)
