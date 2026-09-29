@@ -8210,15 +8210,6 @@ def _add_phasor_overlay(plot, overlay):
             "histogram_alpha": line_style.get("histogram_alpha", 0.75),
             "fraction_data": overlay.get("fraction_data"),
         }
-        calibration = components.get("concentration")
-        if isinstance(calibration, dict):
-            _mean, reference_real, reference_imag = calibration["reference"]
-            settings["reference_phasor"] = (reference_real, reference_imag)
-            amount = (
-                f"{calibration['reference_concentration']:g} "
-                f"{calibration.get('units') or ''}"
-            ).strip()
-            settings["reference_label"] = f"Reference ({amount})"
         # Multi-harmonic fits store 2-D component arrays; the overlay draws a
         # single harmonic, so use the primary harmonic's locations.
         component_real = components["component_real"]

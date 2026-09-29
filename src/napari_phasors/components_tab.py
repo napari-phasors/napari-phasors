@@ -171,8 +171,6 @@ MANUAL_REFERENCE = "Manual values"
 #: Separator between the quantity and the source image in the name of a
 #: concentration layer: ``"<component> concentration: <image>"``.
 CONCENTRATION_SEP = " concentration: "
-#: Colour of the reference-solution marker on the phasor plot.
-REFERENCE_MARKER_COLOR = "#2ca02c"
 #: Default colormap of the total-concentration layers; each component's
 #: concentration uses that component's own colormap.
 TOTAL_CONCENTRATION_COLORMAP = "viridis"
@@ -820,11 +818,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # criterion while the component list is halfway through a removal.
         self._syncing_filter_ui = False
         self._removing_component = False
-        # Absolute concentration: the reference solution's marker and label
-        # on the phasor plot, and a guard set while the section is filled
+        # Absolute concentration: a guard set while the section is filled
         # from a layer's settings so that filling it is not taken for an
         # edit.
-        self._reference_artists = []
         self._restoring_concentration = False
 
         # Dialog / event flags
@@ -1957,7 +1953,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self.component_polygon = None
 
         self._remove_histogram_overlay()
-        self._remove_reference_marker()
 
         self._update_components_setting_in_metadata('components', {})
 
@@ -3016,7 +3011,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             # The reference phasor belongs to a harmonic, as the
             # components' positions do.
             self._restore_reference_for_harmonic(new_harmonic)
-            self._update_reference_marker()
         self._update_component_visibility()
 
         if self._analysis_attempted:
@@ -3068,7 +3062,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self.component_line = None
 
         self._remove_histogram_overlay()
-        self._remove_reference_marker()
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -3372,7 +3365,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             if not isinstance(hist_artists, (list, tuple)):
                 hist_artists = [hist_artists]
             artists.extend(hist_artists)
-        artists.extend(self._reference_artists)
         return artists
 
     def set_artists_visible(self, visible):
@@ -3393,8 +3385,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 hist_artists = [hist_artists]
             for artist in hist_artists:
                 artist.set_visible(visible)
-        for artist in self._reference_artists:
-            artist.set_visible(visible)
 
     def clear_artists(self):
         """Clear (remove) all artists created by this widget."""
@@ -5780,8 +5770,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 self.component_polygon.remove()
             self.component_polygon = None
 
-        self._remove_reference_marker()
-
         if self.comp1_fractions_layer is not None:
             try:
                 self.comp1_fractions_layer.events.colormap.disconnect(
@@ -5827,9 +5815,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             finally:
                 self._updating_settings = False
 
-        # The teardown took the reference marker off the plot along with the
-        # components.
-        self._update_reference_marker()
         self._refresh_settings_note()
 
     def _ensure_component_metadata(self, idx: int, harmonic: int = None):
@@ -6333,14 +6318,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self._refresh_concentration_names()
         finally:
             self._restoring_concentration = False
-        self._update_reference_marker()
 
     def _on_concentration_setting_changed(self):
-        """Keep an edited input and follow it on the plot and in the run."""
+        """Keep an edited input and follow it in the run."""
         if self._restoring_concentration:
             return
         self._stage_concentration_settings()
-        self._update_reference_marker()
         self._refresh_run_button_if_ready()
         self.request_autoupdate()
 
@@ -6368,12 +6351,13 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         """Show the calibration inputs only while they are used."""
         active = self._is_concentration()
         self.concentration_box.setVisible(active)
+        # The model takes exactly two components.
+        self.add_component_btn.setVisible(not active)
         if active:
             self._refresh_reference_layer_choices()
             self._refresh_concentration_names()
             # The harmonic may have changed while another method was shown.
             self._restore_reference_for_harmonic(self._current_harmonic())
-        self._update_reference_marker()
 
     def _concentration_problem(self):
         """Return why an absolute concentration cannot run yet, or ``None``."""
@@ -6406,61 +6390,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         ):
             return "Enter the brightness ratio as a positive number."
         return None
-
-    def _remove_reference_marker(self):
-        """Remove the reference solution's marker from the phasor plot."""
-        for artist in self._reference_artists:
-            with contextlib.suppress(
-                ValueError, AttributeError, NotImplementedError
-            ):
-                artist.remove()
-        self._reference_artists = []
-
-    def _update_reference_marker(self):
-        """Mark the reference solution's phasor while it is being used.
-
-        For a pure solution of the calibrated component the marker should
-        sit on (or near) that component: one far from it is a quick sign of
-        a mismatched reference or harmonic.
-        """
-        had_marker = bool(self._reference_artists)
-        self._remove_reference_marker()
-        values = self._reference_values() if self._is_concentration() else None
-        if values is None:
-            if had_marker:
-                self.parent_widget.canvas_widget.canvas.draw_idle()
-            return
-        _mean, real, imag = values
-        ax = self.parent_widget.canvas_widget.figure.gca()
-        marker = ax.plot(
-            [real],
-            [imag],
-            marker='*',
-            markersize=14,
-            linestyle='none',
-            color=REFERENCE_MARKER_COLOR,
-            markeredgecolor='black',
-            markeredgewidth=0.6,
-            zorder=12,
-        )[0]
-        concentration = self._positive_field(self.reference_concentration_edit)
-        label = "Reference"
-        if concentration is not None:
-            amount = f"{concentration:g} {self._concentration_units()}"
-            label = f"Reference ({amount.strip()})"
-        text = ax.text(
-            real + 0.02,
-            imag + 0.02,
-            label,
-            fontsize=self.label_fontsize,
-            color=self.label_color,
-            zorder=12,
-        )
-        self._reference_artists = [marker, text]
-        visible = self._components_tab_is_active()
-        for artist in self._reference_artists:
-            artist.set_visible(visible)
-        self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _concentration_parameters(self):
         """Return what an absolute-concentration run needs, from the tab.
@@ -7923,7 +7852,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             # picked counts as it is now.
             if self._uses_reference_layer():
                 self._load_reference_from_layer()
-                self._update_reference_marker()
             problem = self._concentration_problem()
             if problem is not None:
                 show_warning(problem)
@@ -10290,36 +10218,6 @@ def draw_components_overlay(
                 verticalalignment='bottom',
                 horizontalalignment='left',
                 color=label_color or color,
-                fontsize=label_fontsize,
-                fontweight=label_fontweight,
-                fontstyle=label_fontstyle,
-                zorder=12,
-            )
-
-    # 3. The reference solution of an absolute concentration, as marked in
-    # the Components tab.
-    reference = settings.get("reference_phasor")
-    if reference is not None:
-        ax.plot(
-            [reference[0]],
-            [reference[1]],
-            marker='*',
-            markersize=14,
-            linestyle='none',
-            color=REFERENCE_MARKER_COLOR,
-            markeredgecolor='black',
-            markeredgewidth=0.6,
-            zorder=12,
-        )
-        reference_label = settings.get("reference_label")
-        if show_labels and reference_label:
-            ax.text(
-                reference[0],
-                reference[1],
-                f" {reference_label}",
-                verticalalignment='bottom',
-                horizontalalignment='left',
-                color=label_color or REFERENCE_MARKER_COLOR,
                 fontsize=label_fontsize,
                 fontweight=label_fontweight,
                 fontstyle=label_fontstyle,

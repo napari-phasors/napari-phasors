@@ -150,11 +150,6 @@ component is computed. Pixels where the model is undefined are left empty
 with their unit, and each component card's **Show in histogram and
 statistics** toggle works as it does for fractions.
 
-The reference is marked with a green star on the phasor plot. For a pure
-solution of the calibrated component it should sit on or near that
-component: a star far from it points at a reference processed differently
-from the samples, or measured at another harmonic.
-
 > [!NOTE]
 > The measured reference is stored with the analysis. A layer analysed
 > against a reference that is no longer open (for example a saved OME-TIFF

@@ -5096,8 +5096,8 @@ def test_run_batch_exports_concentrations(qtbot, make_viewer_model, tmp_path):
     assert len({row["File"] for row in rows}) == 2
 
 
-def test_components_overlay_marks_the_concentration_reference():
-    """The exported phasor plot marks the reference solution."""
+def test_components_overlay_draws_concentrations():
+    """The exported phasor plot draws the components, not the reference."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -5114,11 +5114,8 @@ def test_components_overlay_marks_the_concentration_reference():
     _add_phasor_overlay(
         SimpleNamespace(ax=ax), {"kind": "components", "components": config}
     )
-    stars = [line for line in ax.lines if line.get_marker() == "*"]
-    assert [star.get_xydata().tolist() for star in stars] == [[[0.8, 0.28]]]
-    assert any(
-        text.get_text().strip() == "Reference (2 mM)" for text in ax.texts
-    )
+    assert not any(line.get_marker() == "*" for line in ax.lines)
+    assert not any("Reference" in text.get_text() for text in ax.texts)
     plt.close(fig)
 
     assert (

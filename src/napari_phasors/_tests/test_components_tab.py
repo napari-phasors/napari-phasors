@@ -6729,6 +6729,8 @@ def test_concentration_method_shows_its_calibration_section(
     )
 
     assert not comp.concentration_box.isHidden()
+    # The model takes exactly two components.
+    assert comp.add_component_btn.isHidden()
     assert comp.calculate_button.text() == "Calculate Absolute Concentrations"
     assert comp.histogram_widget.xlabel == "Concentration (mM)"
     assert comp.histogram_widget.range_label.text() == (
@@ -6760,14 +6762,15 @@ def test_concentration_method_shows_its_calibration_section(
     assert comp.concentration_box.isHidden()
     assert comp.histogram_widget.xlabel == "Fraction"
     assert comp.histogram_widget.range_factor == 1000
-    assert comp._reference_artists == []
+    assert not comp.add_component_btn.isHidden()
 
     # A third component leaves only a fit.
     comp.analysis_type_combo.setCurrentText(ABSOLUTE_CONCENTRATION)
-    assert len(comp._reference_artists) == 2
+    assert comp.add_component_btn.isHidden()
     comp._add_component()
     assert comp.analysis_type == "Component Fit"
     assert comp.concentration_box.isHidden()
+    assert not comp.add_component_btn.isHidden()
 
 
 def test_concentration_validation_names_the_missing_input(
@@ -6889,11 +6892,6 @@ def test_concentration_run_creates_tagged_maps_and_stores_settings(
     assert display['colormap_name'] == comp.component_colormap_names[0]
     assert stored['total_display']['colormap_name'] == "viridis"
 
-    # The reference is marked on the phasor plot.
-    marker, label = comp._reference_artists
-    assert marker.get_xydata().tolist() == [[measured[1], measured[2]]]
-    assert label.get_text() == "Reference (1 mM)"
-
     # The dots take the ends of the concentration colormaps.
     assert comp.fraction_layers == [
         maps["Component 1 concentration: sample"],
@@ -7007,8 +7005,6 @@ def test_concentration_typed_reference_is_kept_per_harmonic(
 
     parent.harmonic_spinbox.setValue(1)
     assert comp._reference_values() == (2.5, 0.8, 0.3)
-    marker = comp._reference_artists[0]
-    assert marker.get_xydata().tolist() == [[0.8, 0.3]]
 
     comp._run_analysis()
     assert _stored_concentration(sample)['reference_gs_harmonics'] == {
@@ -7068,7 +7064,6 @@ def test_concentration_settings_restore_on_a_fresh_tab(
     assert restored.brightness_ratio_edit.isEnabled()
     assert restored.brightness_ratio_edit.text() == "3"
     assert restored._concentration_units() == "µM"
-    assert len(restored._reference_artists) == 2
     # Showing an analysis writes nothing.
     assert sample.metadata['settings']['component_analysis'] == stored
 
@@ -7359,37 +7354,25 @@ def test_concentration_run_reports_failures(make_viewer_model, qtbot):
     assert ComponentsWidget._compute_layer_concentrations(odd, {}, 1) is None
 
 
-def test_concentration_reference_marker_follows_the_plot(
-    make_viewer_model, qtbot
-):
-    """The marker is one of the tab's artists: shown, hidden and cleared."""
-    viewer, parent, comp = _setup_concentration(make_viewer_model)
-    artists = comp._reference_artists
-    assert all(artist.get_visible() for artist in artists)
-    assert all(artist in comp.get_all_artists() for artist in artists)
-
-    comp.set_artists_visible(False)
-    assert not any(artist.get_visible() for artist in artists)
-
-    # Drawn while another tab is shown, it starts hidden.
-    parent.tab_widget.setCurrentIndex(0)
-    comp._update_reference_marker()
-    assert not any(a.get_visible() for a in comp._reference_artists)
-    parent.tab_widget.setCurrentWidget(comp)
-
-    comp.clear_artists()
-    assert comp._reference_artists == []
-
-    # No reference, no marker.
-    comp.reference_source_combo.setCurrentText(MANUAL_REFERENCE)
-    _type_reference(comp, "", "", "")
-    assert comp._reference_artists == []
-
-    # The label says the concentration when it is known.
-    _type_reference(comp, 2, 0.8, 0.3)
-    comp.reference_concentration_edit.setText("")
-    comp._update_reference_marker()
-    assert comp._reference_artists[1].get_text() == "Reference"
+def test_draw_components_overlay_draws_concentrations_as_a_line():
+    """Concentrations draw a plain line, never a fraction gradient."""
+    fig, ax = plt.subplots()
+    draw_components_overlay(
+        ax,
+        [0.9, 0.25],
+        [0.25, 0.43],
+        ["Free", "Bound"],
+        None,
+        ABSOLUTE_CONCENTRATION,
+        {
+            "show_labels": True,
+            "show_colormap_line": True,
+            "fractions_colormap": plt.get_cmap("jet")(np.linspace(0, 1, 8)),
+        },
+    )
+    assert not any(isinstance(c, LineCollection) for c in ax.collections)
+    assert not any(line.get_marker() == '*' for line in ax.lines)
+    plt.close(fig)
 
 
 def test_components_merge_rule_keeps_other_harmonics_of_the_reference():
@@ -7415,32 +7398,3 @@ def test_components_merge_rule_keeps_other_harmonics_of_the_reference():
         '1': {'g': 0.1, 's': 0.2},
         '2': {'g': 0.5, 's': 0.6},
     }
-
-
-def test_draw_components_overlay_marks_the_reference():
-    """The exported overlay draws the reference as the tab does."""
-    fig, ax = plt.subplots()
-    draw_components_overlay(
-        ax,
-        [0.9, 0.25],
-        [0.25, 0.43],
-        ["Free", "Bound"],
-        None,
-        ABSOLUTE_CONCENTRATION,
-        {
-            "reference_phasor": (0.8, 0.3),
-            "reference_label": "Reference (1 mM)",
-            "show_labels": True,
-            "show_colormap_line": True,
-            "fractions_colormap": plt.get_cmap("jet")(np.linspace(0, 1, 8)),
-        },
-    )
-    stars = [line for line in ax.lines if line.get_marker() == '*']
-    assert len(stars) == 1
-    assert stars[0].get_xydata().tolist() == [[0.8, 0.3]]
-    assert any(
-        text.get_text().strip() == "Reference (1 mM)" for text in ax.texts
-    )
-    # Concentrations draw a plain line, never a fraction gradient.
-    assert not any(isinstance(c, LineCollection) for c in ax.collections)
-    plt.close(fig)
