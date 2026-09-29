@@ -83,6 +83,7 @@ from ._utils import (
     apply_filter_and_threshold,
     compute_calibration_parameters,
     make_solid_contour_cmap,
+    normalize_legend_location,
     normalize_rgb,
     populate_colormap_combobox,
     rank_mask_candidates,
@@ -1055,6 +1056,8 @@ def default_group_config():
         "normalize": False,
         "central_tendency": "None",
         "show_legend": True,
+        "legend_placement": "inside",
+        "legend_position": "upper right",
         "white_background": False,
         "smooth_curves": True,
         "log_scale": False,
@@ -3752,6 +3755,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "central_tendency", "None"
             ),
             show_legend=self._group_config.get("show_legend", True),
+            legend_placement=self._group_config.get(
+                "legend_placement", "inside"
+            ),
+            legend_position=self._group_config.get(
+                "legend_position", "upper right"
+            ),
             log_scale=self._group_config.get("log_scale", False),
             bins=self._group_config.get("bins", 150),
             layer_labels=names,
@@ -3782,6 +3791,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                         dialog.central_tendency_combo.currentText()
                     ),
                     "show_legend": dialog.legend_checkbox.isChecked(),
+                    "legend_placement": dialog.get_legend_placement(),
+                    "legend_position": dialog.get_legend_position(),
                     "white_background": dialog.white_bg_checkbox.isChecked(),
                     "smooth_curves": dialog.smooth_checkbox.isChecked(),
                     "log_scale": dialog.log_scale_checkbox.isChecked(),
@@ -4749,6 +4760,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "normalize": stored.get("normalize", False),
             "central_tendency": stored.get("central_tendency", "None"),
             "show_legend": stored.get("show_legend", True),
+            "legend_placement": stored.get("legend_placement", "inside"),
+            "legend_position": stored.get("legend_position", "upper right"),
             "log_scale": stored.get("log_scale", False),
             "bins": int(stored.get("bins") or 150),
         }
@@ -8175,6 +8188,9 @@ def _new_export_histogram(config, label):
     hw._normalize = config.get("normalize", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)
+    hw._legend_placement, hw._legend_position = normalize_legend_location(
+        config.get("legend_placement"), config.get("legend_position")
+    )
     hw._log_scale = config.get("log_scale", False)
     hw.bins = int(config.get("bins") or hw.bins)
     hw.xlabel = label
@@ -8390,6 +8406,10 @@ def _store_plot_settings(layer, plot_settings, group_config=None):
             "normalize": group_config.get("normalize"),
             "central_tendency": group_config.get("central_tendency"),
             "show_legend": group_config.get("show_legend"),
+            "legend_placement": group_config.get("legend_placement", "inside"),
+            "legend_position": group_config.get(
+                "legend_position", "upper right"
+            ),
             "log_scale": group_config.get("log_scale", False),
             "bins": group_config.get("bins", 150),
         }
