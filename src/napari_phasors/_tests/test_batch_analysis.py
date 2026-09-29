@@ -28,6 +28,7 @@ from napari_phasors._batch_analysis import (
     _store_plot_settings,
     apply_pipeline,
     default_component_label_style,
+    default_group_config,
     match_extension,
     parse_harmonics,
     scan_folder,
@@ -2325,6 +2326,111 @@ def test_open_plot_group_dialog_round_trips_groups(
     assert widget._group_config["show_legend"] is False
     # Per-group contour styling is captured for the renderer.
     assert "contour_group_styles" in widget._group_config
+
+
+def test_histogram_settings_dialog_stores_the_legend_location(
+    qtbot, make_viewer_model, tmp_path, monkeypatch
+):
+    """The histogram settings dialog keeps where the legend was placed."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._utils import HistogramSettingsDialog
+
+    write_ome_tiff(str(tmp_path / "a.ome.tif"), _make_phasor_layer(name="a"))
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._input_folder = str(tmp_path)
+    widget._rescan()
+    widget.format_combobox.setCurrentIndex(
+        widget.format_combobox.findData(".ome.tif")
+    )
+    assert widget._group_config["legend_placement"] == "inside"
+    assert widget._group_config["legend_position"] == "upper right"
+
+    opened_on = []
+
+    def fake_exec(self):
+        opened_on.append(
+            (self.get_legend_placement(), self.get_legend_position())
+        )
+        self.legend_placement_combo.setCurrentIndex(
+            self.legend_placement_combo.findData("outside")
+        )
+        self.legend_position_combo.setCurrentIndex(
+            self.legend_position_combo.findData("bottom")
+        )
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, "exec", fake_exec)
+    widget._open_group_dialog()
+
+    assert widget._group_config["legend_placement"] == "outside"
+    assert widget._group_config["legend_position"] == "bottom"
+
+    # Reopening starts from the stored choice.
+    widget._open_group_dialog()
+    assert opened_on == [("inside", "upper right"), ("outside", "bottom")]
+
+
+def test_group_config_legend_location_survives_copy_settings(
+    qtbot, make_viewer_model
+):
+    """The legend location is stored with the layer and restored from it."""
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    layer = _make_phasor_layer()
+    plot_settings = {
+        "semi_circle": True,
+        "log_scale": False,
+        "white_background": False,
+        "colormap": "turbo",
+    }
+
+    config = default_group_config()
+    config.update(legend_placement="outside", legend_position="top")
+    _store_plot_settings(layer, plot_settings, config)
+    stored = layer.metadata["settings"]["batch_group_config"]
+    assert stored["legend_placement"] == "outside"
+    assert stored["legend_position"] == "top"
+
+    widget._apply_settings_to_ui(layer.metadata["settings"])
+    assert widget._group_config["legend_placement"] == "outside"
+    assert widget._group_config["legend_position"] == "top"
+
+    # Settings saved before the option existed use the default location.
+    _store_plot_settings(layer, plot_settings, {"mode": "Merged"})
+    del layer.metadata["settings"]["batch_group_config"]["show_legend"]
+    widget._apply_settings_to_ui(layer.metadata["settings"])
+    assert widget._group_config["legend_placement"] == "inside"
+    assert widget._group_config["legend_position"] == "upper right"
+
+
+def test_export_histogram_places_the_legend(qtbot):
+    """Batch histograms are drawn with the configured legend location."""
+    from napari_phasors._batch_analysis import (
+        _new_export_histogram,
+        default_group_config,
+    )
+
+    config = default_group_config()
+    hw = _new_export_histogram(config, "Lifetime")
+    assert (hw._legend_placement, hw._legend_position) == (
+        "inside",
+        "upper right",
+    )
+
+    config.update(legend_placement="outside", legend_position="bottom")
+    hw = _new_export_histogram(config, "Lifetime")
+    assert (hw._legend_placement, hw._legend_position) == (
+        "outside",
+        "bottom",
+    )
+
+    # A location that no longer exists falls back rather than failing.
+    config.update(legend_placement="outside", legend_position="lower left")
+    hw = _new_export_histogram(config, "Lifetime")
+    assert (hw._legend_placement, hw._legend_position) == ("outside", "right")
 
 
 # -- Round 6: clean export names + per-tab combined phasor plots -----------
