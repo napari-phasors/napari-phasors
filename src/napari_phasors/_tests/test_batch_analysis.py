@@ -3274,6 +3274,107 @@ def test_select_harmonic_arrays_falls_back_without_harmonics():
     assert np.array_equal(imag, np.zeros((2, 3)))
 
 
+def test_select_harmonic_arrays_single_layout_ignores_harmonic():
+    # A single-harmonic layout is returned as is, whatever is requested.
+    layer = _make_phasor_layer(harmonic=1)
+    g_array = layer.metadata["G"]
+    assert g_array.ndim == layer.data.ndim
+    real, _ = _select_harmonic_arrays(layer, 3)
+    assert real is g_array
+
+
+def test_select_harmonic_arrays_picks_requested_plane():
+    layer = _make_phasor_layer(harmonic=[1, 2])
+    real, imag = _select_harmonic_arrays(layer, 2)
+    assert real.shape == layer.data.shape
+    assert np.array_equal(real, layer.metadata["G"][1], equal_nan=True)
+    assert np.array_equal(imag, layer.metadata["S"][1], equal_nan=True)
+
+
+def test_select_harmonic_arrays_missing_harmonic_returns_none():
+    layer = _make_phasor_layer(harmonic=[1, 2])
+    assert layer.metadata["G"].ndim == layer.data.ndim + 1
+    assert _select_harmonic_arrays(layer, 3) == (None, None)
+
+
+def test_select_harmonic_arrays_stack_without_matching_plane():
+    layer = _plain_layer((2, 3))
+    layer.metadata["G"] = np.ones((2, 2, 3))
+    layer.metadata["S"] = np.zeros((2, 2, 3))
+    # Stacked planes with no harmonics to index them by.
+    assert _select_harmonic_arrays(layer, 1) == (None, None)
+    # Harmonics listing more entries than the stack holds planes.
+    layer.metadata["harmonics"] = [1, 2, 3]
+    assert _select_harmonic_arrays(layer, 3) == (None, None)
+    real, _ = _select_harmonic_arrays(layer, 2)
+    assert real.shape == (2, 3)
+
+
+def test_apply_analyses_skip_file_missing_harmonic():
+    # The file only holds harmonics 1 and 2; every per-file analysis asked
+    # for harmonic 3 skips it rather than computing on the whole stack.
+    layer = _make_phasor_layer(harmonic=[1, 2])
+    linear = {
+        "analysis_type": "linear",
+        "names": ["A", "B"],
+        "component_real": [0.1, 0.8],
+        "component_imag": [0.2, 0.3],
+        "harmonic": 3,
+    }
+    assert _apply_component_fraction(layer, linear) == []
+    fit = dict(
+        linear,
+        analysis_type="fit",
+        names=["A", "B", "C"],
+        component_real=[0.1, 0.5, 0.8],
+        component_imag=[0.2, 0.4, 0.3],
+    )
+    assert _apply_component_fraction(layer, fit) == []
+    multi_fit = {
+        "analysis_type": "fit",
+        "names": ["A", "B", "C", "D"],
+        "harmonics": [1, 3],
+        "component_real": [[0.1, 0.4, 0.7, 0.9], [0.05, 0.2, 0.4, 0.6]],
+        "component_imag": [[0.2, 0.4, 0.3, 0.1], [0.1, 0.25, 0.3, 0.2]],
+        "harmonic": 1,
+    }
+    assert _apply_component_fraction(layer, multi_fit) == []
+    mapping = {"output_type": "Phase", "frequency": 80.0, "harmonic": 3}
+    assert _apply_phasor_mapping(layer, mapping) == []
+    fret = {
+        "donor_lifetime": 2.0,
+        "frequency": 80.0,
+        "harmonic": 3,
+        "donor_background": 0.1,
+        "donor_fretting": 1.0,
+        "background_real": 0.0,
+        "background_imag": 0.0,
+    }
+    assert _apply_fret(layer, fret) == []
+    selection = {
+        "harmonic": 3,
+        "mode": "manual",
+        "cursors": [{"type": "circular", "g": 0.5, "s": 0.25, "radius": 1}],
+    }
+    assert _apply_selection(layer, selection) == []
+    assert _selection_statistics(layer, selection, None) == []
+
+
+def test_apply_pipeline_file_missing_harmonic_yields_no_outputs():
+    layer = _make_phasor_layer(harmonic=[1, 2])
+    pipeline = BatchPipeline(
+        mapping={"output_type": "Phase", "frequency": 80.0, "harmonic": 3},
+        components={
+            "analysis_type": "linear",
+            "names": ["A", "B"],
+            "component_real": [0.1, 0.8],
+            "component_imag": [0.2, 0.3],
+            "harmonic": 3,
+        },
+    )
+    assert apply_pipeline(layer, pipeline) == []
+
+
 def test_apply_component_fraction_no_data_returns_empty():
     dummy = np.zeros((1, 2))
     base = {
