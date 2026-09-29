@@ -17,6 +17,7 @@ from napari_phasors._tests.test_plotter import (
     assert_run_row_is_pinned,
     create_image_layer_with_phasors,
 )
+from napari_phasors._utils import analysis_layer_name
 from napari_phasors.plotter import PlotterWidget
 from napari_phasors.selection_tab import (
     ClickableFrame,
@@ -103,9 +104,9 @@ def test_selection_widget_with_layer_data(make_viewer_model, qtbot):
     widget.manual_selection_changed(manual_selection)
     assert widget.selection_id == "MANUAL SELECTION #1"
 
-    assert f"MANUAL SELECTION #1: {intensity_image_layer.name}" in [
-        layer.name for layer in viewer.layers
-    ]
+    assert analysis_layer_name(
+        "MANUAL SELECTION #1", intensity_image_layer.name
+    ) in [layer.name for layer in viewer.layers]
 
 
 def test_selection_id_property_getter(make_viewer_model, qtbot):
@@ -245,7 +246,36 @@ def test_create_phasors_selected_layer_with_data(
 
     assert mock_colormap_to_dict.call_count >= 1
     layer_names = [layer.name for layer in viewer.layers]
-    assert f"custom_selection: {intensity_image_layer.name}" in layer_names
+    assert (
+        analysis_layer_name("custom_selection", intensity_image_layer.name)
+        in layer_names
+    )
+
+
+@patch("napari_phasors.selection_tab.colormap_to_dict")
+def test_selection_layer_name_puts_selection_id_in_brackets(
+    mock_colormap_to_dict, make_viewer_model, qtbot
+):
+    """A selection layer is "<image> [<selection id>]", not "<id>: <image>"."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    assert intensity_image_layer.name == "FLIM data Intensity [Phasor]"
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    parent._colormap = Mock()
+    parent._colormap.N = 10
+    widget = parent.selection_tab
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    widget.manual_selection_changed(np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0]))
+    widget.selection_id = "custom_selection"
+    mock_colormap_to_dict.return_value = {1: [1, 0, 0], 2: [0, 1, 0]}
+
+    widget.create_phasors_selected_layer()
+
+    layer_names = [layer.name for layer in viewer.layers]
+    assert "FLIM data Intensity [custom_selection]" in layer_names
+    assert not any(n.startswith("custom_selection: ") for n in layer_names)
 
 
 def test_no_selection_processing_during_plot_update(make_viewer_model, qtbot):
@@ -1222,7 +1252,9 @@ def test_cursor_creates_labels_layer(make_viewer_model, qtbot):
 
     widget._add_cursor()
 
-    expected_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    expected_layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     assert expected_layer_name not in [ly.name for ly in viewer.layers]
 
     widget.calculate_button.click()
@@ -1248,7 +1280,9 @@ def test_cursor_combined_layer_mixed_shapes(make_viewer_model, qtbot):
     )
     widget._apply_selection()
 
-    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     layer_names = [ly.name for ly in viewer.layers]
     # Exactly one combined layer (no per-shape layers).
     assert layer_names.count(layer_name) == 1
@@ -1277,7 +1311,9 @@ def test_cursor_labels_layer_visibility(make_viewer_model, qtbot):
     cw._add_cursor()
     cw._apply_selection()
 
-    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     layer = viewer.layers[layer_name]
     assert layer.visible is True
 
@@ -1302,7 +1338,9 @@ def test_cursor_autoupdate_checkbox(make_viewer_model, qtbot):
     assert widget.calculate_button.isEnabled()
 
     widget._add_cursor()
-    expected_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    expected_layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     assert expected_layer_name not in [ly.name for ly in viewer.layers]
 
     widget.autoupdate_check.setChecked(True)
@@ -1326,7 +1364,9 @@ def test_cursor_calculate_button(make_viewer_model, qtbot):
     widget._add_cursor(g=0.5, s=0.3, radius=0.1)
     widget._add_cursor(g=0.6, s=0.4, radius=0.15)
 
-    expected_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    expected_layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     assert expected_layer_name not in [ly.name for ly in viewer.layers]
 
     widget.calculate_button.click()
@@ -1413,7 +1453,9 @@ def test_cursor_clear_all(make_viewer_model, qtbot):
 
     widget.autoupdate_check.setChecked(True)
     widget._add_cursor(g=0.5, s=0.5, radius=0.5)
-    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     assert layer_name in [ly.name for ly in viewer.layers]
 
     widget._clear_all_cursors()
@@ -1435,7 +1477,9 @@ def test_manual_selection_layers_hidden_in_cursor_mode(
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
     selection_widget.manual_selection_changed(manual_selection)
 
-    manual_layer_name = f"MANUAL SELECTION #1: {intensity_image_layer.name}"
+    manual_layer_name = analysis_layer_name(
+        "MANUAL SELECTION #1", intensity_image_layer.name
+    )
     manual_layer = viewer.layers[manual_layer_name]
     assert manual_layer.visible is True
 
@@ -2067,7 +2111,9 @@ def test_cursor_labels_layer_per_harmonic(make_viewer_model, qtbot):
     parent.harmonic_spinbox.setValue(1)
     widget._add_cursor(g=0.5, s=0.5, radius=0.5)
 
-    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     assert layer_name in [ly.name for ly in viewer.layers]
     assert np.count_nonzero(viewer.layers[layer_name].data) > 0
 
@@ -2361,7 +2407,9 @@ def test_automatic_clustering_apply_gmm(make_viewer_model, qtbot):
     assert widget.cluster_table.rowCount() == 3
     assert widget.clear_button.isEnabled()
 
-    layer_name = f"Cluster Selection: {intensity_image_layer.name}"
+    layer_name = analysis_layer_name(
+        "Cluster Selection", intensity_image_layer.name
+    )
     assert layer_name in [layer.name for layer in viewer.layers]
 
 
@@ -2563,8 +2611,12 @@ def test_labels_layer_visibility_on_tab_toggle(make_viewer_model, qtbot):
     widget.selection_mode_combobox.setCurrentText("Manual Selection")
     widget.manual_selection_changed(np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0]))
 
-    cursor_layer_name = f"Cursor Selection: {intensity_layer.name}"
-    man_layer_name = f"MANUAL SELECTION #1: {intensity_layer.name}"
+    cursor_layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_layer.name
+    )
+    man_layer_name = analysis_layer_name(
+        "MANUAL SELECTION #1", intensity_layer.name
+    )
 
     assert viewer.layers[man_layer_name].visible is True
     assert viewer.layers[cursor_layer_name].visible is False
@@ -2604,8 +2656,8 @@ def test_labels_layer_visibility_multi_layer_on_tab_toggle(
     widget.cursor_selection_widget._add_cursor()
     widget.cursor_selection_widget._apply_selection()
 
-    cursor1_name = f"Cursor Selection: {layer1.name}"
-    cursor2_name = f"Cursor Selection: {layer2.name}"
+    cursor1_name = analysis_layer_name("Cursor Selection", layer1.name)
+    cursor2_name = analysis_layer_name("Cursor Selection", layer2.name)
     assert cursor1_name in viewer.layers
     assert cursor2_name in viewer.layers
     assert viewer.layers[cursor1_name].visible is True
@@ -2623,8 +2675,8 @@ def test_labels_layer_visibility_multi_layer_on_tab_toggle(
     widget.selection_mode_combobox.setCurrentText("Manual Selection")
     widget.manual_selection_changed(np.array([1, 0] * 10))
 
-    man1_name = f"MANUAL SELECTION #1: {layer1.name}"
-    man2_name = f"MANUAL SELECTION #1: {layer2.name}"
+    man1_name = analysis_layer_name("MANUAL SELECTION #1", layer1.name)
+    man2_name = analysis_layer_name("MANUAL SELECTION #1", layer2.name)
     assert man1_name in viewer.layers
     assert man2_name in viewer.layers
     assert viewer.layers[man1_name].visible is True
@@ -2695,7 +2747,7 @@ def test_selection_widget_manual_overlay_and_selection_id(
     sel.manual_selection_changed(np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0]))
     sel.selection_id = "sel_a"
     sel.create_phasors_selected_layer()
-    overlay_name = f"sel_a: {layer.name}"
+    overlay_name = analysis_layer_name("sel_a", layer.name)
     assert overlay_name in [ly.name for ly in viewer.layers]
 
     sel._on_show_color_overlay(True)
@@ -2718,7 +2770,7 @@ def test_recreate_manual_selection_layer(make_viewer_model, qtbot):
     selection_map[0, 0] = 1
     sel._recreate_manual_selection_layer("stored_sel", selection_map)
 
-    name = f"stored_sel: {layer.name}"
+    name = analysis_layer_name("stored_sel", layer.name)
     assert name in [ly.name for ly in viewer.layers]
     recreated = viewer.layers[name]
     assert recreated.visible is False
@@ -2836,7 +2888,9 @@ def test_cursor_visibility_excludes_from_selection(make_viewer_model, qtbot):
     widget._add_cursor(g=0.5, s=0.5, radius=0.5)
     widget._add_cursor(g=0.4, s=0.4, radius=0.5)
 
-    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     labels_layer = viewer.layers[layer_name]
     # Both cursors present -> ids {0, 1, 2} possible.
     assert set(np.unique(labels_layer.data)) <= {0, 1, 2}
@@ -2875,7 +2929,9 @@ def test_cursor_visibility_overlap_logic(make_viewer_model, qtbot):
     widget._add_cursor(g=0.5, s=0.5, radius=0.6)
     widget._add_cursor(g=0.5, s=0.5, radius=0.6)
 
-    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     labels_layer = viewer.layers[layer_name]
     g, s = widget._layer_harmonic_arrays(intensity_image_layer, 1)
     cursor0_mask = widget._cursor_mask(widget._cursors[0], g, s)
@@ -2905,7 +2961,9 @@ def test_cursor_visibility_recompute_when_layer_exists(
     widget._add_cursor(g=0.5, s=0.5, radius=0.5)
     widget.calculate_button.click()
 
-    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     assert layer_name in [ly.name for ly in viewer.layers]
 
     # Hiding the only cursor removes the (now empty) selection layer.
@@ -2928,7 +2986,9 @@ def test_cursor_visibility_no_recompute_without_layer(
     widget = parent.selection_tab.cursor_selection_widget
 
     widget._add_cursor(g=0.5, s=0.5, radius=0.5)
-    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     assert layer_name not in [ly.name for ly in viewer.layers]
 
     widget._cursors[0]["visibility_button"].click()
@@ -3091,7 +3151,9 @@ def test_manual_selection_color_change(make_viewer_model, qtbot):
     assert np.isclose(rgba[2], 128 / 255.0, atol=1e-2)
 
     # Verify napari labels layer colormap
-    sel_layer = viewer.layers[f"MANUAL SELECTION #1: {intensity_layer.name}"]
+    sel_layer = viewer.layers[
+        analysis_layer_name("MANUAL SELECTION #1", intensity_layer.name)
+    ]
     assert 1 in sel_layer.colormap.color_dict
     layer_rgba = sel_layer.colormap.color_dict[1]
     assert np.isclose(layer_rgba[0], 255 / 255.0, atol=1e-2)
@@ -3124,7 +3186,9 @@ def test_manual_selection_toggle_visibility(make_viewer_model, qtbot):
     rgba = overlay_cmap(1)
     assert rgba[3] == 0.0
 
-    sel_layer = viewer.layers[f"MANUAL SELECTION #1: {intensity_layer.name}"]
+    sel_layer = viewer.layers[
+        analysis_layer_name("MANUAL SELECTION #1", intensity_layer.name)
+    ]
     assert sel_layer.colormap.color_dict[1][3] == 0.0
     assert sel1["count_label"].text() == "-"
     assert sel1["percentage_label"].text() == "-"
@@ -3456,7 +3520,9 @@ def test_manual_selection_statistics_and_labels_edge_cases(
     sel1 = widget._manual_selections[0]
     sel1["visible"] = False
     widget.create_phasors_selected_layer()
-    label_layer = viewer.layers[f"MANUAL SELECTION #1: {layer.name}"]
+    label_layer = viewer.layers[
+        analysis_layer_name("MANUAL SELECTION #1", layer.name)
+    ]
     assert label_layer.colormap.color_dict[1][3] == 0.0
 
     # Recreate manual selection layer with hidden selection and parent colormap
@@ -3464,7 +3530,9 @@ def test_manual_selection_statistics_and_labels_edge_cases(
     widget._recreate_manual_selection_layer(
         "MANUAL SELECTION #1", np.zeros_like(layer.data, dtype=np.uint32)
     )
-    recreated = viewer.layers[f"MANUAL SELECTION #1: {layer.name}"]
+    recreated = viewer.layers[
+        analysis_layer_name("MANUAL SELECTION #1", layer.name)
+    ]
     assert recreated.colormap.color_dict[1][3] == 0.0
 
 
@@ -3929,7 +3997,7 @@ def test_polar_cursor_color_change_recolors_labels_layer(
     cursor = widget._cursors[0]
     widget._apply_selection()
     labels_layer = viewer.layers[
-        f"Cursor Selection: {intensity_image_layer.name}"
+        analysis_layer_name("Cursor Selection", intensity_image_layer.name)
     ]
 
     cursor["color_button"].set_color(QColor(10, 200, 30))
@@ -3956,7 +4024,8 @@ def test_cursor_color_change_without_selection_skips_labels(
     cursor["color_button"].color_changed.emit(QColor(10, 200, 30))
     assert cursor["color"] == QColor(10, 200, 30)
     assert (
-        f"Cursor Selection: {intensity_image_layer.name}" not in viewer.layers
+        analysis_layer_name("Cursor Selection", intensity_image_layer.name)
+        not in viewer.layers
     )
 
     # A removed cursor's stale signal is ignored.

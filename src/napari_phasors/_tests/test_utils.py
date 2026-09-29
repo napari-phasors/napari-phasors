@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from matplotlib.colors import ListedColormap
 from phasorpy.filter import (
     phasor_filter_median,
@@ -14,13 +15,19 @@ from napari_phasors._synthetic_generator import (
     make_raw_flim_data,
 )
 from napari_phasors._utils import (
+    analysis_layer_name,
     apply_filter_and_threshold,
     colormap_to_dict,
+    component_analysis_label,
     extract_channel_label,
     extract_channel_suffix,
     format_phasor_layer_name,
+    is_component_fit_label,
     name_match_stem,
+    parse_component_analysis_label,
+    phasor_layer_base_name,
     rank_mask_candidates,
+    split_analysis_layer_name,
     threshold_li,
     threshold_otsu,
     threshold_yen,
@@ -797,3 +804,73 @@ def test_rank_mask_candidates_is_deterministic():
         "sample_a.png",
         "sample_b.png",
     ]
+
+
+def test_analysis_layer_name_replaces_phasor_tag():
+    """The analysis goes in the trailing brackets in place of [Phasor]."""
+    assert (
+        analysis_layer_name("FRET efficiency", "sample Intensity [Phasor]")
+        == "sample Intensity [FRET efficiency]"
+    )
+    assert (
+        analysis_layer_name("Phase", "sample Intensity: Channel 1 [Phasor]")
+        == "sample Intensity: Channel 1 [Phase]"
+    )
+
+
+def test_analysis_layer_name_source_without_phasor_tag():
+    """A renamed source without the tag just gets the analysis appended."""
+    assert analysis_layer_name("Phase", "my image") == "my image [Phase]"
+
+
+def test_analysis_layer_name_keeps_napari_duplicate_suffix():
+    """napari's trailing ' [1]' de-duplication suffix stays last."""
+    assert (
+        analysis_layer_name("Phase", "img Intensity [Phasor] [1]")
+        == "img Intensity [Phase] [1]"
+    )
+
+
+def test_split_analysis_layer_name_round_trip():
+    """split_analysis_layer_name inverts analysis_layer_name."""
+    source = "sample Intensity [Phasor]"
+    name = analysis_layer_name("(Linear Projection) Donor", source)
+    base, analysis = split_analysis_layer_name(name)
+    assert analysis == "(Linear Projection) Donor"
+    assert base == phasor_layer_base_name(source) == "sample Intensity"
+
+
+def test_split_analysis_layer_name_without_brackets():
+    """A name with no trailing bracketed label has no analysis."""
+    assert split_analysis_layer_name("plain") == ("plain", None)
+
+
+def test_phasor_layer_base_name():
+    """The [Phasor] tag (and only it) is stripped from a source name."""
+    assert phasor_layer_base_name("a Intensity [Phasor]") == "a Intensity"
+    assert phasor_layer_base_name("a Intensity [Phasor] [2]") == (
+        "a Intensity [2]"
+    )
+    assert phasor_layer_base_name("a [Phase]") == "a [Phase]"
+
+
+def test_component_analysis_label_round_trip():
+    """Linear-projection and fit labels parse back to count and name."""
+    linear = component_analysis_label("Donor")
+    fit = component_analysis_label("Acceptor", fit=True)
+    assert linear == "(Linear Projection) Donor"
+    assert fit == "(Component Fit) Acceptor"
+    assert parse_component_analysis_label(linear) == (
+        "Linear Projection",
+        "Donor",
+    )
+    assert parse_component_analysis_label(fit) == ("Component Fit", "Acceptor")
+    assert not is_component_fit_label(linear)
+    assert is_component_fit_label(fit)
+
+
+@pytest.mark.parametrize("label", [None, "", "Phase", "FRET efficiency"])
+def test_parse_component_analysis_label_rejects_other_labels(label):
+    """Non component labels are not mistaken for fraction layers."""
+    assert parse_component_analysis_label(label) is None
+    assert not is_component_fit_label(label)

@@ -24,7 +24,13 @@ from napari_phasors._tests.test_plotter import (
     assert_run_row_is_pinned,
     create_image_layer_with_phasors,
 )
-from napari_phasors._utils import StatisticsTableWidget
+from napari_phasors._utils import (
+    StatisticsTableWidget,
+    analysis_layer_name,
+    component_analysis_label,
+    is_component_fit_label,
+    split_analysis_layer_name,
+)
 from napari_phasors.components_tab import (
     COMPONENT_LABELS_TAG,
     LABELS_DOMINANT,
@@ -39,6 +45,18 @@ from napari_phasors.components_tab import (
     draw_fraction_histogram_overlay,
 )
 from napari_phasors.plotter import PlotterWidget
+
+
+def _lp_name(component, source):
+    """Default name of a Linear Projection fraction layer."""
+    return analysis_layer_name(component_analysis_label(component), source)
+
+
+def _fit_name(component, source):
+    """Default name of a Component Fit fraction layer."""
+    return analysis_layer_name(
+        component_analysis_label(component, fit=True), source
+    )
 
 
 def _setup_linear_projection(comp_widget):
@@ -1330,8 +1348,8 @@ def test_components_histogram_multi_layer_linear_projection(
     # Merged / Individual layers / Grouped display modes and per-row
     # statistics all work. Rows are named after the analysis fraction layers.
     expected_keys = {
-        f"{name1} fractions: layer_a",
-        f"{name1} fractions: layer_b",
+        _lp_name(name1, "layer_a"),
+        _lp_name(name1, "layer_b"),
     }
     assert set(comp_widget.histogram_widget._datasets.keys()) == expected_keys
 
@@ -1899,7 +1917,9 @@ def test_components_rename_is_applied_only_once_committed(
 
     # Committing the edit (Enter, or leaving the field) applies it everywhere.
     name_edit.editingFinished.emit()
-    assert comp_widget.comp1_fractions_layer.name.startswith("Free")
+    assert comp_widget.comp1_fractions_layer.name.endswith(
+        "[(Linear Projection) Free]"
+    )
     assert comp_widget._selected_histogram_components() == ["Free"]
 
     # Re-committing an unchanged name is a no-op.
@@ -2698,6 +2718,100 @@ def _setup_components(make_viewer_model, freq=80.0):
     return viewer, layer, parent, comp
 
 
+def test_linear_projection_layer_name_puts_analysis_in_brackets(
+    make_viewer_model, qtbot
+):
+    """The fraction layer is "<image> [(Linear Projection) <name>]"."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    assert layer.name == "FLIM data Intensity [Phasor]"
+    _setup_linear_projection(comp)
+
+    name1, _ = comp._linear_projection_component_names()
+    expected = f"FLIM data Intensity [(Linear Projection) {name1}]"
+    assert comp.comp1_fractions_layer.name == expected
+    assert expected in viewer.layers
+    assert f"{name1} fractions: {layer.name}" not in viewer.layers
+
+
+def test_linear_projection_layer_follows_component_rename(
+    make_viewer_model, qtbot
+):
+    """Renaming component 1 renames the layer inside the brackets."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+
+    comp.components[0].name_edit.setText("Donor")
+    comp._on_component_name_changed(0)
+
+    assert (
+        comp.comp1_fractions_layer.name
+        == "FLIM data Intensity [(Linear Projection) Donor]"
+    )
+
+
+def test_fraction_layers_follow_source_layer_rename(make_viewer_model, qtbot):
+    """Renaming the source keeps the bracketed analysis of its outputs."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    name1, _ = comp._linear_projection_component_names()
+
+    comp.rename_layer(layer.name, "renamed Intensity [Phasor]")
+
+    assert (
+        comp.comp1_fractions_layer.name
+        == f"renamed Intensity [(Linear Projection) {name1}]"
+    )
+
+
+def test_component_fit_layer_names_put_analysis_in_brackets(
+    make_viewer_model, qtbot
+):
+    """Every fit layer is "<image> [(Component Fit) <name>]"."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_component_fit(comp)
+
+    fit_names = sorted(
+        lyr.name
+        for lyr in viewer.layers
+        if is_component_fit_label(split_analysis_layer_name(lyr.name)[1])
+    )
+    assert fit_names == [
+        "FLIM data Intensity [(Component Fit) Component 1]",
+        "FLIM data Intensity [(Component Fit) Component 2]",
+    ]
+
+
+def test_linear_projection_and_fit_layer_names_do_not_collide(
+    make_viewer_model, qtbot
+):
+    """Both methods can keep their layers for the same image."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    _setup_component_fit(comp)
+
+    lp_name = _lp_name("Component 1", layer.name)
+    fit_name = _fit_name("Component 1", layer.name)
+    assert lp_name != fit_name
+    assert lp_name in viewer.layers
+    assert fit_name in viewer.layers
+
+
+def test_component_labels_layer_names_put_analysis_in_brackets(
+    make_viewer_model, qtbot
+):
+    """Labels layers are named "<image> [<component> filtered]"."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    assert (
+        comp._label_layer_name(layer.name, None)
+        == "FLIM data Intensity [Dominant component]"
+    )
+    assert (
+        comp._label_layer_name(layer.name, 0)
+        == "FLIM data Intensity [Component 1 filtered]"
+    )
+
+
 def _linear_projection_settings():
     return {
         "analysis_type": "Linear Projection",
@@ -3399,7 +3513,7 @@ def test_get_first_component_fraction_values_pools_multiple_layers(
     comp1_name = comp.components[0].name_edit.text().strip() or "Component 1"
     extra_layer = Image(
         np.array([[0.25, 0.75], [np.nan, 0.5]]),
-        name=f"{comp1_name} fractions: other_image",
+        name=_lp_name(comp1_name, "other_image"),
     )
     viewer.add_layer(extra_layer)
 
@@ -3424,7 +3538,7 @@ def test_get_first_component_fraction_values_skips_deselected_layers(
     viewer.add_layer(
         Image(
             np.array([[0.25, 0.75], [np.nan, 0.5]]),
-            name=f"{comp1_name} fractions: never_selected",
+            name=_lp_name(comp1_name, "never_selected"),
         )
     )
 
@@ -3500,12 +3614,12 @@ def test_find_and_reconnect_layer_expected_name(make_viewer_model, qtbot):
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
 
     fraction_layer = Image(
-        np.zeros((5, 5)), name="Component 1 fractions: img1"
+        np.zeros((5, 5)), name=_lp_name("Component 1", "img1")
     )
     viewer.add_layer(fraction_layer)
 
     comp._find_and_reconnect_layer(
-        "Component 1 fractions: img1", "Component 1", "img1", 0
+        _lp_name("Component 1", "img1"), "Component 1", "img1", 0
     )
 
     assert comp.comp1_fractions_layer is fraction_layer
@@ -3520,16 +3634,16 @@ def test_find_and_reconnect_layer_possible_names(make_viewer_model, qtbot):
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
 
     fraction_layer = Image(
-        np.zeros((5, 5)), name="Component 1 fractions: img2"
+        np.zeros((5, 5)), name=_lp_name("Component 1", "img2")
     )
     viewer.add_layer(fraction_layer)
 
     comp._find_and_reconnect_layer(
-        "Component 1 fractions: RENAMED", "Component 1", "img2", 0
+        _lp_name("Component 1", "RENAMED"), "Component 1", "img2", 0
     )
 
     assert comp.comp1_fractions_layer is fraction_layer
-    assert fraction_layer.name == "Component 1 fractions: RENAMED"
+    assert fraction_layer.name == _lp_name("Component 1", "RENAMED")
     assert _is_connected(
         fraction_layer.events.gamma, comp._on_colormap_changed
     )
@@ -3839,7 +3953,9 @@ def test_component_fit_rename_replaces_layers(make_viewer_model, qtbot):
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
     _setup_component_fit(comp)
     first_run = sorted(
-        lyr.name for lyr in viewer.layers if " fraction: " in lyr.name
+        lyr.name
+        for lyr in viewer.layers
+        if is_component_fit_label(split_analysis_layer_name(lyr.name)[1])
     )
     assert len(first_run) == 2
 
@@ -3850,7 +3966,9 @@ def test_component_fit_rename_replaces_layers(make_viewer_model, qtbot):
     comp._run_analysis()
 
     second_run = sorted(
-        lyr.name for lyr in viewer.layers if " fraction: " in lyr.name
+        lyr.name
+        for lyr in viewer.layers
+        if is_component_fit_label(split_analysis_layer_name(lyr.name)[1])
     )
     assert len(second_run) == 2, second_run
     assert all("Alpha" in n or "Beta" in n for n in second_run)
@@ -3919,7 +4037,9 @@ def test_source_rename_updates_fraction_tags(make_viewer_model, qtbot):
         tag = lyr.metadata['phasor_component_fraction']
         assert tag['source_layer'] == "renamed_source", (lyr.name, tag)
     # Default-named layer's name suffix followed the source rename too.
-    assert fracs[1].name.endswith(" fraction: renamed_source")
+    assert fracs[1].name == _fit_name("Component 2", "renamed_source"), fracs[
+        1
+    ].name
 
     # Re-run: the custom-named layer is still matched (no duplicate).
     comp.components[1].g_edit.setText("0.75")
@@ -3986,7 +4106,7 @@ def test_find_component_fraction_layer_paths(make_viewer_model, qtbot):
         comp._find_component_fraction_layer(layer.name, 0, "missing") is None
     )
     _setup_component_fit(comp)
-    default_name = f"Component 1 fraction: {layer.name}"
+    default_name = _fit_name("Component 1", layer.name)
     found = comp._find_component_fraction_layer(layer.name, 0, default_name)
     assert found is not None and found.name == default_name
     # Tag path: still found after a manual rename.
@@ -4031,8 +4151,8 @@ def test_component_fit_multi_layer_per_row_datasets(make_viewer_model, qtbot):
     _check_histogram_components(comp, ["Component 1"])
     comp.update_component_histogram()
     assert set(comp.histogram_widget._datasets.keys()) == {
-        "Component 1 fraction: img_a",
-        "Component 1 fraction: img_b",
+        _fit_name("Component 1", "img_a"),
+        _fit_name("Component 1", "img_b"),
     }
 
 
@@ -4056,8 +4176,8 @@ def test_linear_projection_second_component_per_row(make_viewer_model, qtbot):
     _check_histogram_components(comp, [name2])
     comp.update_component_histogram()
     assert set(comp.histogram_widget._datasets.keys()) == {
-        f"{name2} fractions: img_a",
-        f"{name2} fractions: img_b",
+        _lp_name(name2, "img_a"),
+        _lp_name(name2, "img_b"),
     }
 
 
@@ -4097,7 +4217,7 @@ def test_switch_to_linear_projection_hides_stale_component_fit(
     assert invert is True, "Component 2 should be the complementary fraction"
     only_layer = next(iter(fmap.values()))
     assert only_layer.metadata.get('phasor_component_fraction') is None
-    assert only_layer.name.startswith("Component 1 fractions: ")
+    assert only_layer.name == _lp_name("Component 1", layer.name)
 
 
 def _setup_analysed_layers(viewer, count=3):
@@ -4210,7 +4330,7 @@ def test_components_histogram_ignores_stale_fraction_layers_on_rerun(
     comp_widget._run_analysis()
 
     # Fraction layers of the deselected layers still exist in the viewer ...
-    assert f"{comp_name} fractions: img1" in viewer.layers
+    assert _lp_name(comp_name, "img1") in viewer.layers
     # ... but must not contribute to the histogram.
     assert sorted(
         comp_widget._get_fraction_layers_for_component(comp_name)
@@ -4225,14 +4345,14 @@ def test_components_fraction_layers_hidden_when_deselected(make_napari_viewer):
 
     _select_layers(parent, ["img0"])
 
-    assert viewer.layers[f"{comp_name} fractions: img0"].visible is True
-    assert viewer.layers[f"{comp_name} fractions: img1"].visible is False
-    assert viewer.layers[f"{comp_name} fractions: img2"].visible is False
+    assert viewer.layers[_lp_name(comp_name, "img0")].visible is True
+    assert viewer.layers[_lp_name(comp_name, "img1")].visible is False
+    assert viewer.layers[_lp_name(comp_name, "img2")].visible is False
 
     _select_layers(parent, ["img0", "img1", "img2"])
 
-    assert viewer.layers[f"{comp_name} fractions: img1"].visible is True
-    assert viewer.layers[f"{comp_name} fractions: img2"].visible is True
+    assert viewer.layers[_lp_name(comp_name, "img1")].visible is True
+    assert viewer.layers[_lp_name(comp_name, "img2")].visible is True
 
 
 def test_components_fraction_range_only_clips_selected_layers(
@@ -4242,12 +4362,12 @@ def test_components_fraction_range_only_clips_selected_layers(
     viewer = make_napari_viewer()
     parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
 
-    deselected = viewer.layers[f"{comp_name} fractions: img1"]
+    deselected = viewer.layers[_lp_name(comp_name, "img1")]
     untouched_data = deselected.data.copy()
 
     _select_layers(parent, ["img0"])
 
-    selected = viewer.layers[f"{comp_name} fractions: img0"]
+    selected = viewer.layers[_lp_name(comp_name, "img0")]
     selected_original = selected.data.copy()
 
     comp_widget._on_fraction_range_changed(0.2, 0.8)
@@ -4313,7 +4433,7 @@ def test_components_histogram_updates_from_debounced_selection_signal(
     assert sorted(
         comp_widget._get_fraction_layers_for_component(comp_name)
     ) == ["img0", "img1"]
-    assert viewer.layers[f"{comp_name} fractions: img2"].visible is False
+    assert viewer.layers[_lp_name(comp_name, "img2")].visible is False
 
 
 def test_components_individual_histogram_follows_real_popup_click(
@@ -4328,8 +4448,8 @@ def test_components_individual_histogram_follows_real_popup_click(
     histogram = comp.histogram_widget
     histogram.display_mode = "Individual layers"
     labels = [
-        f"{comp_name} fractions: img0",
-        f"{comp_name} fractions: img1",
+        _lp_name(comp_name, "img0"),
+        _lp_name(comp_name, "img1"),
     ]
     _assert_individual_histogram(histogram, labels)
 
@@ -4371,8 +4491,8 @@ def test_component_fit_individual_histogram_follows_primary_popup_click(
     histogram = comp.histogram_widget
     histogram.display_mode = "Individual layers"
     labels = [
-        f"{comp_name} fraction: img_a",
-        f"{comp_name} fraction: img_b",
+        _fit_name(comp_name, "img_a"),
+        _fit_name(comp_name, "img_b"),
     ]
     _assert_individual_histogram(histogram, labels)
 
@@ -5269,10 +5389,12 @@ def test_labels_layers_paint_one_layer_per_component(make_viewer_model):
     assert len(labels) == 2
     names = {lyr.name for lyr in labels}
     assert names == {
-        f"Component 1 filtered: {layer.name}",
-        f"Component 2 filtered: {layer.name}",
+        analysis_layer_name("Component 1 filtered", layer.name),
+        analysis_layer_name("Component 2 filtered", layer.name),
     }
-    first = viewer.layers[f"Component 1 filtered: {layer.name}"]
+    first = viewer.layers[
+        analysis_layer_name("Component 1 filtered", layer.name)
+    ]
     assert set(np.unique(first.data)) <= {0, 1}
     assert first.metadata[COMPONENT_LABELS_TAG]['source_layer'] == layer.name
     assert first.metadata[COMPONENT_LABELS_TAG]['component_index'] == 0
@@ -5299,7 +5421,9 @@ def test_a_single_labels_layer_names_the_dominant_component(
     labels = [lyr for lyr in viewer.layers if isinstance(lyr, Labels)]
     assert len(labels) == 1
     combined = labels[0]
-    assert combined.name == f"Dominant component: {layer.name}"
+    assert combined.name == analysis_layer_name(
+        "Dominant component", layer.name
+    )
     assert set(np.unique(combined.data)) <= {0, 1, 2}
     # Every measurable pixel belongs to one of the two components.
     assert combined.data.astype(bool).sum() == int(
@@ -5321,12 +5445,14 @@ def test_labels_layers_follow_renames(make_viewer_model):
     comp_widget.create_labels_checkbox.setChecked(True)
 
     _rename_component(comp_widget, 0, "Free NADH")
-    assert f"Free NADH filtered: {layer.name}" in viewer.layers
+    assert (
+        analysis_layer_name("Free NADH filtered", layer.name) in viewer.layers
+    )
 
     old_name = layer.name
     comp_widget.rename_layer(old_name, "renamed")
-    assert "Free NADH filtered: renamed" in viewer.layers
-    renamed = viewer.layers["Free NADH filtered: renamed"]
+    assert "renamed [Free NADH filtered]" in viewer.layers
+    renamed = viewer.layers["renamed [Free NADH filtered]"]
     assert renamed.metadata[COMPONENT_LABELS_TAG]['source_layer'] == "renamed"
     assert ("renamed", 0) in comp_widget._component_label_layers
     assert old_name not in comp_widget._reference_pixel_counts
@@ -5338,12 +5464,17 @@ def test_labels_layers_are_updated_in_place(make_viewer_model):
     parent, comp_widget, layer = _components_tab(viewer)
     _setup_linear_projection(comp_widget)
     comp_widget.create_labels_checkbox.setChecked(True)
-    first = viewer.layers[f"Component 1 filtered: {layer.name}"]
+    first = viewer.layers[
+        analysis_layer_name("Component 1 filtered", layer.name)
+    ]
     before = first.data.astype(bool).sum()
 
     _enable_fraction_filter(comp_widget, 0, 0.0, 0.2)
 
-    assert viewer.layers[f"Component 1 filtered: {layer.name}"] is first
+    assert (
+        viewer.layers[analysis_layer_name("Component 1 filtered", layer.name)]
+        is first
+    )
     assert first.data.astype(bool).sum() <= before
 
 
@@ -5374,7 +5505,9 @@ def test_a_component_labels_colour_can_be_picked(
     assert (
         mcolors.to_hex(comp_widget.components[0].dot.get_color()) == "#ff0000"
     )
-    painted = viewer.layers[f"Component 1 filtered: {layer.name}"]
+    painted = viewer.layers[
+        analysis_layer_name("Component 1 filtered", layer.name)
+    ]
     assert np.allclose(painted.colormap.color_dict[1], (1.0, 0.0, 0.0, 1.0))
     # Like a rename, the choice is a draft until the analysis runs...
     draft = comp_widget._read_component_settings(layer)['components']
@@ -6165,7 +6298,7 @@ def test_labels_layers_exclude_the_pixels_other_tabs_filtered(
     _setup_linear_projection(comp_widget)
     comp_widget.create_labels_checkbox.setChecked(True)
     combined_before = (
-        viewer.layers[f"Component 1 filtered: {layer.name}"]
+        viewer.layers[analysis_layer_name("Component 1 filtered", layer.name)]
         .data.astype(bool)
         .sum()
     )
@@ -6177,7 +6310,7 @@ def test_labels_layers_exclude_the_pixels_other_tabs_filtered(
     comp_widget._update_label_layers()
 
     after = (
-        viewer.layers[f"Component 1 filtered: {layer.name}"]
+        viewer.layers[analysis_layer_name("Component 1 filtered", layer.name)]
         .data.astype(bool)
         .sum()
     )

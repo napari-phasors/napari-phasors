@@ -2016,6 +2016,104 @@ def format_phasor_layer_name(
     return f"{name} [Phasor]"
 
 
+_PHASOR_TAG_RE = re.compile(r"\s*\[Phasor\](?P<dup>\s*\[\d+\])?$")
+_ANALYSIS_TAG_RE = re.compile(
+    r"^(?P<base>.*?)\s*\[(?P<label>[^\[\]]+)\](?P<dup>\s*\[\d+\])?$"
+)
+
+
+def analysis_layer_name(analysis: str, source_name: str) -> str:
+    """Return the name of a layer derived from a phasor layer by an analysis.
+
+    The analysis goes in the trailing square brackets, in place of the
+    ``[Phasor]`` tag of the source layer, so
+    ``analysis_layer_name("FRET efficiency", "s Intensity [Phasor]")`` is
+    ``"s Intensity [FRET efficiency]"``. A source that carries no
+    ``[Phasor]`` tag (a renamed layer) simply gets the tag appended.
+
+    Parameters
+    ----------
+    analysis : str
+        Analysis label, e.g. ``"FRET efficiency"`` or
+        ``"(Linear Projection) Donor"``.
+    source_name : str
+        Name of the phasor layer the result was computed from.
+
+    Returns
+    -------
+    str
+        Name of the derived layer.
+    """
+    match = _PHASOR_TAG_RE.search(source_name)
+    if match:
+        base = source_name[: match.start()]
+        dup = match.group("dup") or ""
+    else:
+        base, dup = source_name, ""
+    return f"{base} [{analysis}]{dup}"
+
+
+def split_analysis_layer_name(name: str) -> tuple[str, str | None]:
+    """Split a derived layer name into its source base name and analysis.
+
+    Inverse of :func:`analysis_layer_name`: the base is the source layer's
+    name without its trailing ``[Phasor]``, so it can be compared with
+    :func:`phasor_layer_base_name` of a candidate source layer.
+
+    Returns
+    -------
+    tuple of (str, str or None)
+        ``(base, analysis)``, or ``(name, None)`` when *name* has no
+        trailing bracketed label.
+    """
+    match = _ANALYSIS_TAG_RE.match(name)
+    if match is None:
+        return name, None
+    return match.group("base") + (match.group("dup") or ""), match.group(
+        "label"
+    )
+
+
+_COMPONENT_LABEL_RE = re.compile(
+    r"^\((?P<method>Linear Projection|Component Fit)\) (?P<name>.+)$"
+)
+
+
+def component_analysis_label(component_name: str, fit: bool = False) -> str:
+    """Return the bracket label of a component-analysis fraction layer.
+
+    ``component_analysis_label("Donor")`` is
+    ``"(Linear Projection) Donor"`` and, with ``fit=True``,
+    ``"(Component Fit) Donor"``. The component name is kept because a fit
+    yields one layer per component, and the method keeps the two methods'
+    layers apart.
+    """
+    method = "Component Fit" if fit else "Linear Projection"
+    return f"({method}) {component_name}"
+
+
+def parse_component_analysis_label(label: str | None):
+    """Return ``(method, component_name)`` or None if not a match."""
+    match = _COMPONENT_LABEL_RE.match(label or "")
+    if match is None:
+        return None
+    return match.group("method"), match.group("name")
+
+
+def is_component_fit_label(label: str | None) -> bool:
+    """Whether *label* is a component *fit* label (vs linear projection)."""
+    match = _COMPONENT_LABEL_RE.match(label or "")
+    return match is not None and match.group("method") == "Component Fit"
+
+
+def phasor_layer_base_name(name: str) -> str:
+    """Return *name* without its trailing ``[Phasor]`` tag (if any)."""
+    match = _PHASOR_TAG_RE.search(name)
+    if match is None:
+        return name
+    return name[: match.start()] + (match.group("dup") or "")
+
+
 def extract_channel_label(
     layer_name: str | None = None,
     metadata: dict | None = None,

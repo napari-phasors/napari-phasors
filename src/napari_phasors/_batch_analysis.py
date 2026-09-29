@@ -79,17 +79,21 @@ from ._utils import (
     HistogramSettingsDialog,
     HistogramWidget,
     PopoutWindowMixin,
+    analysis_layer_name,
     apply_calibration_correction,
     apply_filter_and_threshold,
+    component_analysis_label,
     compute_calibration_parameters,
     make_solid_contour_cmap,
     normalize_legend_location,
     normalize_rgb,
+    parse_component_analysis_label,
     populate_colormap_combobox,
     rank_mask_candidates,
     read_ome_tiff_settings,
     required_component_harmonics,
     resolve_colormap_by_name,
+    split_analysis_layer_name,
 )
 from ._writer import (
     export_layer_as_csv,
@@ -467,7 +471,9 @@ def _apply_component_fraction(layer, components):
         outputs = [
             _make_output_image(
                 fraction,
-                f"{names[0]} fraction: {layer.name}",
+                analysis_layer_name(
+                    component_analysis_label(names[0]), layer.name
+                ),
                 colormap=_cmap(0),
                 contrast_limits=contrast,
             )
@@ -478,7 +484,10 @@ def _apply_component_fraction(layer, components):
             outputs.append(
                 _make_output_image(
                     1.0 - np.asarray(fraction),
-                    f"{names[1]} fraction: {layer.name}",
+                    analysis_layer_name(
+                        component_analysis_label(names[1]),
+                        layer.name,
+                    ),
                     colormap=_reversed_colormap(_cmap(0)),
                     contrast_limits=contrast,
                 )
@@ -498,7 +507,10 @@ def _apply_component_fraction(layer, components):
         layers.append(
             _make_output_image(
                 fraction,
-                f"{name} fraction: {layer.name}",
+                analysis_layer_name(
+                    component_analysis_label(name, fit=True),
+                    layer.name,
+                ),
                 colormap=_cmap(index),
                 contrast_limits=contrast,
             )
@@ -588,7 +600,7 @@ def _apply_phasor_mapping(layer, mapping):
         layers.append(
             _make_output_image(
                 values,
-                f"{output_type}: {layer.name}",
+                analysis_layer_name(output_type, layer.name),
                 colormap=mapping.get("colormap"),
                 contrast_limits=mapping.get("contrast_limits"),
             )
@@ -624,7 +636,7 @@ def _apply_fret(layer, fret):
     fret_efficiency = phasor_nearest_neighbor(
         real, imag, neighbor_real, neighbor_imag, values=efficiencies
     )
-    name = f"FRET efficiency: {layer.name}"
+    name = analysis_layer_name("FRET efficiency", layer.name)
     return [
         _make_output_image(
             fret_efficiency,
@@ -679,7 +691,7 @@ def _apply_selection(layer, selection):
             color_dict[idx + 1] = _cursor_rgba(
                 None, idx, cluster.get("colors")
             )
-        name = f"Cluster selection: {layer.name}"
+        name = analysis_layer_name("Cluster selection", layer.name)
         return [_make_selection_labels(selection_map, name, color_dict)]
 
     cursors = selection["cursors"]
@@ -688,7 +700,7 @@ def _apply_selection(layer, selection):
         selection_map[_cursor_mask(real, imag, cursor)] = idx + 1
         color_dict[idx + 1] = _cursor_rgba(cursor.get("color"), idx)
 
-    name = f"Cursor selection: {layer.name}"
+    name = analysis_layer_name("Cursor selection", layer.name)
     return [_make_selection_labels(selection_map, name, color_dict)]
 
 
@@ -5578,32 +5590,35 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _subfolder_for_layer(self, layer_name):
         """Return the analysis-tab *key* that produced ``layer_name``."""
-        if "fraction: " in layer_name:
+        analysis = split_analysis_layer_name(layer_name)[1]
+        if parse_component_analysis_label(analysis) is not None:
             return "components"
-        elif any(
-            layer_name.startswith(f"{t}: ")
-            for t in [
-                "Phase",
-                "Modulation",
-                "Normal Lifetime",
-                "Apparent Phase Lifetime",
-                "Apparent Modulation Lifetime",
-            ]
+        if analysis in (
+            "Phase",
+            "Modulation",
+            "Normal Lifetime",
+            "Apparent Phase Lifetime",
+            "Apparent Modulation Lifetime",
         ):
             return "phasor_mapping"
-        elif layer_name.startswith("FRET efficiency: "):
+        if analysis == "FRET efficiency":
             return "fret"
-        elif layer_name.startswith(
-            ("Cursor selection: ", "Cluster selection: ")
-        ):
+        if analysis in ("Cursor selection", "Cluster selection"):
             return "selection"
         return None
 
     def _clean_layer_name(self, layer_name):
-        """Return *layer_name* without its trailing ``": <source>"`` suffix."""
-        if ": " in layer_name:
-            return layer_name.split(": ", 1)[0]
-        return layer_name
+        """Return the analysis label of *layer_name* (its bracketed tag).
+
+        A component-analysis layer yields ``"<component> fraction"``.
+        """
+        analysis = split_analysis_layer_name(layer_name)[1]
+        if analysis is None:
+            return layer_name
+        parsed = parse_component_analysis_label(analysis)
+        if parsed is not None:
+            return f"{parsed[1]} fraction"
+        return analysis
 
     def _emit_file_outputs(
         self,

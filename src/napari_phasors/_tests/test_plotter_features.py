@@ -6,10 +6,15 @@ import pytest
 from napari_phasors._tests.test_plotter import (  # noqa: E501
     create_image_layer_with_phasors,
 )
+from napari_phasors._utils import analysis_layer_name, component_analysis_label
 from napari_phasors.plotter import (
     PhasorCenterLayerSettingsDialog,
     PlotterWidget,
 )
+
+
+def _lp_name(component, source):
+    return analysis_layer_name(component_analysis_label(component), source)
 
 
 def test_home_button_clears_stored_zoom(make_viewer_model):
@@ -826,9 +831,9 @@ def test_update_layer_visibility_shows_selected_and_associated(
 
     # Analysis layers derived from each intensity layer.
     comp_a = viewer.add_image(
-        np.zeros((5, 5)), name="Component 1 fractions: imgA"
+        np.zeros((5, 5)), name=_lp_name("Component 1", "imgA")
     )
-    fret_b = viewer.add_image(np.zeros((5, 5)), name="FRET efficiency: imgB")
+    fret_b = viewer.add_image(np.zeros((5, 5)), name="imgB [FRET efficiency]")
 
     # Start from a mixed visibility state to exercise both directions.
     a.visible = False
@@ -871,8 +876,8 @@ def test_update_layer_visibility_leaves_unrelated_layers_untouched(
 
 
 def test_update_layer_visibility_longest_suffix_wins(make_viewer_model):
-    """When one intensity name is a suffix of another, the most specific
-    (longest) intensity name claims the analysis layer."""
+    """An analysis layer belongs only to the intensity layer whose name it
+    carries, even when another intensity name is a suffix of it."""
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
 
@@ -883,10 +888,10 @@ def test_update_layer_visibility_longest_suffix_wins(make_viewer_model):
     long.name = "other img"
     viewer.add_layer(long)
 
-    # Name ends with ": other img" which contains ": img" as well; the
-    # longer intensity name must win so this is associated with "other img".
+    # "other img" ends with "img", but the analysis layer is derived from
+    # "other img" only.
     analysis = viewer.add_image(
-        np.zeros((5, 5)), name="Component 1 fractions: other img"
+        np.zeros((5, 5)), name=_lp_name("Component 1", "other img")
     )
     analysis.visible = True
 
@@ -924,10 +929,10 @@ def test_update_grid_view_multi_layer_hides_associated_layers(
     viewer.add_layer(c)
 
     comp_a = viewer.add_image(
-        np.zeros((5, 5)), name="Component 1 fractions: imgA"
+        np.zeros((5, 5)), name=_lp_name("Component 1", "imgA")
     )
     comp_c = viewer.add_image(
-        np.zeros((5, 5)), name="Component 1 fractions: imgC"
+        np.zeros((5, 5)), name=_lp_name("Component 1", "imgC")
     )
     comp_c.visible = True
 

@@ -53,13 +53,16 @@ from ._utils import (
     CheckableComboBox,
     CurrentPageStackedWidget,
     HistogramWidget,
+    analysis_layer_name,
     analysis_section_stylesheet,
     create_settings_note_label,
     layer_colormap_from_settings,
     make_section,
     make_slider_spin_row,
+    phasor_layer_base_name,
     set_settings_note,
     setup_primary_button,
+    split_analysis_layer_name,
 )
 
 _FRET_OUTPUT_METADATA_KEY = 'phasor_fret_output'
@@ -2129,17 +2132,16 @@ class FretWidget(AutoUpdateMixin, QWidget):
         tag = layer.metadata.get(_FRET_OUTPUT_METADATA_KEY)
         if isinstance(tag, dict) and tag.get('source_layer'):
             return tag['source_layer']
-        prefix = "FRET efficiency: "
-        if layer.name.startswith(prefix):
-            source_name = layer.name[len(prefix) :]
-            if source_name in self.viewer.layers:
-                source_layer = self.viewer.layers[source_name]
+        base, analysis = split_analysis_layer_name(layer.name)
+        if analysis == "FRET efficiency":
+            for source_layer in self.viewer.layers:
                 if (
                     isinstance(source_layer, Image)
                     and 'G' in source_layer.metadata
                     and 'S' in source_layer.metadata
+                    and phasor_layer_base_name(source_layer.name) == base
                 ):
-                    return source_name
+                    return source_layer.name
         return None
 
     def _fret_output_layers(self, selected_only=False):
@@ -2251,8 +2253,8 @@ class FretWidget(AutoUpdateMixin, QWidget):
             is_tagged_match = (
                 isinstance(tag, dict) and tag.get('source_layer') == old_name
             )
-            is_legacy_match = (
-                output_layer.name == f"FRET efficiency: {old_name}"
+            is_legacy_match = output_layer.name == analysis_layer_name(
+                "FRET efficiency", old_name
             )
             if not is_tagged_match and not is_legacy_match:
                 continue
@@ -2260,8 +2262,10 @@ class FretWidget(AutoUpdateMixin, QWidget):
             output_layer.metadata[_FRET_OUTPUT_METADATA_KEY] = {
                 'source_layer': new_name
             }
-            if old_output_name == f"FRET efficiency: {old_name}":
-                output_layer.name = f"FRET efficiency: {new_name}"
+            if is_legacy_match:
+                output_layer.name = analysis_layer_name(
+                    "FRET efficiency", new_name
+                )
             if output_layer.name != old_output_name:
                 self.histogram_widget.rename_dataset(
                     old_output_name, output_layer.name
@@ -2876,7 +2880,9 @@ class FretWidget(AutoUpdateMixin, QWidget):
             if fret_efficiency is None:
                 continue
 
-            fret_layer_name = f"FRET efficiency: {layer.name}"
+            fret_layer_name = analysis_layer_name(
+                "FRET efficiency", layer.name
+            )
 
             fret_layer = existing_outputs.get(layer.name)
 

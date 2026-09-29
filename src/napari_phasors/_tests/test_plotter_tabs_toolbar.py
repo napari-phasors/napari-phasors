@@ -5,6 +5,7 @@ import numpy as np
 from napari_phasors._tests.test_plotter import (  # noqa: E501
     create_image_layer_with_phasors,
 )
+from napari_phasors._utils import analysis_layer_name
 from napari_phasors.plotter import (
     PlotterWidget,
 )
@@ -447,7 +448,9 @@ def test_selection_tab_mode_switching_integration(make_viewer_model):
     circular_widget._apply_selection()
 
     # Verify circular cursor layer exists (actual name is 'Cursor Selection:')
-    circular_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    circular_layer_name = analysis_layer_name(
+        "Cursor Selection", intensity_image_layer.name
+    )
     assert circular_layer_name in [layer.name for layer in viewer.layers]
     circular_layer = viewer.layers[circular_layer_name]
     assert circular_layer.visible is True
@@ -467,7 +470,9 @@ def test_selection_tab_mode_switching_integration(make_viewer_model):
     selection_widget.manual_selection_changed(manual_selection)
 
     # Verify manual selection layer exists and is visible (no 'Selection ' prefix)
-    manual_layer_name = f"MANUAL SELECTION #1: {intensity_image_layer.name}"
+    manual_layer_name = analysis_layer_name(
+        "MANUAL SELECTION #1", intensity_image_layer.name
+    )
     assert manual_layer_name in [layer.name for layer in viewer.layers]
     manual_layer = viewer.layers[manual_layer_name]
     assert manual_layer.visible is True

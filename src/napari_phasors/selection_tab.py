@@ -55,6 +55,7 @@ from ._settings_store import format_layer_list, settings_equal
 from ._utils import (
     CurrentPageStackedWidget,
     active_selection_region,
+    analysis_layer_name,
     analysis_section_stylesheet,
     colormap_to_dict,
     create_settings_note_label,
@@ -62,6 +63,7 @@ from ._utils import (
     make_slider_spin_row,
     set_settings_note,
     setup_primary_button,
+    split_analysis_layer_name,
 )
 
 #: Default outline of the cursors drawn on the phasor plot.
@@ -859,7 +861,7 @@ class SelectionWidget(QWidget):
         # Update colormap on existing labels layers
         if self.selection_id:
             for layer in self._get_selected_layers():
-                layer_name = f"{self.selection_id}: {layer.name}"
+                layer_name = analysis_layer_name(self.selection_id, layer.name)
                 sel_layer = self._find_phasors_layer_by_name(layer_name)
                 if sel_layer is not None:
                     sel_layer.colormap = DirectLabelColormap(
@@ -1044,9 +1046,10 @@ class SelectionWidget(QWidget):
                                 and self.selection_id != "None"
                             ):
                                 viewer_layer.visible = (
-                                    viewer_layer.name.startswith(
-                                        f"{self.selection_id}: "
-                                    )
+                                    split_analysis_layer_name(
+                                        viewer_layer.name
+                                    )[1]
+                                    == self.selection_id
                                 )
                             else:
                                 viewer_layer.visible = True
@@ -1195,7 +1198,9 @@ class SelectionWidget(QWidget):
 
         selected_layers = self._get_selected_layers()
         for layer in selected_layers:
-            selection_layer_name = f"{self.selection_id}: {layer.name}"
+            selection_layer_name = analysis_layer_name(
+                self.selection_id, layer.name
+            )
             selection_layer = self._find_phasors_layer_by_name(
                 selection_layer_name
             )
@@ -1277,7 +1282,9 @@ class SelectionWidget(QWidget):
                         i
                     )
                     if sel_id != "None":
-                        selection_layer_name = f"{sel_id}: {layer.name}"
+                        selection_layer_name = analysis_layer_name(
+                            sel_id, layer.name
+                        )
                         existing_layer = self._find_phasors_layer_by_name(
                             selection_layer_name
                         )
@@ -1296,7 +1303,7 @@ class SelectionWidget(QWidget):
                     i
                 )
                 if sel_id != "None" and sel_id != selection_id:
-                    other_layer_name = f"{sel_id}: {layer.name}"
+                    other_layer_name = analysis_layer_name(sel_id, layer.name)
                     other_layer = self._find_phasors_layer_by_name(
                         other_layer_name
                     )
@@ -1306,7 +1313,9 @@ class SelectionWidget(QWidget):
         # Show current selection for all layers
         need_to_create = False
         for layer in selected_layers:
-            selection_layer_name = f"{selection_id}: {layer.name}"
+            selection_layer_name = analysis_layer_name(
+                selection_id, layer.name
+            )
             selection_layer = self._find_phasors_layer_by_name(
                 selection_layer_name
             )
@@ -1731,7 +1740,7 @@ class SelectionWidget(QWidget):
             else:
                 selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
-            layer_name = f"{self.selection_id}: {layer.name}"
+            layer_name = analysis_layer_name(self.selection_id, layer.name)
 
             # Check if layer already exists, skip if it does
             existing_layer = self._find_phasors_layer_by_name(layer_name)
@@ -1764,7 +1773,9 @@ class SelectionWidget(QWidget):
         # Check if any layers need to be created
         need_creation = False
         for layer in selected_layers:
-            selection_layer_name = f"{self.selection_id}: {layer.name}"
+            selection_layer_name = analysis_layer_name(
+                self.selection_id, layer.name
+            )
             if self._find_phasors_layer_by_name(selection_layer_name) is None:
                 need_creation = True
                 break
@@ -1775,7 +1786,9 @@ class SelectionWidget(QWidget):
 
         # Update layer for each selected layer
         for layer in selected_layers:
-            selection_layer_name = f"{self.selection_id}: {layer.name}"
+            selection_layer_name = analysis_layer_name(
+                self.selection_id, layer.name
+            )
             existing_phasors_selected_layer = self._find_phasors_layer_by_name(
                 selection_layer_name
             )
@@ -1810,7 +1823,7 @@ class SelectionWidget(QWidget):
         if layer is None:
             return
 
-        layer_name = f"{selection_id}: {layer.name}"
+        layer_name = analysis_layer_name(selection_id, layer.name)
 
         if self._find_phasors_layer_by_name(layer_name):
             return
@@ -2588,7 +2601,7 @@ class AutomaticClusteringWidget(QWidget):
 
     def _create_or_update_labels_layer(self, image_layer, selection_map):
         """Create or update the labels layer for the cluster selection."""
-        layer_name = f"Cluster Selection: {image_layer.name}"
+        layer_name = analysis_layer_name("Cluster Selection", image_layer.name)
 
         color_dict = {None: (0, 0, 0, 0)}
         for idx, cluster in enumerate(self._clusters):
@@ -2781,7 +2794,7 @@ class CursorSelectionWidget(QWidget):
     parameters. Clicking a row — or dragging a cursor on the plot — selects
     it. The shape-specific parameter fields are shown or hidden dynamically
     based on the chosen shape. All cursors (regardless of shape) contribute
-    to a single combined ``Cursor Selection: <image>`` labels layer.
+    to a single combined ``<image> [Cursor Selection]`` labels layer.
 
     Parameters
     ----------
@@ -4184,7 +4197,7 @@ class CursorSelectionWidget(QWidget):
         if not selected_layers:
             return
         for layer in selected_layers:
-            layer_name = f"Cursor Selection: {layer.name}"
+            layer_name = analysis_layer_name("Cursor Selection", layer.name)
             for viewer_layer in list(self.viewer.layers):
                 if viewer_layer.name == layer_name:
                     self.viewer.layers.remove(viewer_layer)
@@ -4384,7 +4397,7 @@ class CursorSelectionWidget(QWidget):
         self, image_layer, selection_map, cursors_list
     ):
         """Create or update the combined cursor selection labels layer."""
-        layer_name = f"Cursor Selection: {image_layer.name}"
+        layer_name = analysis_layer_name("Cursor Selection", image_layer.name)
 
         color_dict = {None: (0, 0, 0, 0)}
         for idx, cursor in enumerate(cursors_list):
