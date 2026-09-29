@@ -7507,6 +7507,12 @@ class PlotterWidget(QWidget):
 
             self._mask_layers_by_id = mask_layers_by_id
 
+            # The Components tab lists the layers a concentration reference
+            # can be measured on.
+            components_tab = getattr(self, 'components_tab', None)
+            if components_tab is not None:
+                components_tab._refresh_reference_layer_choices()
+
             new_selected = self.get_selected_layer_names()
             new_primary = self.get_primary_layer_name()
             if (

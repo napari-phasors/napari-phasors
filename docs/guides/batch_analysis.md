@@ -252,10 +252,31 @@ equivalent and for the analysis-type concepts.
 
 | Parameter | Description |
 |---|---|
-| **Analysis type** | **Linear Projection** (two components) or **Component Fit** (multi-component fit). |
+| **Analysis type** | **Linear Projection** (two components), **Component Fit** (multi-component fit), or **Absolute Concentration** (two components, see below). |
 | **Frequency (MHz)** | Used to convert a typed lifetime into G/S coordinates. |
 | **Harmonic** | Harmonic whose component G/S locations are currently being edited. Fits with more than 3 components need locations at several harmonics: switch this selector and enter G/S for each required harmonic. |
 | **Component G/S locations** *(required)* | One row per component (**+ Add component**), each with a name, G, S, and an optional lifetime (ns) field that, when a value is entered, converts to G/S automatically. Each component also has its own fraction-image colormap. |
+
+### Concentration calibration
+
+Shown when **Analysis type** is **Absolute Concentration**; see
+{doc}`component_analysis` for the model and what the calibration solution
+needs. Each file gets a concentration image of the calibrated component, plus
+the other component's and the total when **Also export ... and total
+concentrations** is checked. Their histograms are labelled with the unit.
+
+| Parameter | Description |
+|---|---|
+| **Calibrated component** | The component the calibration solution is made of. |
+| **Reference solution** *(required)* | A layer of the calibration solution loaded in the viewer and processed like the files, measured when the batch starts at the **Harmonic** above; or **Manual values**. |
+| **Intensity**, **Phasor** | The reference's mean intensity and G/S. Read-only when measured on a layer; typed G/S are kept per harmonic. |
+| **Concentration** *(required)* | Known concentration of the calibration solution, and its unit. |
+| **Also export ... and total concentrations** | Also exports the other component's concentration and the total. |
+| **Brightness ratio** | Molecular brightness of the other component relative to the calibrated one. |
+
+**Copy settings…** from a layer analysed in the **Components** tab copies
+the calibration too, with the stored reference as manual values (or its layer,
+if it is open), and sets the harmonic the analysis ran at.
 
 ### Fraction images and phasor plot styling
 

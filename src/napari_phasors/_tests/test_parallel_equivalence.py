@@ -861,3 +861,74 @@ def test_components_analysis_matrix(
     sequential, parallel = both_ways(run)
     assert len(sequential) >= n_layers, f"{analysis} produced no fraction maps"
     assert_same(parallel, sequential, analysis)
+
+
+@pytest.mark.parametrize("brightness_ratio", (None, 1.5))
+@pytest.mark.parametrize("nan_fraction", (0.0, 0.3))
+def test_concentration_matrix(
+    force_split, split_spy, brightness_ratio, nan_fraction
+):
+    """Concentrations computed band by band are the same concentrations."""
+    from napari_phasors.components_tab import component_concentrations
+
+    rng = np.random.default_rng(9)
+    shape = (240, 48)
+    mean = rng.random(shape) * 100 + 1
+    real = rng.random(shape) * 0.5 + 0.2
+    imag = rng.random(shape) * 0.3 + 0.1
+    if nan_fraction:
+        real[rng.random(shape) < nan_fraction] = np.nan
+        imag[rng.random(shape) < nan_fraction] = np.nan
+
+    assert_identical_both_ways(
+        lambda: component_concentrations(
+            mean,
+            real,
+            imag,
+            [0.9, 0.25],
+            [0.25, 0.43],
+            (50.0, 0.8, 0.28),
+            2.0,
+            brightness_ratio,
+        ),
+        f"ratio={brightness_ratio}/nan={nan_fraction}",
+    )
+    assert split_spy["bands"] > 0
+
+
+@pytest.mark.parametrize("n_layers", (1, 3))
+def test_components_concentration_matrix(
+    force_split, make_viewer_model, n_layers
+):
+    """Concentration maps match whether the layers run in a pool."""
+    from napari_phasors.components_tab import ABSOLUTE_CONCENTRATION
+    from napari_phasors.plotter import PlotterWidget
+
+    def run():
+        viewer = make_viewer_model()
+        plotter = PlotterWidget(viewer)
+        sources = add_phasor_layers(viewer, n_layers)
+        select_layers(plotter, sources)
+        widget = plotter.components_tab
+        plotter.tab_widget.setCurrentWidget(widget)
+        widget.analysis_type_combo.setCurrentText(ABSOLUTE_CONCENTRATION)
+        for index, (g, s) in enumerate(((0.9, 0.25), (0.25, 0.43))):
+            widget.components[index].g_edit.setText(str(g))
+            widget.components[index].s_edit.setText(str(s))
+            widget._on_component_coords_changed(index)
+        for edit, value in (
+            (widget.reference_mean_edit, "50"),
+            (widget.reference_g_edit, "0.8"),
+            (widget.reference_s_edit, "0.28"),
+        ):
+            edit.setText(value)
+        widget.second_component_checkbox.setChecked(True)
+        widget.brightness_ratio_edit.setText("1.5")
+        widget._run_analysis()
+        result = analysis_layer_data(viewer, set(sources))
+        plotter.deleteLater()
+        return result
+
+    sequential, parallel = both_ways(run)
+    assert len(sequential) == 3 * n_layers, "no concentration maps"
+    assert_same(parallel, sequential, "absolute concentration")
