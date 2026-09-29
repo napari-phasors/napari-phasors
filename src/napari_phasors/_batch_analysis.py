@@ -472,7 +472,7 @@ def _apply_component_fraction(layer, components):
             _make_output_image(
                 fraction,
                 analysis_layer_name(
-                    component_analysis_label(len(names), names[0]), layer.name
+                    component_analysis_label(names[0]), layer.name
                 ),
                 colormap=_cmap(0),
                 contrast_limits=contrast,
@@ -485,7 +485,7 @@ def _apply_component_fraction(layer, components):
                 _make_output_image(
                     1.0 - np.asarray(fraction),
                     analysis_layer_name(
-                        component_analysis_label(len(names), names[1]),
+                        component_analysis_label(names[1]),
                         layer.name,
                     ),
                     colormap=_reversed_colormap(_cmap(0)),
@@ -508,7 +508,7 @@ def _apply_component_fraction(layer, components):
             _make_output_image(
                 fraction,
                 analysis_layer_name(
-                    component_analysis_label(len(names), name, fit=True),
+                    component_analysis_label(name, fit=True),
                     layer.name,
                 ),
                 colormap=_cmap(index),

@@ -14,7 +14,7 @@ from napari_phasors.plotter import (
 
 
 def _lp_name(component, source):
-    return analysis_layer_name(component_analysis_label(2, component), source)
+    return analysis_layer_name(component_analysis_label(component), source)
 
 
 def test_home_button_clears_stored_zoom(make_viewer_model):

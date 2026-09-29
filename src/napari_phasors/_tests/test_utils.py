@@ -834,9 +834,9 @@ def test_analysis_layer_name_keeps_napari_duplicate_suffix():
 def test_split_analysis_layer_name_round_trip():
     """split_analysis_layer_name inverts analysis_layer_name."""
     source = "sample Intensity [Phasor]"
-    name = analysis_layer_name("2 Component Analysis: Donor", source)
+    name = analysis_layer_name("(Linear Projection) Donor", source)
     base, analysis = split_analysis_layer_name(name)
-    assert analysis == "2 Component Analysis: Donor"
+    assert analysis == "(Linear Projection) Donor"
     assert base == phasor_layer_base_name(source) == "sample Intensity"
 
 
@@ -856,12 +856,15 @@ def test_phasor_layer_base_name():
 
 def test_component_analysis_label_round_trip():
     """Linear-projection and fit labels parse back to count and name."""
-    linear = component_analysis_label(2, "Donor")
-    fit = component_analysis_label(3, "Acceptor", fit=True)
-    assert linear == "2 Component Analysis: Donor"
-    assert fit == "3 Component Fit: Acceptor"
-    assert parse_component_analysis_label(linear) == (2, "Donor")
-    assert parse_component_analysis_label(fit) == (3, "Acceptor")
+    linear = component_analysis_label("Donor")
+    fit = component_analysis_label("Acceptor", fit=True)
+    assert linear == "(Linear Projection) Donor"
+    assert fit == "(Component Fit) Acceptor"
+    assert parse_component_analysis_label(linear) == (
+        "Linear Projection",
+        "Donor",
+    )
+    assert parse_component_analysis_label(fit) == ("Component Fit", "Acceptor")
     assert not is_component_fit_label(linear)
     assert is_component_fit_label(fit)
 

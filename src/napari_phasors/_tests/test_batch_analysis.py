@@ -522,7 +522,7 @@ def test_n_component_fit_pipeline():
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 3
     assert [lyr.name for lyr in extra_layers] == [
-        f"FLIM data Intensity [3 Component Fit: {name}]" for name in "ABC"
+        f"FLIM data Intensity [(Component Fit) {name}]" for name in "ABC"
     ]
 
 
@@ -559,7 +559,7 @@ def test_multiharmonic_component_fit_pipeline():
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 4
     assert all(
-        "Component Fit" in lyr.name
+        "(Component Fit)" in lyr.name
         and lyr.name.startswith("FLIM data Intensity [")
         for lyr in extra_layers
     )
@@ -3113,8 +3113,8 @@ def test_linear_projection_exports_both_fractions():
     outputs = _apply_component_fraction(layer, config)
     assert len(outputs) == 2
     assert [o.name for o in outputs] == [
-        "FLIM data Intensity [2 Component Analysis: A]",
-        "FLIM data Intensity [2 Component Analysis: B]",
+        "FLIM data Intensity [(Linear Projection) A]",
+        "FLIM data Intensity [(Linear Projection) B]",
     ]
     first = np.asarray(outputs[0].data)
     second = np.asarray(outputs[1].data)
@@ -4911,8 +4911,8 @@ def test_export_histogram_honours_log_scale_and_bins(qtbot, tmp_path):
 @pytest.mark.parametrize(
     ("layer_name", "tab", "label"),
     [
-        ("img [2 Component Analysis: Donor]", "components", "Donor fraction"),
-        ("img [3 Component Fit: A]", "components", "A fraction"),
+        ("img [(Linear Projection) Donor]", "components", "Donor fraction"),
+        ("img [(Component Fit) A]", "components", "A fraction"),
         ("img [Apparent Phase Lifetime]", "phasor_mapping", None),
         ("img [Phase]", "phasor_mapping", None),
         ("img [FRET efficiency]", "fret", None),

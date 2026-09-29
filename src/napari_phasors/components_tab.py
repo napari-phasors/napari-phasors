@@ -3668,7 +3668,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 continue
             new_layer_name = analysis_layer_name(
                 component_analysis_label(
-                    parsed[0], new_display, is_component_fit_label(label)
+                    new_display, is_component_fit_label(label)
                 ),
                 self._source_layer_name_for_base(base),
             )
@@ -3726,12 +3726,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         if layer_obj is None:
             return
 
-        n_components = parse_component_analysis_label(
-            split_analysis_layer_name(layer_obj.name)[1]
-        )[0]
         new_layer_name = analysis_layer_name(
-            component_analysis_label(n_components, new_display_name, fit),
-            source,
+            component_analysis_label(new_display_name, fit), source
         )
         if new_layer_name == layer_obj.name or (
             new_layer_name in self.viewer.layers
@@ -4790,7 +4786,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 name = comp.name_edit.text().strip() or f"Component {i + 1}"
 
                 # Check if layer name matches pattern for this component
-                # Pattern: "{source_layer} [N Component Analysis: {name}]"
+                # Pattern: "{source_layer} [({method}) {name}]"
                 parsed = self._parse_fraction_layer_name(layer_name)
                 if parsed is not None and parsed[1] == name:
                     return i
@@ -6717,27 +6713,17 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self._update_component_colors()
         self.draw_line_between_components()
 
-    def _component_analysis_count(self, fit=True):
-        """Return the number of components in the analysis."""
-        if not fit:
-            return 2
-        return sum(
-            1 for c in self.components if c is not None and c.dot is not None
-        )
-
     def _fraction_layer_name(self, component_name, source_name, fit=None):
         """Return the default name of a component's fraction layer.
 
         The analysis goes in the trailing brackets, e.g.
-        ``"<image> [2 Component Analysis: Donor]"``. ``fit`` picks the
+        ``"<image> [(Linear Projection) Donor]"``. ``fit`` picks the
         method (default: the current one).
         """
         if fit is None:
             fit = self.analysis_type != "Linear Projection"
         return analysis_layer_name(
-            component_analysis_label(
-                self._component_analysis_count(fit), component_name, fit
-            ),
+            component_analysis_label(component_name, fit),
             source_name,
         )
 
@@ -7323,8 +7309,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         """Return True if ``layer`` is a fraction layer of the current method.
 
         Component Fit layers carry the ``phasor_component_fraction`` tag and
-        use ``"<image> [N Component Fit: <comp>]"`` names; Linear Projection
-        layers are untagged and use ``"<image> [N Component Analysis: <comp>]"``.
+        use ``"<image> [(Component Fit) <comp>]"`` names; Linear Projection
+        layers are untagged and use ``"<image> [(Linear Projection) <comp>]"``.
         Filtering by the active ``analysis_type`` keeps the histogram selector
         showing only the current method's components, even when stale layers
         from the other method are still present in the viewer.
@@ -7582,7 +7568,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         invert : bool
             True when showing the Linear Projection second component, whose
             fraction is ``1 - first`` and has no layer of its own. In that
-            case a virtual ``"<image> [2 Component Analysis: <component>]"`` label is
+            case a virtual ``"<image> [(Linear Projection) <component>]"`` label is
             built, since the underlying layer belongs to the first component.
 
         Returns
@@ -7638,8 +7624,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         The histogram widget keys its group assignments and per-layer colors by
         dataset label. Switching the selected component relabels every dataset
-        (e.g. ``"img [2 Component Analysis: Component 1]"`` -> ``"img [2
-        Component Analysis: Component 2]"``), which would otherwise orphan those mappings and collapse every
+        (e.g. ``"img [(Linear Projection) Component 1]"`` -> ``"img
+        [(Linear Projection) Component 2]"``), which would otherwise orphan those mappings and collapse every
         dataset into the default group in Grouped mode. Remap the persisted
         state from the previously displayed labels to the new ones, keyed by the
         component and its source image, before feeding the new data.

@@ -2035,7 +2035,7 @@ def analysis_layer_name(analysis: str, source_name: str) -> str:
     ----------
     analysis : str
         Analysis label, e.g. ``"FRET efficiency"`` or
-        ``"2 Component Analysis"``.
+        ``"(Linear Projection) Donor"``.
     source_name : str
         Name of the phasor layer the result was computed from.
 
@@ -2075,37 +2075,35 @@ def split_analysis_layer_name(name: str) -> tuple[str, str | None]:
 
 
 _COMPONENT_LABEL_RE = re.compile(
-    r"^(?P<n>\d+) Component (?P<kind>Analysis|Fit): (?P<name>.+)$"
+    r"^\((?P<method>Linear Projection|Component Fit)\) (?P<name>.+)$"
 )
 
 
-def component_analysis_label(
-    n_components: int, component_name: str, fit: bool = False
-) -> str:
+def component_analysis_label(component_name: str, fit: bool = False) -> str:
     """Return the bracket label of a component-analysis fraction layer.
 
-    ``component_analysis_label(2, "Donor")`` is
-    ``"2 Component Analysis: Donor"`` (linear projection) and, with
-    ``fit=True``, ``"2 Component Fit: Donor"``. The component name is kept
-    because an analysis with several components yields one layer per
-    component, and the kind keeps the two methods' layers apart.
+    ``component_analysis_label("Donor")`` is
+    ``"(Linear Projection) Donor"`` and, with ``fit=True``,
+    ``"(Component Fit) Donor"``. The component name is kept because a fit
+    yields one layer per component, and the method keeps the two methods'
+    layers apart.
     """
-    kind = "Fit" if fit else "Analysis"
-    return f"{n_components} Component {kind}: {component_name}"
+    method = "Component Fit" if fit else "Linear Projection"
+    return f"({method}) {component_name}"
 
 
 def parse_component_analysis_label(label: str | None):
-    """Return ``(n_components, component_name)`` or None if not a match."""
+    """Return ``(method, component_name)`` or None if not a match."""
     match = _COMPONENT_LABEL_RE.match(label or "")
     if match is None:
         return None
-    return int(match.group("n")), match.group("name")
+    return match.group("method"), match.group("name")
 
 
 def is_component_fit_label(label: str | None) -> bool:
     """Whether *label* is a component *fit* label (vs linear projection)."""
     match = _COMPONENT_LABEL_RE.match(label or "")
-    return match is not None and match.group("kind") == "Fit"
+    return match is not None and match.group("method") == "Component Fit"
 
 
 def phasor_layer_base_name(name: str) -> str:

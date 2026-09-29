@@ -47,15 +47,15 @@ from napari_phasors.components_tab import (
 from napari_phasors.plotter import PlotterWidget
 
 
-def _lp_name(component, source, n=2):
+def _lp_name(component, source):
     """Default name of a Linear Projection fraction layer."""
-    return analysis_layer_name(component_analysis_label(n, component), source)
+    return analysis_layer_name(component_analysis_label(component), source)
 
 
-def _fit_name(component, source, n=2):
+def _fit_name(component, source):
     """Default name of a Component Fit fraction layer."""
     return analysis_layer_name(
-        component_analysis_label(n, component, fit=True), source
+        component_analysis_label(component, fit=True), source
     )
 
 
@@ -1918,7 +1918,7 @@ def test_components_rename_is_applied_only_once_committed(
     # Committing the edit (Enter, or leaving the field) applies it everywhere.
     name_edit.editingFinished.emit()
     assert comp_widget.comp1_fractions_layer.name.endswith(
-        "[2 Component Analysis: Free]"
+        "[(Linear Projection) Free]"
     )
     assert comp_widget._selected_histogram_components() == ["Free"]
 
@@ -2721,13 +2721,13 @@ def _setup_components(make_viewer_model, freq=80.0):
 def test_linear_projection_layer_name_puts_analysis_in_brackets(
     make_viewer_model, qtbot
 ):
-    """The fraction layer is "<image> [2 Component Analysis: <name>]"."""
+    """The fraction layer is "<image> [(Linear Projection) <name>]"."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
     assert layer.name == "FLIM data Intensity [Phasor]"
     _setup_linear_projection(comp)
 
     name1, _ = comp._linear_projection_component_names()
-    expected = f"FLIM data Intensity [2 Component Analysis: {name1}]"
+    expected = f"FLIM data Intensity [(Linear Projection) {name1}]"
     assert comp.comp1_fractions_layer.name == expected
     assert expected in viewer.layers
     assert f"{name1} fractions: {layer.name}" not in viewer.layers
@@ -2745,7 +2745,7 @@ def test_linear_projection_layer_follows_component_rename(
 
     assert (
         comp.comp1_fractions_layer.name
-        == "FLIM data Intensity [2 Component Analysis: Donor]"
+        == "FLIM data Intensity [(Linear Projection) Donor]"
     )
 
 
@@ -2759,14 +2759,14 @@ def test_fraction_layers_follow_source_layer_rename(make_viewer_model, qtbot):
 
     assert (
         comp.comp1_fractions_layer.name
-        == f"renamed Intensity [2 Component Analysis: {name1}]"
+        == f"renamed Intensity [(Linear Projection) {name1}]"
     )
 
 
 def test_component_fit_layer_names_put_analysis_in_brackets(
     make_viewer_model, qtbot
 ):
-    """Every fit layer is "<image> [N Component Fit: <name>]"."""
+    """Every fit layer is "<image> [(Component Fit) <name>]"."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
     _setup_component_fit(comp)
 
@@ -2776,8 +2776,8 @@ def test_component_fit_layer_names_put_analysis_in_brackets(
         if is_component_fit_label(split_analysis_layer_name(lyr.name)[1])
     )
     assert fit_names == [
-        "FLIM data Intensity [2 Component Fit: Component 1]",
-        "FLIM data Intensity [2 Component Fit: Component 2]",
+        "FLIM data Intensity [(Component Fit) Component 1]",
+        "FLIM data Intensity [(Component Fit) Component 2]",
     ]
 
 
