@@ -387,18 +387,27 @@ def _apply_image_mask(layer, mask, invert=False):
 
 
 def _select_harmonic_arrays(layer, harmonic):
-    """Return ``(real, imag)`` for ``harmonic`` from a layer's phasor data."""
+    """Return ``(real, imag)`` for ``harmonic`` from a layer's phasor data.
+
+    A single-harmonic layout (``G``/``S`` shaped like the image) is returned
+    as is. A multi-harmonic layout (``G``/``S`` stacked along a leading
+    harmonic axis) yields that harmonic's plane, or ``(None, None)`` when the
+    layer never computed it, so callers skip the file instead of computing on
+    the whole stack.
+    """
     g_array = layer.metadata.get("G")
     s_array = layer.metadata.get("S")
     if g_array is None or s_array is None:
         return None, None
+    if g_array.ndim <= layer.data.ndim:
+        return g_array, s_array
     harmonics = layer.metadata.get("harmonics")
-    if harmonics is not None:
-        harmonics_array = np.atleast_1d(harmonics)
-        idx = np.where(harmonics_array == harmonic)[0]
-        if g_array.ndim == layer.data.ndim + 1 and idx.size > 0:
-            return g_array[idx[0]], s_array[idx[0]]
-    return g_array, s_array
+    if harmonics is None:
+        return None, None
+    idx = np.where(np.atleast_1d(harmonics) == harmonic)[0]
+    if idx.size == 0 or idx[0] >= g_array.shape[0]:
+        return None, None
+    return g_array[idx[0]], s_array[idx[0]]
 
 
 def _apply_component_fraction(layer, components):
