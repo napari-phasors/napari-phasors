@@ -103,6 +103,7 @@ from ._utils import (
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
+    parse_component_analysis_label,
     phasor_storage_dtype,
     populate_colormap_combobox,
     rank_mask_candidates,
@@ -111,6 +112,7 @@ from ._utils import (
     save_groups_to_layer_metadata,
     set_phasor_storage_dtype,
     set_settings_note,
+    split_analysis_layer_name,
     split_items_by_group,
     unassigned_layer_labels,
     update_frequency_in_metadata,
@@ -7536,14 +7538,12 @@ class PlotterWidget(QWidget):
             )
         ):
             return True
-        name = layer.name
-        if " fractions: " in name or " fraction: " in name:
-            return True
-        if name.startswith("FRET efficiency: "):
-            return True
-        return any(
-            name.startswith(f"{output_type}: ")
-            for output_type in (
+        analysis = split_analysis_layer_name(layer.name)[1]
+        return (
+            parse_component_analysis_label(analysis) is not None
+            or analysis == "FRET efficiency"
+            or analysis
+            in (
                 "Phase",
                 "Modulation",
                 "Apparent Phase Lifetime",

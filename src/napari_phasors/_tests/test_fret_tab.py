@@ -20,6 +20,7 @@ from napari_phasors._tests.test_plotter import (
     assert_run_row_is_pinned,
     create_image_layer_with_phasors,
 )
+from napari_phasors._utils import analysis_layer_name
 from napari_phasors.fret_tab import draw_fret_trajectory_overlay
 from napari_phasors.plotter import PlotterWidget
 
@@ -356,7 +357,7 @@ def test_calculate_fret_efficiency_with_layer(make_viewer_model, qtbot):
     widget.calculate_fret_efficiency_button.click()
 
     # Check that a FRET layer was added
-    fret_layer_name = "FRET efficiency: test_layer"
+    fret_layer_name = "test_layer [FRET efficiency]"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
     assert widget.fret_layer is not None
 
@@ -454,7 +455,7 @@ def test_colormap_events(make_viewer_model, qtbot):
     # Calculate FRET efficiency to create the FRET layer
     widget.calculate_fret_efficiency_button.click()
 
-    fret_layer_name = "FRET efficiency: test_layer"
+    fret_layer_name = "test_layer [FRET efficiency]"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
 
     # Get the created FRET layer
@@ -586,7 +587,7 @@ def test_fret_widget_layer_replacement(make_viewer_model, qtbot):
     # Calculate FRET efficiency first time
     widget.calculate_fret_efficiency_button.click()
 
-    fret_layer_name = "FRET efficiency: test_layer"
+    fret_layer_name = "test_layer [FRET efficiency]"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
 
     # Count layers before second calculation
@@ -794,7 +795,7 @@ def test_fret_efficiency_calculation_with_harmonics(make_viewer_model, qtbot):
     widget._on_harmonic_changed()
     widget.calculate_fret_efficiency_button.click()
 
-    fret_layer_name_h1 = "FRET efficiency: test_layer"
+    fret_layer_name_h1 = "test_layer [FRET efficiency]"
     assert fret_layer_name_h1 in [layer.name for layer in viewer.layers]
     fret_data_h1 = viewer.layers[fret_layer_name_h1].data.copy()
 
@@ -834,7 +835,7 @@ def test_fret_efficiency_calculation_single_harmonic_layer(
     widget._on_harmonic_changed()
     widget.calculate_fret_efficiency_button.click()
 
-    fret_layer_name = "FRET efficiency: test_layer"
+    fret_layer_name = "test_layer [FRET efficiency]"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
     assert viewer.layers[fret_layer_name].data.shape == test_layer.data.shape
 
@@ -962,7 +963,7 @@ def test_calculate_fret_efficiency_invalid_inputs(
 
     assert len(viewer.layers) == initial_layer_count
 
-    fret_layer_name = "FRET efficiency: test_layer"
+    fret_layer_name = "test_layer [FRET efficiency]"
     assert fret_layer_name not in [layer.name for layer in viewer.layers]
 
     assert widget.fret_layer is None
@@ -2376,7 +2377,7 @@ def test_reconnect_existing_fret_layer_direct(make_viewer_model, qtbot):
     source_layer = create_image_layer_with_phasors()
     source_layer.name = layer_name
     viewer.add_layer(source_layer)
-    fret_layer_name = f"FRET efficiency: {layer_name}"
+    fret_layer_name = analysis_layer_name("FRET efficiency", layer_name)
     layer = Image(np.random.random((10, 10)), name=fret_layer_name)
     viewer.add_layer(layer)
 
@@ -2462,7 +2463,7 @@ def test_single_layer_histogram_named_after_fret_layer(
     widget.frequency_input.setText("80")
     widget.calculate_fret_efficiency_button.click()
 
-    fret_layer_name = "FRET efficiency: test_layer"
+    fret_layer_name = "test_layer [FRET efficiency]"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
     assert list(widget.histogram_widget._datasets.keys()) == [fret_layer_name]
 
@@ -2590,8 +2591,8 @@ def test_fret_histogram_follows_real_source_selection(
     viewer, parent, fret, _ = _setup_fret_selection_workflow(
         make_napari_viewer, qtbot
     )
-    output_a = "FRET efficiency: fret_a"
-    output_b = "FRET efficiency: fret_b"
+    output_a = "fret_a [FRET efficiency]"
+    output_b = "fret_b [FRET efficiency]"
     stats = parent.fret_statistics_dock_widget.layer_stats_table
 
     assert list(fret.histogram_widget._datasets) == [output_a, output_b]
@@ -2630,8 +2631,8 @@ def test_fret_range_only_changes_selected_outputs(make_napari_viewer, qtbot):
     viewer, parent, fret, _ = _setup_fret_selection_workflow(
         make_napari_viewer, qtbot
     )
-    output_a = viewer.layers["FRET efficiency: fret_a"]
-    output_b = viewer.layers["FRET efficiency: fret_b"]
+    output_a = viewer.layers["fret_a [FRET efficiency]"]
+    output_b = viewer.layers["fret_b [FRET efficiency]"]
     output_a_original = output_a.metadata['fret_data_original'].copy()
     output_b_before = output_b.data.copy()
     slider_max_before = fret.histogram_widget.range_slider.maximum()
@@ -2678,8 +2679,8 @@ def test_fret_empty_source_selection_clears_histogram(
     assert fret.histogram_widget.counts is None
     assert fret.histogram_widget._datasets == {}
     assert parent.fret_statistics_dock_widget.layer_stats_table.rowCount() == 0
-    assert viewer.layers["FRET efficiency: fret_a"].visible is False
-    assert viewer.layers["FRET efficiency: fret_b"].visible is False
+    assert viewer.layers["fret_a [FRET efficiency]"].visible is False
+    assert viewer.layers["fret_b [FRET efficiency]"].visible is False
 
 
 def test_fret_selection_clamps_disjoint_shared_range_to_new_output(
@@ -2689,7 +2690,7 @@ def test_fret_selection_clamps_disjoint_shared_range_to_new_output(
     viewer, parent, fret, _ = _setup_fret_selection_workflow(
         make_napari_viewer, qtbot
     )
-    output_b = viewer.layers["FRET efficiency: fret_b"]
+    output_b = viewer.layers["fret_b [FRET efficiency]"]
     replacement = np.linspace(0.6, 1.0, output_b.data.size).reshape(
         output_b.data.shape
     )
@@ -2712,14 +2713,14 @@ def test_fret_custom_output_name_survives_rerun_and_source_rename(
     viewer, _, fret, _ = _setup_fret_selection_workflow(
         make_napari_viewer, qtbot
     )
-    output = viewer.layers["FRET efficiency: fret_a"]
+    output = viewer.layers["fret_a [FRET efficiency]"]
     output.name = "Custom FRET result"
     output_id = id(output)
 
     fret.calculate_fret_efficiency()
 
     assert id(viewer.layers["Custom FRET result"]) == output_id
-    assert "FRET efficiency: fret_a" not in viewer.layers
+    assert "fret_a [FRET efficiency]" not in viewer.layers
     assert fret._fret_output_layers()['fret_a'] is output
 
     fret.rename_layer("fret_a", "fret_a_renamed")
@@ -2765,7 +2766,7 @@ def test_reconnect_existing_fret_layer_registers_output_once(
     viewer.add_layer(source)
     output = viewer.add_image(
         np.linspace(0.0, 1.0, 10).reshape(2, 5),
-        name="FRET efficiency: registered_source",
+        name="registered_source [FRET efficiency]",
     )
     parent = PlotterWidget(viewer)
     fret = parent.fret_tab
@@ -2787,7 +2788,7 @@ def test_fret_defensive_selection_saved_reconnect_and_canonical_rename(
     viewer.add_layer(source)
     output = viewer.add_image(
         np.linspace(0.0, 1.0, 10).reshape(2, 5),
-        name="FRET efficiency: legacy_fret_source",
+        name="legacy_fret_source [FRET efficiency]",
     )
     parent = PlotterWidget(viewer)
     fret = parent.fret_tab
@@ -2806,7 +2807,7 @@ def test_fret_defensive_selection_saved_reconnect_and_canonical_rename(
 
     fret.rename_layer("legacy_fret_source", "renamed_fret_source")
 
-    assert output.name == "FRET efficiency: renamed_fret_source"
+    assert output.name == "renamed_fret_source [FRET efficiency]"
     assert output.metadata['phasor_fret_output'] == {
         'source_layer': 'renamed_fret_source'
     }
@@ -3141,7 +3142,7 @@ def test_fret_filter_nans_the_phasor_coordinates_and_the_map(
     viewer = make_viewer_model()
     parent, widget, layer = _ready_fret_filter_widget(viewer)
 
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
+    output = viewer.layers[analysis_layer_name("FRET efficiency", layer.name)]
     efficiency = output.metadata['fret_data_original']
     median = float(np.nanmedian(efficiency))
     before = np.isnan(layer.metadata['G']).sum()
@@ -3154,7 +3155,7 @@ def test_fret_filter_nans_the_phasor_coordinates_and_the_map(
         == np.isnan(layer.metadata['G']).sum()
     )
 
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
+    output = viewer.layers[analysis_layer_name("FRET efficiency", layer.name)]
     assert np.isnan(output.data).any()
     survivors = output.data[np.isfinite(output.data)]
     assert survivors.min() >= median - 1e-9
@@ -3171,7 +3172,7 @@ def test_fret_filter_updates_the_histogram(make_viewer_model, qtbot):
         len(values) for values in widget.histogram_widget._datasets.values()
     )
 
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
+    output = viewer.layers[analysis_layer_name("FRET efficiency", layer.name)]
     median = float(np.nanmedian(output.metadata['fret_data_original']))
     _add_efficiency_filter(widget, median, 1.0)
 
@@ -3186,7 +3187,7 @@ def test_fret_filter_is_removable_and_reversible(make_viewer_model, qtbot):
     parent, widget, layer = _ready_fret_filter_widget(viewer)
     baseline = layer.metadata['G'].copy()
 
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
+    output = viewer.layers[analysis_layer_name("FRET efficiency", layer.name)]
     median = float(np.nanmedian(output.metadata['fret_data_original']))
     card = _add_efficiency_filter(widget, median, 1.0)
     assert np.isnan(layer.metadata['G']).any()
@@ -3208,7 +3209,7 @@ def test_fret_filter_reports_what_it_keeps(make_viewer_model, qtbot):
     """The card and the summary say how much of the image survives."""
     viewer = make_viewer_model()
     parent, widget, layer = _ready_fret_filter_widget(viewer)
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
+    output = viewer.layers[analysis_layer_name("FRET efficiency", layer.name)]
     median = float(np.nanmedian(output.metadata['fret_data_original']))
 
     card = _add_efficiency_filter(widget, median, 1.0)
@@ -3223,7 +3224,7 @@ def test_fret_filter_follows_a_changed_donor_trajectory(
     """Recalculating with a new donor lifetime re-points the criterion."""
     viewer = make_viewer_model()
     parent, widget, layer = _ready_fret_filter_widget(viewer)
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
+    output = viewer.layers[analysis_layer_name("FRET efficiency", layer.name)]
     median = float(np.nanmedian(output.metadata['fret_data_original']))
     _add_efficiency_filter(widget, median, 1.0)
 
@@ -3333,7 +3334,7 @@ def test_fret_apply_filter_stack_defaults_to_the_cards_on_screen(
     """Calling apply with no argument uses whatever the list currently holds."""
     viewer = make_viewer_model()
     parent, widget, layer = _ready_fret_filter_widget(viewer)
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
+    output = viewer.layers[analysis_layer_name("FRET efficiency", layer.name)]
     median = float(np.nanmedian(output.metadata['fret_data_original']))
 
     widget.filter_list.set_filters(
@@ -3408,3 +3409,20 @@ def test_fret_rerun_keeps_layer_colormap(make_viewer_model, qtbot):
     ]
     assert colormap_settings['colormap_name'] == 'magma'
     assert colormap_settings['gamma'] == pytest.approx(0.8)
+
+
+def test_fret_output_name_puts_analysis_in_brackets(make_viewer_model, qtbot):
+    """The FRET map replaces the source's [Phasor] tag with [FRET efficiency]."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_fret_filter_widget(
+        viewer, name="sample Intensity [Phasor]"
+    )
+
+    assert "sample Intensity [FRET efficiency]" in viewer.layers
+    assert "FRET efficiency: sample Intensity [Phasor]" not in viewer.layers
+
+    output = viewer.layers["sample Intensity [FRET efficiency]"]
+    assert widget._fret_output_source(output) == layer.name
+
+    widget.rename_layer(layer.name, "renamed Intensity [Phasor]")
+    assert output.name == "renamed Intensity [FRET efficiency]"

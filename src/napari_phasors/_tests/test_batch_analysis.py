@@ -520,7 +520,9 @@ def test_n_component_fit_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 3
-    assert all("fraction" in lyr.name for lyr in extra_layers)
+    assert [lyr.name for lyr in extra_layers] == [
+        f"FLIM data [3 Component Fit: {name}]" for name in "ABC"
+    ]
 
 
 def test_required_component_harmonics():
@@ -555,7 +557,10 @@ def test_multiharmonic_component_fit_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 4
-    assert all("fraction" in lyr.name for lyr in extra_layers)
+    assert all(
+        "Component Fit" in lyr.name and lyr.name.startswith("FLIM data [")
+        for lyr in extra_layers
+    )
 
 
 def test_collect_components_multiharmonic(qtbot, make_viewer_model):
@@ -615,7 +620,7 @@ def test_phasor_mapping_pipeline():
         )
         extra_layers = apply_pipeline(layer, pipeline)
         assert len(extra_layers) == 1
-        assert extra_layers[0].name.startswith(output_type)
+        assert extra_layers[0].name == f"FLIM data [{output_type}]"
         assert extra_layers[0].data.shape == layer.data.shape
 
 
@@ -634,7 +639,7 @@ def test_fret_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 1
-    assert extra_layers[0].name.startswith("FRET efficiency")
+    assert extra_layers[0].name == "FLIM data [FRET efficiency]"
     finite = extra_layers[0].data[np.isfinite(extra_layers[0].data)]
     assert np.all((finite >= 0) & (finite <= 1))
 
@@ -653,7 +658,7 @@ def test_selection_pipeline():
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 1
     selection = extra_layers[0]
-    assert selection.name.startswith("Cursor selection")
+    assert selection.name == "FLIM data [Cursor selection]"
     assert selection.data.shape == layer.data.shape
     # Labels are 0 (unselected) plus one id per cursor that matched.
     assert set(np.unique(selection.data)).issubset({0, 1, 2})
@@ -1459,7 +1464,7 @@ def test_selection_cluster_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 1
-    assert extra_layers[0].name.startswith("Cluster selection")
+    assert extra_layers[0].name == "FLIM data [Cluster selection]"
     assert extra_layers[0].data.shape == layer.data.shape
 
 
@@ -4693,3 +4698,23 @@ def test_export_histogram_honours_log_scale_and_bins(qtbot, tmp_path):
         log_scale=True,
     )
     assert path.exists()
+
+
+@pytest.mark.parametrize(
+    ("layer_name", "tab", "label"),
+    [
+        ("img [2 Component Analysis: Donor]", "components", "Donor fraction"),
+        ("img [3 Component Fit: A]", "components", "A fraction"),
+        ("img [Apparent Phase Lifetime]", "phasor_mapping", None),
+        ("img [Phase]", "phasor_mapping", None),
+        ("img [FRET efficiency]", "fret", None),
+        ("img [Cursor selection]", "selection", None),
+        ("img [Cluster selection]", "selection", None),
+        ("img [Phasor]", None, "Phasor"),
+    ],
+)
+def test_batch_output_layer_classification(layer_name, tab, label):
+    """The analysis tab and file label come from the bracketed analysis."""
+    assert BatchAnalysisWidget._subfolder_for_layer(None, layer_name) == tab
+    expected = label or layer_name[layer_name.index("[") + 1 : -1]
+    assert BatchAnalysisWidget._clean_layer_name(None, layer_name) == expected
