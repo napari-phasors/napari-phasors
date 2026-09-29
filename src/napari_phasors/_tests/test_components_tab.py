@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from matplotlib.collections import LineCollection
 from napari.layers import Image, Labels
+from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
 from phasorpy.component import phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy.QtCore import Qt
@@ -124,7 +125,6 @@ def test_components_widget_initialization_values(make_viewer_model, qtbot):
     assert comp_widget.component_line is None
     assert comp_widget.component_polygon is None
     assert comp_widget.comp1_fractions_layer is None
-    assert comp_widget.comp2_fractions_layer is None
     assert comp_widget.fraction_layers == []
     assert comp_widget.fractions_colormap is None
     assert comp_widget.colormap_contrast_limits is None
@@ -396,7 +396,6 @@ def test_components_widget_fraction_calculation_creates_both_layers(
 
     # Only comp1 fractions layer should be created (comp2 is no longer created)
     assert comp_widget.comp1_fractions_layer in viewer.layers
-    assert comp_widget.comp2_fractions_layer is None
 
     # Check data
     comp1_data = comp_widget.comp1_fractions_layer.data
@@ -448,9 +447,6 @@ def test_components_widget_colormap_change(make_viewer_model, qtbot):
 
     # Should be different from original
     assert not np.allclose(orig_comp1_colors, comp1_colors)
-
-    # comp2_fractions_layer should not exist
-    assert comp_widget.comp2_fractions_layer is None
 
 
 def test_components_widget_colormap_update_legacy(make_viewer_model, qtbot):
@@ -515,7 +511,6 @@ def test_components_widget_colormap_fallback_handling(
 
     # Should fall back to default colormaps without crashing
     assert comp_widget.comp1_fractions_layer.colormap is not None
-    assert comp_widget.comp2_fractions_layer is None
 
 
 def test_components_widget_visibility_toggle(make_viewer_model, qtbot):
@@ -2324,7 +2319,7 @@ def test_components_auto_placement_calculates_lifetime(
     comp_widget._on_component_coords_changed(0)
 
     # Trigger auto place for second component
-    comp_widget._auto_place_second_component()
+    comp_widget._auto_place_component_by_index(1)
 
     # The lifetime edit for Component 2 should not be empty and should have a valid lifetime
     comp2 = comp_widget.components[1]
@@ -2857,6 +2852,11 @@ def test_components_restore_ui_only_from_metadata(make_viewer_model, qtbot):
 
     assert comp.components[0].name_edit.text() == "Comp A"
     assert comp.components[1].name_edit.text() == "Comp B"
+    # Both components are drawn on the plot.
+    created = [
+        c for c in comp.components if c is not None and c.dot is not None
+    ]
+    assert len(created) == 2
     assert comp.label_color == "red"
     assert comp.label_bold is True
     assert comp.line_width == 2.0
@@ -2923,31 +2923,12 @@ def test_components_restore_line_and_histogram_overlay_settings(
     assert comp.label_color == "red"
 
 
-def test_components_restore_and_recreate_linear_projection(
-    make_viewer_model, qtbot
-):
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    layer.metadata["settings"][
-        "component_analysis"
-    ] = _linear_projection_settings()
-
-    comp._restore_and_recreate_components_from_metadata()
-
-    assert comp.components[0].name_edit.text() == "Comp A"
-    # Two components were recreated with dots.
-    created = [
-        c for c in comp.components if c is not None and c.dot is not None
-    ]
-    assert len(created) == 2
-
-
 def test_components_restore_no_component_analysis_is_noop(
     make_viewer_model, qtbot
 ):
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    # No 'component_analysis' key -> both restore methods return early.
+    # No 'component_analysis' key -> the restore returns early.
     comp._restore_components_ui_only_from_metadata()
-    comp._restore_and_recreate_components_from_metadata()
     assert len(comp.components) == 2
 
 
@@ -2976,12 +2957,8 @@ def test_components_reset_plot_settings_and_artists(make_viewer_model, qtbot):
 
 
 def test_components_pure_helpers(make_viewer_model, qtbot):
-    """Consolidated coverage of pure helper methods using a single widget
-    build: per-harmonic coordinate/harmonic helpers, inverted colormap, and
-    lifetime->phasor conversion."""
-    import numpy as np
-    from napari.utils.colormaps import Colormap
-
+    """Consolidated coverage of the per-harmonic coordinate and
+    harmonic-listing helpers using a single widget build."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
 
     # --- per-harmonic coordinate + harmonic-listing helpers ---
@@ -3001,26 +2978,6 @@ def test_components_pure_helpers(make_viewer_model, qtbot):
     g2, _, _ = comp._get_component_coords_for_harmonic(2)
     assert g2 == [0.4, 0.2]
     assert current in comp._get_harmonics_with_components()
-
-    # --- inverted colormap (name, reversed name, Colormap object) ---
-    assert comp._get_inverted_colormap("viridis") is not None
-    assert comp._get_inverted_colormap("viridis_r") is not None
-    assert (
-        comp._get_inverted_colormap(
-            Colormap(
-                colors=np.array([[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]]),
-                name="grayish",
-            )
-        )
-        is not None
-    )
-
-    # --- lifetime -> phasor (valid, non-numeric, missing frequency) ---
-    gg, ss = comp._compute_phasor_from_lifetime("2.0", harmonic=1)
-    assert gg is not None and ss is not None
-    assert comp._compute_phasor_from_lifetime("not-a-number") == (None, None)
-    layer.metadata["settings"].pop("frequency", None)
-    assert comp._compute_phasor_from_lifetime("2.0") == (None, None)
 
 
 def test_components_restore_on_layer_change_without_layer(
@@ -3252,88 +3209,6 @@ def test_components_teardown_and_restore_for_harmonic(
     assert comp.component_line is None
 
 
-def test_components_apply_saved_colormap_settings(make_viewer_model, qtbot):
-    """Apply saved colormap settings (name and explicit colours) to the
-    fraction layer."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp.components[0].g_edit.setText("0.2")
-    comp.components[0].s_edit.setText("0.1")
-    comp._on_component_coords_changed(0)
-    comp.components[1].g_edit.setText("0.8")
-    comp.components[1].s_edit.setText("0.5")
-    comp._on_component_coords_changed(1)
-    comp._run_analysis()
-    assert comp.comp1_fractions_layer is not None
-
-    # Saved as a named colormap.
-    comp._saved_colormap_name = "viridis"
-    comp._saved_colormap_colors = None
-    comp._saved_contrast_limits = (0.0, 1.0)
-    comp._apply_saved_colormap_settings()
-
-    # Saved as an explicit colour list.
-    comp._saved_colormap_colors = [[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]]
-    comp._saved_contrast_limits = [0.0, 1.0]
-    comp._apply_saved_colormap_settings()
-
-
-def test_components_recreate_variants_and_colormaps(make_viewer_model, qtbot):
-    """One widget, two recreate flows: Linear Projection with fraction-layer
-    colormap restore, then Component Fit (which also adds a 3rd component)."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    settings = layer.metadata["settings"]
-
-    # 1. Linear Projection recreate with per-component colormap settings.
-    settings["component_analysis"] = {
-        "analysis_type": "Linear Projection",
-        "last_analysis_harmonic": 1,
-        "components": {
-            "0": {
-                "name": "A",
-                "gs_harmonics": {
-                    "1": {
-                        "g": 0.6,
-                        "s": 0.3,
-                        "colormap_name": "viridis",
-                        "contrast_limits": [0.0, 1.0],
-                    }
-                },
-            },
-            "1": {
-                "name": "B",
-                "gs_harmonics": {
-                    "1": {
-                        "g": 0.3,
-                        "s": 0.2,
-                        "colormap_colors": [
-                            [0.0, 0.0, 0.0, 1.0],
-                            [1.0, 1.0, 1.0, 1.0],
-                        ],
-                        "contrast_limits": [0.1, 0.9],
-                    }
-                },
-            },
-        },
-        "line_settings": {"show_colormap_line": True, "line_width": 2.0},
-        "label_settings": {"fontsize": 11, "color": "red"},
-    }
-    comp._restore_and_recreate_components_from_metadata()
-    assert comp.comp1_fractions_layer is not None
-
-    # 2. Component Fit recreate with three components (adds a component).
-    settings["component_analysis"] = {
-        "analysis_type": "Component Fit",
-        "last_analysis_harmonic": 1,
-        "components": {
-            "0": {"name": "C0", "gs_harmonics": {"1": {"g": 0.2, "s": 0.1}}},
-            "1": {"name": "C1", "gs_harmonics": {"1": {"g": 0.5, "s": 0.3}}},
-            "2": {"name": "C2", "gs_harmonics": {"1": {"g": 0.8, "s": 0.5}}},
-        },
-    }
-    comp._restore_and_recreate_components_from_metadata()
-    assert len(comp.fraction_layers) == 3
-
-
 def test_components_widget_harmonics_none_fallback(make_viewer_model, qtbot):
     """Test component analysis when harmonics metadata is None (e.g. loaded .R64 files)."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
@@ -3512,33 +3387,6 @@ def test_center_fill_slider_paint_event_zero_span(qtbot):
     slider.grab()
 
 
-def test_restore_fraction_layer_colormaps_applies_gamma(
-    make_viewer_model, qtbot
-):
-    """Saved settings with a non-None gamma are applied to the fraction
-    layer by ``_restore_fraction_layer_colormaps``."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    _setup_linear_projection(comp)
-    assert comp.comp1_fractions_layer is not None
-
-    settings = {
-        "components": {
-            "0": {
-                "name": "Component 1",
-                "gs_harmonics": {
-                    "1": {
-                        "colormap_name": "viridis",
-                        "gamma": 2.0,
-                    }
-                },
-            }
-        }
-    }
-    comp._restore_fraction_layer_colormaps(settings, "1")
-
-    assert comp.comp1_fractions_layer.gamma == 2.0
-
-
 def test_on_color_button_clicked_updates_color_and_metadata(
     make_viewer_model, qtbot
 ):
@@ -3577,31 +3425,6 @@ def _is_connected(emitter, bound_method):
         if cb is bound_method:
             return True
     return False
-
-
-def test_apply_saved_colormap_settings_exception_reconnects_gamma(
-    make_viewer_model, qtbot
-):
-    """When applying saved colormap settings raises, the except-branch must
-    still reconnect the colormap/contrast_limits/gamma events."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    _setup_linear_projection(comp)
-    assert comp.comp1_fractions_layer is not None
-
-    # An invalid colormap name raises inside the try block, forcing the
-    # except branch (which re-connects the events) to run.
-    comp._saved_colormap_name = "not_a_real_colormap_xyz"
-    comp._saved_colormap_colors = None
-    comp._saved_contrast_limits = (0.0, 1.0)
-
-    comp._apply_saved_colormap_settings()
-
-    assert _is_connected(
-        comp.comp1_fractions_layer.events.gamma, comp._on_colormap_changed
-    )
-    assert _is_connected(
-        comp.comp1_fractions_layer.events.colormap, comp._on_colormap_changed
-    )
 
 
 def test_on_histogram_offset_changed_updates_metadata_and_redraws(
@@ -3824,17 +3647,6 @@ def test_find_and_reconnect_layer_possible_names(make_viewer_model, qtbot):
     assert _is_connected(
         fraction_layer.events.gamma, comp._on_colormap_changed
     )
-
-
-def test_get_inverted_colormap_name_fallback(make_viewer_model, qtbot):
-    """Non-standard colormap names without explicit colors fall back to the
-    ``_r``-suffix inversion convention (the fallback name is a literal
-    ``jet``/``jet_r`` pair keyed only off whether the input already ends in
-    ``_r``)."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    assert comp._get_inverted_colormap("zzz_not_a_real_colormap") == "jet_r"
-    assert comp._get_inverted_colormap("zzz_not_a_real_colormap_r") == "jet"
 
 
 def test_linear_projection_preserves_gamma_on_redisplay(
@@ -4846,13 +4658,12 @@ def test_linear_projection_for_layer_computes_its_own_fraction(
     comp_widget._run_analysis()
     comp_widget.comp1_fractions_layer = None
 
-    c1, c2 = comp_widget.components[0], comp_widget.components[1]
+    c1 = comp_widget.components[0]
     comp_widget._run_linear_projection_for_layer(
         layer,
         np.array([0.2, 0.8]),
         np.array([0.1, 0.5]),
         c1,
-        c2,
     )
 
     assert comp_widget.comp1_fractions_layer is not None
@@ -4866,13 +4677,12 @@ def test_linear_projection_for_layer_bails_out_when_it_cannot_compute(
     _, comp_widget, layer = _projection_widget(viewer)
     layer.metadata["G"] = None
 
-    c1, c2 = comp_widget.components[0], comp_widget.components[1]
+    c1 = comp_widget.components[0]
     comp_widget._run_linear_projection_for_layer(
         layer,
         np.array([0.2, 0.8]),
         np.array([0.1, 0.5]),
         c1,
-        c2,
     )
 
     assert comp_widget.comp1_fractions_layer is None
@@ -4925,7 +4735,7 @@ def test_component_fit_for_layer_prepares_and_fits_on_its_own(
     required = comp_widget._get_required_harmonics(len(active))
 
     comp_widget._run_component_fit_for_layer(
-        layer, active, len(active), harmonic, required
+        layer, len(active), harmonic, required
     )
 
     assert layer.metadata["settings"]["component_analysis"]
@@ -4952,7 +4762,7 @@ def test_component_fit_for_layer_reports_its_own_failure(
     )
 
     comp_widget._run_component_fit_for_layer(
-        layer, active, len(active), harmonic, required
+        layer, len(active), harmonic, required
     )
 
     assert any("solo boom" in message for message in errors)
@@ -4965,11 +4775,10 @@ def test_component_fit_for_layer_bails_out_when_preparation_fails(
     parent, comp_widget, layer = _fit_widget(make_viewer_model)
     comp_widget._run_analysis()
 
-    active = [c for c in comp_widget.components if c is not None and c.dot][:2]
     before = dict(layer.metadata["settings"]["component_analysis"])
 
     # Nothing was ever placed on harmonic 7, so there is nothing to fit.
-    comp_widget._run_component_fit_for_layer(layer, active, 2, 7, 1)
+    comp_widget._run_component_fit_for_layer(layer, 2, 7, 1)
 
     assert layer.metadata["settings"]["component_analysis"] == before
 
@@ -5217,7 +5026,7 @@ def test_components_remove_component_from_settings(make_viewer_model):
     assert len(stored) == 3
 
     # Remove with idx=None removes the last component
-    comp._remove_last_component_from_settings()
+    comp._remove_component_from_settings(None)
     settings = parent.layer_settings(layer)["component_analysis"]["components"]
     assert len(settings) == 1
     assert "0" in settings
@@ -5317,34 +5126,6 @@ def test_components_on_component_name_changed_label_update(make_viewer_model):
 
     comp.components[0].name_edit.setText("")
     comp.components[0].name_label.setText.assert_called_with("Component 1")
-
-
-def test_components_restore_and_recreate_metadata_removes_extra_components(
-    make_viewer_model,
-):
-    """Restoring full metadata with fewer components trims extra component cards."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    # Add up to 4 components
-    comp._add_component()
-    comp._add_component()
-    assert len(comp.components) == 4
-
-    # Settings only specify 2 components (indices 0 and 1)
-    layer.metadata.setdefault("settings", {})["component_analysis"] = {
-        "analysis_type": "Linear Projection",
-        "components": {
-            "0": {"name": "A", "gs_harmonics": {"1": {"g": 0.2, "s": 0.1}}},
-            "1": {"name": "B", "gs_harmonics": {"1": {"g": 0.8, "s": 0.5}}},
-        },
-    }
-
-    comp._restore_and_recreate_components_from_metadata()
-    # Should have shrunk from 4 down to 2 components
-    assert len(comp.components) == 2
-    assert comp.components[0].name_edit.text() == "A"
-    assert comp.components[1].name_edit.text() == "B"
-    assert comp._selected_component is comp.components[0]
 
 
 # --------------------------------------------------------- fraction filters
@@ -5874,6 +5655,137 @@ def test_a_card_colour_sets_its_end_of_the_linear_projection_colormap(
     colors = np.asarray(comp_widget.comp1_fractions_layer.colormap.colors)
     assert np.allclose(colors[0], (0, 1, 0, 1))
     assert np.allclose(colors[-1], (1, 0, 0, 1))
+
+
+def _stored_display(layer, index):
+    """Return how component *index*'s fraction layer is stored in *layer*."""
+    components = layer.metadata['settings']['component_analysis']
+    return components['components'][str(index)]['gs_harmonics']['1']
+
+
+def test_a_custom_colormap_on_a_component_fit_layer_is_stored_by_its_colours(
+    make_viewer_model, monkeypatch
+):
+    """A colormap only this session knows by name is kept as its colours."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_component_fit(comp_widget)
+    ramp = np.array([[0.0, 0.0, 0.0, 1.0], [1.0, 0.5, 0.0, 1.0]])
+
+    # A built-in colormap is stored by name.
+    comp_widget.fraction_layers[0].colormap = "viridis"
+    assert _stored_display(layer, 0)['colormap_name'] == "viridis"
+    assert _stored_display(layer, 0)['colormap_colors'] is None
+
+    # napari registers a colormap's name as soon as a layer uses it, but
+    # that name means nothing in another session.
+    comp_widget.fraction_layers[1].colormap = Colormap(
+        colors=ramp, name="fit ramp"
+    )
+    assert _stored_display(layer, 1)['colormap_name'] is None
+    assert np.allclose(_stored_display(layer, 1)['colormap_colors'], ramp)
+
+    # A layer recreated where the name is unknown gets the same colours.
+    viewer.layers.remove(comp_widget.fraction_layers[1])
+    monkeypatch.delitem(AVAILABLE_COLORMAPS, "fit ramp")
+    comp_widget._run_analysis()
+    fraction = comp_widget.fraction_layers[1]
+    assert np.allclose(fraction.colormap.colors, ramp)
+    assert np.allclose(_stored_display(layer, 1)['colormap_colors'], ramp)
+
+    # The recreated colormap's name is again this session's only, so a
+    # display change keeps storing the colours.
+    fraction.gamma = 0.5
+    assert _stored_display(layer, 1)['colormap_name'] is None
+    assert np.allclose(_stored_display(layer, 1)['colormap_colors'], ramp)
+    assert comp_widget.fraction_layers[0].colormap.name == "viridis"
+
+
+def test_a_custom_colormap_on_a_linear_projection_is_stored_by_its_colours(
+    make_viewer_model, monkeypatch
+):
+    """The Linear Projection layer keeps a custom colormap as its colours."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_linear_projection(comp_widget)
+    ramp = np.array([[0.0, 0.0, 1.0, 1.0], [1.0, 1.0, 0.0, 1.0]])
+
+    comp_widget.comp1_fractions_layer.colormap = Colormap(
+        colors=ramp, name="projection ramp"
+    )
+    assert _stored_display(layer, 0)['colormap_name'] is None
+    assert np.allclose(_stored_display(layer, 0)['colormap_colors'], ramp)
+
+    # A re-run keeps the layer's colormap and stores it the same way.
+    comp_widget._run_analysis()
+    fraction = comp_widget.comp1_fractions_layer
+    assert fraction.colormap.name == "projection ramp"
+    assert _stored_display(layer, 0)['colormap_name'] is None
+    assert np.allclose(_stored_display(layer, 0)['colormap_colors'], ramp)
+
+    # A layer recreated where the name is unknown gets the same colours.
+    viewer.layers.remove(fraction)
+    monkeypatch.delitem(AVAILABLE_COLORMAPS, "projection ramp")
+    comp_widget._run_analysis()
+    fraction = comp_widget.comp1_fractions_layer
+    assert np.allclose(fraction.colormap.colors, ramp)
+    assert np.allclose(comp_widget.fractions_colormap, ramp)
+
+
+@pytest.mark.parametrize(
+    ("analysis_type", "index", "default"),
+    [("Linear Projection", 0, "jet"), ("Component Fit", 1, "cyan")],
+)
+def test_a_colormap_name_this_session_lacks_falls_back_to_the_default(
+    make_viewer_model, analysis_type, index, default
+):
+    """A fraction layer stored under an unknown colormap name still loads.
+
+    Older versions stored some custom colormaps by a name napari only knew
+    in the session that used it, with no colours to rebuild it from.
+    """
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    components = {
+        str(i): {"name": f"C{i}", "gs_harmonics": {"1": {"g": g, "s": s}}}
+        for i, (g, s) in enumerate(((0.2, 0.1), (0.8, 0.5)))
+    }
+    components[str(index)]["gs_harmonics"]["1"].update(
+        colormap_name="lost ramp",
+        colormap_colors=None,
+        contrast_limits=[0.1, 0.9],
+        analysis_type=analysis_type,
+    )
+    layer.metadata["settings"]["component_analysis"] = {
+        "analysis_type": analysis_type,
+        "last_analysis_harmonic": 1,
+        "components": components,
+    }
+
+    def fraction():
+        if analysis_type == "Linear Projection":
+            return comp.comp1_fractions_layer
+        return comp.fraction_layers[index]
+
+    # Running the analysis on the reopened layer shows the default colormap
+    # with the stored contrast limits, says why, and stores the default in
+    # place of the unknown name.
+    comp._restore_components_ui_only_from_metadata()
+    with patch("napari_phasors.components_tab.show_warning") as warn:
+        comp._run_analysis()
+    assert fraction().colormap.name == default
+    assert tuple(fraction().contrast_limits) == pytest.approx((0.1, 0.9))
+    warn.assert_called_once()
+    assert "lost ramp" in warn.call_args[0][0]
+    stored = _stored_display(layer, index)
+    assert stored['colormap_name'] == default
+    assert stored['colormap_colors'] is None
+
+    # So a layer made again from the metadata has nothing to warn about.
+    viewer.layers.remove(fraction())
+    with patch("napari_phasors.components_tab.show_warning") as warn:
+        comp._run_analysis()
+    assert fraction().colormap.name == default
+    warn.assert_not_called()
 
 
 def test_the_swatch_opens_a_picker_and_a_cancelled_pick_changes_nothing(

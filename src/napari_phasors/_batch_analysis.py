@@ -85,6 +85,7 @@ from ._utils import (
     component_analysis_label,
     compute_calibration_parameters,
     make_solid_contour_cmap,
+    normalize_legend_location,
     normalize_rgb,
     parse_component_analysis_label,
     populate_colormap_combobox,
@@ -391,18 +392,27 @@ def _apply_image_mask(layer, mask, invert=False):
 
 
 def _select_harmonic_arrays(layer, harmonic):
-    """Return ``(real, imag)`` for ``harmonic`` from a layer's phasor data."""
+    """Return ``(real, imag)`` for ``harmonic`` from a layer's phasor data.
+
+    A single-harmonic layout (``G``/``S`` shaped like the image) is returned
+    as is. A multi-harmonic layout (``G``/``S`` stacked along a leading
+    harmonic axis) yields that harmonic's plane, or ``(None, None)`` when the
+    layer never computed it, so callers skip the file instead of computing on
+    the whole stack.
+    """
     g_array = layer.metadata.get("G")
     s_array = layer.metadata.get("S")
     if g_array is None or s_array is None:
         return None, None
+    if g_array.ndim <= layer.data.ndim:
+        return g_array, s_array
     harmonics = layer.metadata.get("harmonics")
-    if harmonics is not None:
-        harmonics_array = np.atleast_1d(harmonics)
-        idx = np.where(harmonics_array == harmonic)[0]
-        if g_array.ndim == layer.data.ndim + 1 and idx.size > 0:
-            return g_array[idx[0]], s_array[idx[0]]
-    return g_array, s_array
+    if harmonics is None:
+        return None, None
+    idx = np.where(np.atleast_1d(harmonics) == harmonic)[0]
+    if idx.size == 0 or idx[0] >= g_array.shape[0]:
+        return None, None
+    return g_array[idx[0]], s_array[idx[0]]
 
 
 def _apply_component_fraction(layer, components):
@@ -1067,6 +1077,8 @@ def default_group_config():
         "normalize": False,
         "central_tendency": "None",
         "show_legend": True,
+        "legend_placement": "inside",
+        "legend_position": "upper right",
         "white_background": False,
         "smooth_curves": True,
         "log_scale": False,
@@ -3764,6 +3776,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "central_tendency", "None"
             ),
             show_legend=self._group_config.get("show_legend", True),
+            legend_placement=self._group_config.get(
+                "legend_placement", "inside"
+            ),
+            legend_position=self._group_config.get(
+                "legend_position", "upper right"
+            ),
             log_scale=self._group_config.get("log_scale", False),
             bins=self._group_config.get("bins", 150),
             layer_labels=names,
@@ -3794,6 +3812,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                         dialog.central_tendency_combo.currentText()
                     ),
                     "show_legend": dialog.legend_checkbox.isChecked(),
+                    "legend_placement": dialog.get_legend_placement(),
+                    "legend_position": dialog.get_legend_position(),
                     "white_background": dialog.white_bg_checkbox.isChecked(),
                     "smooth_curves": dialog.smooth_checkbox.isChecked(),
                     "log_scale": dialog.log_scale_checkbox.isChecked(),
@@ -4761,6 +4781,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "normalize": stored.get("normalize", False),
             "central_tendency": stored.get("central_tendency", "None"),
             "show_legend": stored.get("show_legend", True),
+            "legend_placement": stored.get("legend_placement", "inside"),
+            "legend_position": stored.get("legend_position", "upper right"),
             "log_scale": stored.get("log_scale", False),
             "bins": int(stored.get("bins") or 150),
         }
@@ -8190,6 +8212,9 @@ def _new_export_histogram(config, label):
     hw._normalize = config.get("normalize", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)
+    hw._legend_placement, hw._legend_position = normalize_legend_location(
+        config.get("legend_placement"), config.get("legend_position")
+    )
     hw._log_scale = config.get("log_scale", False)
     hw.bins = int(config.get("bins") or hw.bins)
     hw.xlabel = label
@@ -8405,6 +8430,10 @@ def _store_plot_settings(layer, plot_settings, group_config=None):
             "normalize": group_config.get("normalize"),
             "central_tendency": group_config.get("central_tendency"),
             "show_legend": group_config.get("show_legend"),
+            "legend_placement": group_config.get("legend_placement", "inside"),
+            "legend_position": group_config.get(
+                "legend_position", "upper right"
+            ),
             "log_scale": group_config.get("log_scale", False),
             "bins": group_config.get("bins", 150),
         }
