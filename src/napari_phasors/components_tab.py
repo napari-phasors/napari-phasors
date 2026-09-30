@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
-import vispy.color
 from matplotlib.collections import LineCollection
 from matplotlib.colors import (
     LinearSegmentedColormap,
@@ -18,7 +17,10 @@ from matplotlib.patches import Polygon as MplPolygon
 from matplotlib.transforms import Affine2D
 from napari.layers import Image, Labels
 from napari.utils import DirectLabelColormap
-from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
+from napari.utils.colormaps import (
+    Colormap,
+    ensure_colormap,
+)
 from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.component import (
     phasor_component_concentration,
@@ -81,15 +83,22 @@ from ._parallel import parallel_map, parallel_rowwise
 from ._settings_store import replace_keyed_entries, settings_equal
 from ._timelapse import slice_datasets
 from ._utils import (
+    BUILTIN_COLORMAP_NAMES,
     AutoUpdateMixin,
     CheckableComboBox,
     HistogramWidget,
+    analysis_layer_name,
     analysis_section_stylesheet,
-    create_settings_note_label,
+    component_analysis_label,
+    concentration_analysis_label,
+    is_component_fit_label,
     make_section,
+    parse_component_analysis_label,
+    parse_concentration_analysis_label,
+    phasor_layer_base_name,
     required_component_harmonics,
-    set_settings_note,
     setup_primary_button,
+    split_analysis_layer_name,
 )
 from .selection_tab import ClickableFrame
 
@@ -129,7 +138,6 @@ COMPONENT_CARD_STYLE = (
     "  color: rgba(128, 128, 128, 0.25);"
     "}"
 )
-COMPONENT_ROW_STYLE = COMPONENT_CARD_STYLE
 
 # Tooltips for the per-card "Show in histogram and statistics" toggle.
 HISTOGRAM_TOGGLE_TOOLTIP = (
@@ -168,19 +176,9 @@ TOTAL_CONCENTRATION = "Total"
 CONCENTRATION_UNITS = ("mM", "µM", "nM", "M")
 #: Reference-solution entry meaning its intensity and phasor are typed in.
 MANUAL_REFERENCE = "Manual values"
-#: Separator between the quantity and the source image in the name of a
-#: concentration layer: ``"<component> concentration: <image>"``.
-CONCENTRATION_SEP = " concentration: "
 #: Default colormap of the total-concentration layers; each component's
 #: concentration uses that component's own colormap.
 TOTAL_CONCENTRATION_COLORMAP = "viridis"
-#: The colormaps napari (and matplotlib, which it falls back to) knows
-#: before any layer registers its own. A layer's colormap is registered
-#: under its name as soon as it is used, so only these names are sure to be
-#: found again in another session.
-_BUILTIN_COLORMAP_NAMES = frozenset(AVAILABLE_COLORMAPS) | frozenset(
-    plt.colormaps()
-)
 
 
 def _as_hex(color):
@@ -191,6 +189,46 @@ def _as_hex(color):
         return mcolors.to_hex(color)
     except (ValueError, TypeError):
         return None
+
+
+def _stored_colormap(colormap):
+    """Return the ``(name, colors)`` a fraction layer's colormap is stored as.
+
+    A colormap is stored by name only when that name is sure to mean the
+    same colours in another session; otherwise by its colours.
+    """
+    name = getattr(colormap, 'name', 'custom')
+    if name in BUILTIN_COLORMAP_NAMES:
+        return name, None
+    return None, np.asarray(colormap.colors).tolist()
+
+
+def _colormap_from_stored(entry, layer_name):
+    """Return the colormap stored in *entry*, or ``None`` if there is none.
+
+    ``None`` leaves the fraction layer *layer_name* with the analysis's
+    default colormap. So does a name napari cannot find, with a warning:
+    older versions stored some custom colormaps by a name only the session
+    that used it knew.
+    """
+    colors = entry.get('colormap_colors')
+    if colors is not None:
+        return Colormap(
+            colors=np.asarray(colors),
+            name=entry.get('colormap_name') or 'custom',
+        )
+    name = entry.get('colormap_name')
+    if not name:
+        return None
+    try:
+        ensure_colormap(name)
+    except KeyError:
+        show_warning(
+            f"Colormap '{name}' stored for '{layer_name}' is not available "
+            "in this session; the default colormap is shown instead."
+        )
+        return None
+    return name
 
 
 def _params_token(value):
@@ -697,7 +735,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self.component_polygon = None
         self.fraction_layers = []
         self.comp1_fractions_layer = None
-        self.comp2_fractions_layer = None
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
         self.fractions_gamma = 1.0
@@ -750,10 +787,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self.histogram_offset = 0.0
         self.histogram_alpha = 0.75
         self.component_histogram = None
-        # {source_image_name: histogram dataset label} for the component
-        # currently shown, used to carry group/color state across the label
-        # change when a different component is selected.
-        self._histogram_label_by_image = None
 
         # Flag to prevent clearing lifetime when updating from lifetime
         self._updating_from_lifetime = False
@@ -807,10 +840,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         #: ``{component index: '#rrggbb'}`` chosen by the user, overriding
         #: the colour the component is drawn in on the phasor plot.
         self._component_label_colors = {}
-        #: Names of the colormaps built from card colours. napari registers
-        #: a colormap's name once a layer uses it, so these would otherwise
-        #: pass for built-in colormaps and be stored without their colours.
-        self._card_colormap_names = set()
         #: Set while a card colour is applied to a fraction layer, so the
         #: colormap change it causes does not undo the card colour.
         self._applying_card_colormap = False
@@ -942,10 +971,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # Calibration inputs of an absolute concentration, only shown while
         # that method is selected.
         layout.addWidget(self._build_concentration_section())
-
-        # Caution shown when a run would replace other layers' settings.
-        self._settings_note = create_settings_note_label(self)
-        layout.addWidget(self._settings_note)
 
         # Calculate button (validated: greyed out until components are set)
         self.calculate_button = QPushButton("Run Component Analysis")
@@ -1483,10 +1508,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         self._sync_component_histogram_toggles()
 
-    def _auto_place_second_component(self):
-        """Auto-place Component 2 on the universal circle based on Component 1 and the data center."""
-        self._auto_place_component_by_index(1)
-
     def _auto_place_component_by_index(self, idx):
         """Auto-place Component idx on the universal circle based on the previous component and the data center."""
         if idx <= 0 or idx >= len(self.components):
@@ -1849,10 +1870,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 settings['components'] = new_comps
         self._component_settings_edited(layer)
 
-    def _remove_last_component_from_settings(self):
-        """Remove the last component from the settings in metadata."""
-        self._remove_component_from_settings(None)
-
     def _get_max_components(self):
         """Get maximum number of components based on available harmonics."""
         if self.parent_widget is None:
@@ -2195,28 +2212,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             return merged
 
         return merge
-
-    def _refresh_settings_note(self):
-        """Warn when a run would replace other selected layers' settings."""
-        note = getattr(self, '_settings_note', None)
-        if note is None or self._settings_store() is None:
-            return
-        if getattr(self, '_needs_update', False):
-            # The controls still show another layer; refreshed on restore.
-            return
-        block = self._read_component_settings(
-            self.parent_widget.get_primary_layer()
-        )
-        harmonic = getattr(self.parent_widget, 'harmonic', 1)
-        message = self.parent_widget.settings_overwrite_message(
-            'components_tab',
-            values={} if block is None else {'component_analysis': block},
-            merge={
-                'component_analysis': self._components_merge_rule([harmonic])
-            },
-            action="Running the analysis",
-        )
-        set_settings_note(note, [message])
 
     def _update_components_setting_in_metadata(self, key_path, value):
         """Keep an edited component setting as the primary's unsaved one."""
@@ -2604,16 +2599,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
             comp_name = comp_data.get('name') or f"Component {idx + 1}"
 
-            possible_layer_names = [
-                f"{comp_name} fractions: {self.current_image_layer_name}",  # Linear projection
-                f"{comp_name} fraction: {self.current_image_layer_name}",  # Component fit
-            ]
-
-            fraction_layer = None
-            for layer_name in possible_layer_names:
-                if layer_name in self.viewer.layers:
-                    fraction_layer = self.viewer.layers[layer_name]
-                    break
+            fraction_layer = self._find_fraction_layer_in_viewer(
+                comp_name, self.current_image_layer_name
+            )
 
             if fraction_layer is None:
                 continue
@@ -3272,81 +3260,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-    def _apply_saved_colormap_settings(self):
-        """Apply saved colormap settings to fraction layers if they exist."""
-        if self.comp1_fractions_layer is not None and hasattr(
-            self, '_saved_colormap_name'
-        ):
-
-            try:
-                self.comp1_fractions_layer.events.colormap.disconnect(
-                    self._on_colormap_changed
-                )
-                self.comp1_fractions_layer.events.contrast_limits.disconnect(
-                    self._on_contrast_limits_changed
-                )
-                self.comp1_fractions_layer.events.gamma.disconnect(
-                    self._on_colormap_changed
-                )
-
-                if self._saved_colormap_colors is not None:
-                    from napari.utils.colormaps import Colormap
-
-                    if isinstance(self._saved_colormap_colors, list):
-                        saved_colors = np.array(self._saved_colormap_colors)
-                    else:
-                        saved_colors = self._saved_colormap_colors
-
-                    saved_colormap = Colormap(
-                        colors=saved_colors, name="saved_custom"
-                    )
-                    self.comp1_fractions_layer.colormap = saved_colormap
-                else:
-                    self.comp1_fractions_layer.colormap = (
-                        self._saved_colormap_name
-                    )
-
-                if isinstance(self._saved_contrast_limits, list):
-                    saved_limits = tuple(self._saved_contrast_limits)
-                else:
-                    saved_limits = self._saved_contrast_limits
-
-                self.comp1_fractions_layer.contrast_limits = saved_limits
-
-                self.fractions_colormap = (
-                    self.comp1_fractions_layer.colormap.colors
-                )
-                self.colormap_contrast_limits = (
-                    self.comp1_fractions_layer.contrast_limits
-                )
-
-                self.comp1_fractions_layer.events.colormap.connect(
-                    self._on_colormap_changed
-                )
-                self.comp1_fractions_layer.events.contrast_limits.connect(
-                    self._on_contrast_limits_changed
-                )
-                self.comp1_fractions_layer.events.gamma.connect(
-                    self._on_colormap_changed
-                )
-
-                self.draw_line_between_components()
-
-            except Exception as e:  # noqa: BLE001
-                print(f"Error applying saved colormap settings: {e}")
-                try:
-                    self.comp1_fractions_layer.events.colormap.connect(
-                        self._on_colormap_changed
-                    )
-                    self.comp1_fractions_layer.events.contrast_limits.connect(
-                        self._on_contrast_limits_changed
-                    )
-                    self.comp1_fractions_layer.events.gamma.connect(
-                        self._on_colormap_changed
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-
     def get_all_artists(self):
         """Get all matplotlib artists."""
         artists = []
@@ -3389,10 +3302,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
     def clear_artists(self):
         """Clear (remove) all artists created by this widget."""
         self._clear_components()
-
-    def _toggle_plot_section(self, checked):
-        """Toggle visibility of the plot section."""
-        self.plot_section.setVisible(checked)
 
     def _on_plot_setting_changed(self):
         """Handle changes to plot settings from dialog."""
@@ -3531,10 +3440,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self.draw_line_between_components()
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
-
-    def _toggle_style_section(self, checked):
-        """Toggle visibility of the style section."""
-        self.style_section.setVisible(checked)
 
     def _pick_label_color(self):
         """Open color dialog to pick label color."""
@@ -3697,23 +3602,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             .get(str(harmonic), {})
         )
         return bool(entry.get('from_lifetime'))
-
-    def _compute_phasor_from_lifetime(self, lifetime_text, harmonic: int = 1):
-        """Compute (G,S) from lifetime string; return tuple or (None,None)."""
-        try:
-            lifetime = float(lifetime_text)
-        except (TypeError, ValueError):
-            return None, None
-        freq = self.parent_widget._get_frequency_from_layer()
-        if freq is None:
-            return None, None
-
-        re, im = phasor_from_lifetime(freq * harmonic, lifetime)
-        if np.ndim(re) > 0:
-            re = float(np.array(re).ravel()[0])
-        if np.ndim(im) > 0:
-            im = float(np.array(im).ravel()[0])
-        return re, im
 
     def _on_lifetime_edited(self, idx: int):
         """Place component *idx* from a lifetime the user typed.
@@ -4114,12 +4002,14 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 # A concentration map is named after its component, unless
                 # the user renamed it.
                 if tag.get('analysis_type') == ABSOLUTE_CONCENTRATION:
-                    new_layer_name = (
-                        f"{new_display}{CONCENTRATION_SEP}{source}"
+                    new_layer_name = analysis_layer_name(
+                        concentration_analysis_label(new_display), source
                     )
                     if (
                         layer.name
-                        == f"{old_display}{CONCENTRATION_SEP}{source}"
+                        == analysis_layer_name(
+                            concentration_analysis_label(old_display), source
+                        )
                         and new_layer_name not in self.viewer.layers
                     ):
                         layer.name = new_layer_name
@@ -4129,17 +4019,20 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             # The primary image's layer is renamed by
             # :meth:`_update_fraction_layer_names`, which also refreshes
             # ``comp1_fractions_layer``.
-            for sep in (" fractions: ", " fraction: "):
-                prefix = f"{old_display}{sep}"
-                if not layer.name.startswith(prefix):
-                    continue
-                source = layer.name[len(prefix) :]
-                if source == self.current_image_layer_name:
-                    break
-                new_layer_name = f"{new_display}{sep}{source}"
-                if new_layer_name not in self.viewer.layers:
-                    layer.name = new_layer_name
-                break
+            base, label = split_analysis_layer_name(layer.name)
+            parsed = parse_component_analysis_label(label)
+            if parsed is None or parsed[1] != old_display:
+                continue
+            if base == phasor_layer_base_name(self.current_image_layer_name):
+                continue
+            new_layer_name = analysis_layer_name(
+                component_analysis_label(
+                    new_display, is_component_fit_label(label)
+                ),
+                self._source_layer_name_for_base(base),
+            )
+            if new_layer_name not in self.viewer.layers:
+                layer.name = new_layer_name
 
     def _refresh_histogram_after_rename(
         self, idx: int, old_name: str, new_name: str
@@ -4179,44 +4072,29 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         old_display_name = old_name if old_name else f"Component {idx + 1}"
         new_display_name = new_name if new_name else f"Component {idx + 1}"
 
-        old_layer_name = (
-            f"{old_display_name} fractions: {self.current_image_layer_name}"
+        source = self.current_image_layer_name
+        fit = self.analysis_type != "Linear Projection"
+        layer_obj = self._find_fraction_layer_in_viewer(
+            old_display_name, source, fit=fit
         )
-        new_layer_name = (
-            f"{new_display_name} fractions: {self.current_image_layer_name}"
-        )
+        if layer_obj is None and old_name:
+            # The layer may still carry the default "Component N" name.
+            layer_obj = self._find_fraction_layer_in_viewer(
+                f"Component {idx + 1}", source, fit=fit
+            )
+        if layer_obj is None:
+            return
 
-        if (
-            old_layer_name in self.viewer.layers
-            and old_layer_name != new_layer_name
+        new_layer_name = analysis_layer_name(
+            component_analysis_label(new_display_name, fit), source
+        )
+        if new_layer_name == layer_obj.name or (
+            new_layer_name in self.viewer.layers
         ):
-            layer_obj = self.viewer.layers[old_layer_name]
-            layer_obj.name = new_layer_name
-
-            if idx == 0:
-                self.comp1_fractions_layer = layer_obj
-
-        elif new_layer_name not in self.viewer.layers:
-            possible_old_names = [
-                f"Component {idx + 1} fractions: {self.current_image_layer_name}",
-                (
-                    f"{old_display_name} fractions: {self.current_image_layer_name}"
-                    if old_name
-                    else None
-                ),
-            ]
-
-            for possible_old_name in possible_old_names:
-                if (
-                    possible_old_name
-                    and possible_old_name in self.viewer.layers
-                ):
-                    layer_obj = self.viewer.layers[possible_old_name]
-                    layer_obj.name = new_layer_name
-
-                    if idx == 0:
-                        self.comp1_fractions_layer = layer_obj
-                    break
+            return
+        layer_obj.name = new_layer_name
+        if idx == 0:
+            self.comp1_fractions_layer = layer_obj
 
     def _create_component_at_coordinates(self, idx: int, x: float, y: float):
         """Create a component dot and label at specified coordinates."""
@@ -4562,13 +4440,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 )
 
         return colors
-
-    def _get_component_colors(self):
-        """Get colors for components based on the colormap ends or default colors."""
-        active_components = [
-            c for c in self.components if c is not None and c.dot is not None
-        ]
-        return self._get_component_colors_for_count(len(active_components))
 
     def _get_component_colors_for_count(self, num_components):
         """Get colors for a specific number of components (used for out-of-order selection)."""
@@ -5088,31 +4959,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self.colormap_contrast_limits = layer.contrast_limits
             self.fractions_gamma = layer.gamma
 
-        colormap_name = getattr(layer.colormap, 'name', 'custom')
-        is_standard_colormap = (
-            colormap_name not in self._card_colormap_names
-            and self._is_standard_colormap(colormap_name)
-        )
-        if self._concentration_tag(layer) is not None:
-            # Stored by name only when the name means the same colours in
-            # another session.
-            is_standard_colormap = colormap_name in _BUILTIN_COLORMAP_NAMES
-
-        if is_standard_colormap:
-            colormap_colors = None
-        else:
-            colormap_colors = layer.colormap.colors
-            if colormap_colors is not None and (
-                hasattr(colormap_colors, 'tolist')
-                or isinstance(colormap_colors, np.ndarray)
-            ):
-                colormap_colors = colormap_colors.tolist()
-
+        colormap_name, colormap_colors = _stored_colormap(layer.colormap)
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
         self._update_component_colormap(
             comp_idx,
             current_harmonic,
-            colormap_name if is_standard_colormap else None,
+            colormap_name,
             colormap_colors,
             tuple(layer.contrast_limits),
         )
@@ -5307,10 +5159,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 name = comp.name_edit.text().strip() or f"Component {i + 1}"
 
                 # Check if layer name matches pattern for this component
-                # Pattern: "{component_name} fractions: {source_layer}" or "{component_name} fraction: {source_layer}"
-                if layer_name.startswith(
-                    (f"{name} fractions: ", f"{name} fraction: ")
-                ):
+                # Pattern: "{source_layer} [({method}) {name}]"
+                parsed = self._parse_fraction_layer_name(layer_name)
+                if parsed is not None and parsed[1] == name:
                     return i
 
         return None
@@ -5336,15 +5187,14 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         comp = self.components[comp_idx]
         name = comp.name_edit.text().strip() or f"Component {comp_idx + 1}"
 
-        if self.analysis_type == "Linear Projection":
-            pattern = f"{name} fractions: "
-        else:
-            pattern = f"{name} fraction: "
-
         matching_layers = []
         for layer in self.viewer.layers:
-            layer_name = layer.name
-            if layer_name.startswith(pattern):
+            parsed = self._parse_fraction_layer_name(layer.name)
+            if (
+                parsed is not None
+                and parsed[1] == name
+                and self._layer_matches_analysis_type(layer)
+            ):
                 matching_layers.append(layer)
 
         return matching_layers
@@ -5395,30 +5245,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     layer.gamma = gamma
         finally:
             self._updating_linked_layers = False
-
-    def _is_standard_colormap(self, colormap_name):
-        """Check if a colormap name refers to a standard matplotlib/vispy/napari colormap."""
-        try:
-            plt.get_cmap(colormap_name)
-            return True
-        except Exception:  # noqa: BLE001
-            pass
-
-        try:
-            vispy.color.get_colormap(colormap_name)
-            return True
-        except Exception:  # noqa: BLE001
-            pass
-
-        try:
-            from napari.utils.colormaps import AVAILABLE_COLORMAPS
-
-            if colormap_name in AVAILABLE_COLORMAPS:
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-
-        return False
 
     def _make_components_draggable(self):
         """Enable dragging of components and labels."""
@@ -5607,62 +5433,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 return harmonic
         return None
 
-    def _get_inverted_colormap(self, colormap_or_name):
-        """Get the inverted version of a colormap, creating it if necessary.
-
-        Args:
-            colormap_or_name: Either a colormap name (str) or a Colormap object
-        """
-        if isinstance(colormap_or_name, str):
-            colormap_name = colormap_or_name
-            colormap_colors = None
-        elif isinstance(colormap_or_name, Colormap):
-            colormap_name = getattr(colormap_or_name, 'name', 'custom')
-            colormap_colors = getattr(colormap_or_name, 'colors', None)
-        else:
-            colormap_name = getattr(colormap_or_name, 'name', 'custom')
-            colormap_colors = getattr(colormap_or_name, 'colors', None)
-
-        if colormap_name.endswith('_r'):
-            inverted_name = colormap_name[:-2]
-        else:
-            inverted_name = colormap_name + '_r'
-
-        if self._is_standard_colormap(colormap_name):
-            if self._is_standard_colormap(inverted_name):
-                try:
-                    mpl_cmap = plt.get_cmap(inverted_name)
-                    colors = mpl_cmap(np.linspace(0, 1, 256))
-                    return Colormap(colors=colors, name=inverted_name)
-                except Exception:  # noqa: BLE001
-                    if inverted_name in AVAILABLE_COLORMAPS:
-                        return inverted_name
-
-            try:
-                base_name = (
-                    colormap_name
-                    if not colormap_name.endswith('_r')
-                    else colormap_name[:-2]
-                )
-                mpl_cmap = plt.get_cmap(base_name)
-                colors = mpl_cmap(np.linspace(0, 1, 256))
-                inverted_colors = colors[::-1]
-                return Colormap(
-                    colors=inverted_colors, name=f"inverted_{base_name}"
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
-        if colormap_colors is not None:
-            if isinstance(colormap_colors, list):
-                colormap_colors = np.array(colormap_colors)
-            inverted_colors = colormap_colors[::-1]
-            return Colormap(
-                colors=inverted_colors, name=f"inverted_{colormap_name}"
-            )
-
-        return 'jet_r' if not colormap_name.endswith('_r') else 'jet'
-
     def _find_and_reconnect_layer(
         self, expected_name, component_name, layer_name, idx
     ):
@@ -5680,14 +5450,11 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     self._on_colormap_changed
                 )
         else:
-            possible_names = [
-                f"Component {idx + 1} fractions: {layer_name}",
-                f"{component_name} fractions: {layer_name}",
-            ]
-
-            for possible_name in possible_names:
-                if possible_name in self.viewer.layers:
-                    layer_obj = self.viewer.layers[possible_name]
+            for candidate in (f"Component {idx + 1}", component_name):
+                layer_obj = self._find_fraction_layer_in_viewer(
+                    candidate, layer_name, fit=False
+                )
+                if layer_obj is not None:
                     layer_obj.name = expected_name
 
                     if idx == 0:
@@ -5720,7 +5487,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 settings['components']['0'].get('name') or "Component 1"
             )
 
-        comp1_fractions_layer_name = f"{comp1_name} fractions: {layer_name}"
+        comp1_fractions_layer_name = self._fraction_layer_name(
+            comp1_name, layer_name, fit=False
+        )
 
         self._find_and_reconnect_layer(
             comp1_fractions_layer_name, comp1_name, layer_name, 0
@@ -5785,7 +5554,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 pass
 
         self.comp1_fractions_layer = None
-        self.comp2_fractions_layer = None
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
         self.fractions_gamma = 1.0
@@ -5814,8 +5582,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                             comp.lifetime_edit.clear()
             finally:
                 self._updating_settings = False
-
-        self._refresh_settings_note()
 
     def _ensure_component_metadata(self, idx: int, harmonic: int = None):
         """Ensure component metadata structure exists and return component data dict."""
@@ -6577,7 +6343,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         the same colours in another session; otherwise by its colours.
         """
         name = getattr(layer.colormap, 'name', 'custom')
-        standard = name in _BUILTIN_COLORMAP_NAMES
+        standard = name in BUILTIN_COLORMAP_NAMES
         return {
             'colormap_name': name if standard else None,
             'colormap_colors': (
@@ -6648,8 +6414,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             'units': params['units'],
             'calibration': copy.deepcopy(params['calibration']),
         }
-        suffix = f"{CONCENTRATION_SEP}{source.name}"
-        default_name = f"{name}{suffix}"
+        default_name = analysis_layer_name(
+            concentration_analysis_label(name), source.name
+        )
         limits = self._value_limits(data)
         layer = self._find_concentration_layer(source.name, index)
 
@@ -6674,8 +6441,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     )
                 # A layer renamed by hand keeps its name; one still named
                 # after its component follows a renamed component.
+                base, label = split_analysis_layer_name(layer.name)
                 if (
-                    layer.name.endswith(suffix)
+                    parse_concentration_analysis_label(label) is not None
+                    and base == split_analysis_layer_name(default_name)[0]
                     and layer.name != default_name
                     and default_name not in self.viewer.layers
                 ):
@@ -7619,7 +7388,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     ends.append(tuple(current[end]))
             name = f"{mcolors.to_hex(ends[0])} to {mcolors.to_hex(ends[1])}"
             stops = ends
-        self._card_colormap_names.add(name)
         return Colormap(colors=np.asarray(stops, dtype=float), name=name)
 
     def _apply_card_colormap(self, index):
@@ -7781,8 +7549,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
     def _label_layer_name(self, image_name, index):
         """Return the name of one labels layer."""
         if index is None:
-            return f"Dominant component: {image_name}"
-        return f"{self._component_display_name(index)} filtered: {image_name}"
+            return analysis_layer_name("Dominant component", image_name)
+        return analysis_layer_name(
+            f"{self._component_display_name(index)} filtered", image_name
+        )
 
     def _update_label_layers(self):
         """Create, refresh or drop the labels layers for the current filters."""
@@ -7820,6 +7590,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             data,
             name=name,
             scale=source.scale,
+            units=source.units,
             colormap=colormap,
             metadata={
                 COMPONENT_LABELS_TAG: {
@@ -8029,7 +7800,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             if fraction is None:
                 continue
             self._run_linear_projection_for_layer(
-                layer, component_real, component_imag, c1, c2, fraction
+                layer, component_real, component_imag, c1, fraction
             )
 
     def _compute_linear_projection_fraction(
@@ -8071,7 +7842,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         )
 
     def _run_linear_projection_for_layer(
-        self, layer, component_real, component_imag, c1, c2, fraction=None
+        self, layer, component_real, component_imag, c1, fraction=None
     ):
         """Run linear projection for a single layer.
 
@@ -8093,7 +7864,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         fraction_comp1 = fraction
 
         comp1_name = c1.name_edit.text().strip() or "Component 1"
-        comp1_fractions_layer_name = f"{comp1_name} fractions: {layer.name}"
+        comp1_fractions_layer_name = self._fraction_layer_name(
+            comp1_name, layer.name, fit=False
+        )
 
         settings = layer.metadata.get('settings', {}).get(
             'component_analysis', {}
@@ -8131,38 +7904,15 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
                 saved_analysis_type = harmonic_data.get('analysis_type')
                 if saved_analysis_type == 'Linear Projection':
-                    has_saved_colormap = (
-                        harmonic_data.get('colormap_colors') is not None
-                        or harmonic_data.get('colormap_name') is not None
+                    comp1_colormap = _colormap_from_stored(
+                        harmonic_data, comp1_fractions_layer_name
                     )
-
-                    if has_saved_colormap:
-                        if harmonic_data.get('colormap_colors') is not None:
-                            colors = harmonic_data['colormap_colors']
-                            if isinstance(colors, list):
-                                colors = np.array(colors)
-
-                            stored_colormap_name = harmonic_data.get(
-                                'colormap_name', 'custom'
-                            )
-                            comp1_colormap = Colormap(
-                                colors=colors,
-                                name=(
-                                    stored_colormap_name
-                                    if stored_colormap_name
-                                    else 'custom'
-                                ),
-                            )
-
-                        elif harmonic_data.get('colormap_name'):
-                            comp1_colormap = harmonic_data['colormap_name']
-
-                        if harmonic_data.get('contrast_limits'):
-                            contrast_limits = tuple(
-                                harmonic_data['contrast_limits']
-                            )
-                        if harmonic_data.get('gamma') is not None:
-                            comp1_gamma = harmonic_data['gamma']
+                    if harmonic_data.get('contrast_limits'):
+                        contrast_limits = tuple(
+                            harmonic_data['contrast_limits']
+                        )
+                    if harmonic_data.get('gamma') is not None:
+                        comp1_gamma = harmonic_data['gamma']
 
         if comp1_colormap is None:
             comp1_colormap = 'jet'
@@ -8176,6 +7926,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             fraction_comp1,
             name=comp1_fractions_layer_name,
             scale=layer.scale,
+            units=layer.units,
             colormap=comp1_colormap,
             contrast_limits=contrast_limits,
         )
@@ -8195,42 +7946,21 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         )
 
         if not self._updating_settings and self.current_image_layer_name:
-            colormap_name = getattr(
-                self.comp1_fractions_layer.colormap, 'name', 'custom'
+            colormap_name, colormap_colors = _stored_colormap(
+                self.comp1_fractions_layer.colormap
             )
-            is_standard = self._is_standard_colormap(colormap_name)
-
-            if colormap_name.startswith('inverted_'):
-                is_standard = False
 
             if '0' in settings['components']:
                 comp_data = settings['components']['0']
                 if harmonic_key not in comp_data['gs_harmonics']:
                     comp_data['gs_harmonics'][harmonic_key] = {}
 
-                if is_standard:
-                    comp_data['gs_harmonics'][harmonic_key][
-                        'colormap_name'
-                    ] = colormap_name
-                    comp_data['gs_harmonics'][harmonic_key][
-                        'colormap_colors'
-                    ] = None
-                else:
-                    colormap_colors = (
-                        self.comp1_fractions_layer.colormap.colors
-                    )
-                    if colormap_colors is not None and (
-                        hasattr(colormap_colors, 'tolist')
-                        or isinstance(colormap_colors, np.ndarray)
-                    ):
-                        colormap_colors = colormap_colors.tolist()
-                    comp_data['gs_harmonics'][harmonic_key][
-                        'colormap_name'
-                    ] = colormap_name
-                    comp_data['gs_harmonics'][harmonic_key][
-                        'colormap_colors'
-                    ] = colormap_colors
-
+                comp_data['gs_harmonics'][harmonic_key][
+                    'colormap_name'
+                ] = colormap_name
+                comp_data['gs_harmonics'][harmonic_key][
+                    'colormap_colors'
+                ] = colormap_colors
                 comp_data['gs_harmonics'][harmonic_key]['contrast_limits'] = (
                     list(self.comp1_fractions_layer.contrast_limits)
                 )
@@ -8250,6 +7980,81 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         self._update_component_colors()
         self.draw_line_between_components()
+
+    def _fraction_layer_name(self, component_name, source_name, fit=None):
+        """Return the default name of a component's fraction layer.
+
+        The analysis goes in the trailing brackets, e.g.
+        ``"<image> [(Linear Projection) Donor]"``. ``fit`` picks the
+        method (default: the current one).
+        """
+        if fit is None:
+            fit = self.analysis_type != "Linear Projection"
+        return analysis_layer_name(
+            component_analysis_label(component_name, fit),
+            source_name,
+        )
+
+    @staticmethod
+    def _parse_fraction_layer_name(layer_name):
+        """Return ``(source_base, component_name)`` for a fraction layer name.
+
+        ``source_base`` is the analysed layer's name without its ``[Phasor]``
+        tag (see :func:`phasor_layer_base_name`). Returns None if
+        *layer_name* is not a component-analysis layer name.
+        """
+        base, label = split_analysis_layer_name(layer_name)
+        parsed = parse_component_analysis_label(label)
+        if parsed is None:
+            return None
+        return base, parsed[1]
+
+    def _is_fraction_layer_of(self, layer_name, component_name, source_name):
+        """Whether *layer_name* is the default layer of a component/source."""
+        parsed = self._parse_fraction_layer_name(layer_name)
+        return parsed == (
+            phasor_layer_base_name(source_name),
+            component_name,
+        )
+
+    @staticmethod
+    def _is_default_fit_name(layer_name, source_name):
+        """Whether *layer_name* is a default Component Fit name of a source."""
+        base, label = split_analysis_layer_name(layer_name)
+        return is_component_fit_label(
+            label
+        ) and base == phasor_layer_base_name(source_name)
+
+    def _find_fraction_layer_in_viewer(
+        self, component_name, source_name, fit=None
+    ):
+        """Return the default-named fraction layer of a component, if any.
+
+        ``fit`` restricts the search to Component Fit (True) or Linear
+        Projection (False) layers; None accepts either.
+        """
+        for lyr in self.viewer.layers:
+            if not self._is_fraction_layer_of(
+                lyr.name, component_name, source_name
+            ):
+                continue
+            if fit is not None and fit != is_component_fit_label(
+                split_analysis_layer_name(lyr.name)[1]
+            ):
+                continue
+            return lyr
+        return None
+
+    def _source_layer_name_for_base(self, base):
+        """Return the name of the phasor layer whose base name is *base*."""
+        for lyr in self.viewer.layers:
+            if (
+                isinstance(lyr, Image)
+                and "G" in lyr.metadata
+                and phasor_layer_base_name(lyr.name) == base
+            ):
+                return lyr.name
+        return base
 
     def _find_component_fraction_layer(
         self, source_layer_name, component_index, fallback_name
@@ -8347,7 +8152,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 continue
             self._run_component_fit_for_layer(
                 layer,
-                active_components,
                 num_components,
                 current_harmonic,
                 required_harmonics,
@@ -8502,7 +8306,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
     def _run_component_fit_for_layer(
         self,
         layer,
-        active_components,
         num_components,
         current_harmonic,
         required_harmonics,
@@ -8543,7 +8346,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             for i, (fraction, name) in enumerate(
                 zip(fractions, component_names, strict=False)
             ):
-                default_name = f"{name} fraction: {layer.name}"
+                default_name = self._fraction_layer_name(
+                    name, layer.name, fit=True
+                )
 
                 # Locate a previous fraction layer for this component, matching
                 # on metadata so a manually renamed layer is still recognised.
@@ -8555,8 +8360,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 # renaming a component still relabels its layer.
                 if (
                     existing_layer is not None
-                    and not existing_layer.name.endswith(
-                        f" fraction: {layer.name}"
+                    and not self._is_default_fit_name(
+                        existing_layer.name, layer.name
                     )
                 ):
                     fraction_layer_name = existing_layer.name
@@ -8599,18 +8404,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
                     saved_analysis_type = harmonic_data.get('analysis_type')
                     if saved_analysis_type == 'Component Fit':
-                        if harmonic_data.get('colormap_name'):
-                            colormap = harmonic_data['colormap_name']
-                        elif harmonic_data.get('colormap_colors'):
-                            from napari.utils.colormaps import Colormap
-
-                            colors = harmonic_data['colormap_colors']
-                            if isinstance(colors, list):
-                                colors = np.array(colors)
-                            colormap = Colormap(
-                                colors=colors, name="saved_custom"
-                            )
-
+                        colormap = _colormap_from_stored(
+                            harmonic_data, fraction_layer_name
+                        )
                         if harmonic_data.get('contrast_limits'):
                             contrast_limits = tuple(
                                 harmonic_data['contrast_limits']
@@ -8638,6 +8434,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     fraction,
                     name=fraction_layer_name,
                     scale=layer.scale,
+                    units=layer.units,
                     colormap=colormap,
                 )
                 new_layer.metadata['fraction_data_original'] = fraction.copy()
@@ -8669,41 +8466,15 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     if harmonic_key not in comp_data['gs_harmonics']:
                         comp_data['gs_harmonics'][harmonic_key] = {}
 
-                    colormap_name = getattr(
-                        new_layer.colormap, 'name', 'custom'
+                    colormap_name, colormap_colors = _stored_colormap(
+                        new_layer.colormap
                     )
-                    is_standard_colormap = False
-                    try:
-                        plt.get_cmap(colormap_name)
-                        is_standard_colormap = True
-                    except Exception:  # noqa: BLE001
-                        try:
-                            vispy.color.get_colormap(colormap_name)
-                            is_standard_colormap = True
-                        except Exception:  # noqa: BLE001
-                            is_standard_colormap = False
-
-                    if is_standard_colormap:
-                        comp_data['gs_harmonics'][harmonic_key][
-                            'colormap_name'
-                        ] = colormap_name
-                        comp_data['gs_harmonics'][harmonic_key][
-                            'colormap_colors'
-                        ] = None
-                    else:
-                        colormap_colors = new_layer.colormap.colors
-                        if colormap_colors is not None and (
-                            hasattr(colormap_colors, 'tolist')
-                            or isinstance(colormap_colors, np.ndarray)
-                        ):
-                            colormap_colors = colormap_colors.tolist()
-                        comp_data['gs_harmonics'][harmonic_key][
-                            'colormap_name'
-                        ] = None
-                        comp_data['gs_harmonics'][harmonic_key][
-                            'colormap_colors'
-                        ] = colormap_colors
-
+                    comp_data['gs_harmonics'][harmonic_key][
+                        'colormap_name'
+                    ] = colormap_name
+                    comp_data['gs_harmonics'][harmonic_key][
+                        'colormap_colors'
+                    ] = colormap_colors
                     comp_data['gs_harmonics'][harmonic_key][
                         'contrast_limits'
                     ] = list(new_layer.contrast_limits)
@@ -8718,7 +8489,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             # older untagged layers, matches the default name suffix. Keep the
             # layers we just created (compared by identity so custom-named ones
             # survive).
-            suffix = f" fraction: {layer.name}"
             for existing in list(self.viewer.layers):
                 if not isinstance(existing, Image):
                     continue
@@ -8729,7 +8499,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     isinstance(tag, dict)
                     and tag.get('analysis_type') == 'Component Fit'
                     and tag.get('source_layer') == layer.name
-                ) or existing.name.endswith(suffix)
+                ) or self._is_default_fit_name(existing.name, layer.name)
                 if belongs:
                     with contextlib.suppress(KeyError, ValueError):
                         self.viewer.layers.remove(existing)
@@ -8751,11 +8521,13 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
                 continue
-            name = layer.name
-            for sep in (" fractions: ", " fraction: ", CONCENTRATION_SEP):
-                if name.endswith(sep + old_name):
-                    comp_part = name[: -len(sep + old_name)]
-                    layer.name = f"{comp_part}{sep}{new_name}"
+            base, label = split_analysis_layer_name(layer.name)
+            concentration = parse_concentration_analysis_label(label)
+            if (
+                parse_component_analysis_label(label) is not None
+                or concentration is not None
+            ) and base == phasor_layer_base_name(old_name):
+                layer.name = analysis_layer_name(label, new_name)
             # Keep the identifying metadata tag in sync too. Matched by tag
             # (not name) so fraction layers the user renamed manually still
             # follow their source image.
@@ -8819,8 +8591,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         """Return True if ``layer`` is a fraction layer of the current method.
 
         Component Fit layers carry the ``phasor_component_fraction`` tag and
-        use the singular ``"<comp> fraction: <image>"`` name; Linear Projection
-        layers are untagged and use the plural ``"<comp> fractions: <image>"``.
+        use ``"<image> [(Component Fit) <comp>]"`` names; Linear Projection
+        layers are untagged and use ``"<image> [(Linear Projection) <comp>]"``.
         Filtering by the active ``analysis_type`` keeps the histogram selector
         showing only the current method's components, even when stale layers
         from the other method are still present in the viewer. Absolute
@@ -8831,10 +8603,15 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             return (
                 tag.get('analysis_type', 'Component Fit') == self.analysis_type
             )
+        label = split_analysis_layer_name(layer.name)[1]
+        if self.analysis_type == ABSOLUTE_CONCENTRATION:
+            return parse_concentration_analysis_label(label) is not None
         if self.analysis_type == "Component Fit":
-            return " fraction: " in layer.name
+            return is_component_fit_label(label)
         if self.analysis_type == "Linear Projection":
-            return " fractions: " in layer.name
+            return parse_component_analysis_label(
+                label
+            ) is not None and not is_component_fit_label(label)
         return False
 
     def _get_selected_image_layer_names(self) -> set:
@@ -8872,10 +8649,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         tag = layer.metadata.get('phasor_component_fraction')
         if isinstance(tag, dict) and tag.get('source_layer'):
             return tag['source_layer']
-        for sep in (" fractions: ", " fraction: "):
-            idx = layer.name.find(sep)
-            if idx != -1:
-                return layer.name[idx + len(sep) :]
+        parsed = self._parse_fraction_layer_name(layer.name)
+        if parsed is not None:
+            return self._source_layer_name_for_base(parsed[0])
         return None
 
     def _get_fraction_layers_for_component(self, component_name):
@@ -8921,13 +8697,11 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     if source in selected_names:
                         result[source] = layer
                     continue
-            name = layer.name
-            for sep in (" fractions: ", " fraction: "):
-                if name.startswith(component_name + sep):
-                    img_layer_name = name[len(component_name) + len(sep) :]
-                    if img_layer_name in selected_names:
-                        result[img_layer_name] = layer
-                    break
+            parsed = self._parse_fraction_layer_name(layer.name)
+            if parsed is not None and parsed[1] == component_name:
+                img_layer_name = self._source_layer_name_for_base(parsed[0])
+                if img_layer_name in selected_names:
+                    result[img_layer_name] = layer
         return result
 
     def _get_component_names_from_fraction_layers(self):
@@ -8966,19 +8740,17 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 if display is not None:
                     layer_based_names[display] = display
                 continue
-            for sep in (" fractions: ", " fraction: "):
-                idx = layer.name.find(sep)
-                if idx != -1:
-                    comp_name = layer.name[:idx]
-                    if comp_name.startswith("Component "):
-                        try:
-                            comp_idx = int(comp_name.split(" ")[1]) - 1
-                            layer_based_names[comp_idx] = comp_name
-                        except (ValueError, IndexError):
-                            layer_based_names[comp_name] = comp_name
-                    else:
+            parsed = self._parse_fraction_layer_name(layer.name)
+            if parsed is not None:
+                comp_name = parsed[1]
+                if comp_name.startswith("Component "):
+                    try:
+                        comp_idx = int(comp_name.split(" ")[1]) - 1
+                        layer_based_names[comp_idx] = comp_name
+                    except (ValueError, IndexError):
                         layer_based_names[comp_name] = comp_name
-                    break
+                else:
+                    layer_based_names[comp_name] = comp_name
 
         if not layer_based_names:
             return []
@@ -9083,7 +8855,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         invert : bool
             True when showing the Linear Projection second component, whose
             fraction is ``1 - first`` and has no layer of its own. In that
-            case a virtual ``"<component> fractions: <image>"`` label is
+            case a virtual ``"<image> [(Linear Projection) <component>]"`` label is
             built, since the underlying layer belongs to the first component.
 
         Returns
@@ -9111,7 +8883,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         can build an ``{image: label}`` mapping without the data arrays.
         """
         if invert:
-            return f"{selected_text} fractions: {img_name}"
+            return self._fraction_layer_name(
+                selected_text, img_name, fit=False
+            )
         fl = fraction_layers_map.get(img_name)
         return fl.name if fl is not None else img_name
 
@@ -9137,8 +8911,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         The histogram widget keys its group assignments and per-layer colors by
         dataset label. Switching the selected component relabels every dataset
-        (e.g. ``"Component 1 fractions: img"`` -> ``"Component 2 fractions:
-        img"``), which would otherwise orphan those mappings and collapse every
+        (e.g. ``"img [(Linear Projection) Component 1]"`` -> ``"img
+        [(Linear Projection) Component 2]"``), which would otherwise orphan those mappings and collapse every
         dataset into the default group in Grouped mode. Remap the persisted
         state from the previously displayed labels to the new ones, keyed by the
         component and its source image, before feeding the new data.
@@ -9202,7 +8976,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 comp_name, layers_map, invert
             )
             series_colormaps[comp_name] = self._component_colormap(
-                comp_name, layers_map, invert
+                layers_map, invert
             )
 
         if not per_layer:
@@ -9445,7 +9219,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self.update_component_histogram()
         self._sync_filter_ui()
 
-    def _component_colormap(self, comp_name, layers_map, invert):
+    def _component_colormap(self, layers_map, invert):
         """Return ``(colors, contrast_limits, gamma)`` for one component.
 
         The second Linear Projection component has no layer of its own: its
@@ -9522,9 +9296,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             layers_map,
             invert,
         ) in self._resolve_selected_components():
-            colormaps[comp_name] = self._component_colormap(
-                comp_name, layers_map, invert
-            )
+            colormaps[comp_name] = self._component_colormap(layers_map, invert)
             colors[comp_name] = self._component_curve_color(
                 comp_name, layers_map, invert
             )
@@ -9612,13 +9384,13 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         # The phasor-plot line gradient is always expressed in first-component
         # fraction space, so keep ``colormap_contrast_limits`` in that space.
-        primary_name, primary_layers, primary_invert = resolved[0]
+        _primary_name, primary_layers, primary_invert = resolved[0]
         if primary_invert:
             self.colormap_contrast_limits = [1.0 - max_val, 1.0 - min_val]
         else:
             self.colormap_contrast_limits = [min_val, max_val]
         colormap_colors, _limits, gamma = self._component_colormap(
-            primary_name, primary_layers, primary_invert
+            primary_layers, primary_invert
         )
         self.histogram_widget.update_colormap(
             colormap_colors=colormap_colors,
@@ -9653,7 +9425,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self.histogram_widget.show()
             return
 
-        primary_name, primary_layers, primary_invert = resolved[0]
+        _primary_name, primary_layers, primary_invert = resolved[0]
         # Concentrations are labelled in the units they were computed in,
         # which the maps carry, not in whatever is typed in the tab now.
         primary_tag = (
@@ -9664,7 +9436,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         )
         self._configure_histogram_for_mode(primary_tag.get('units'))
         colormap_colors, contrast_limits, gamma = self._component_colormap(
-            primary_name, primary_layers, primary_invert
+            primary_layers, primary_invert
         )
 
         self.histogram_widget.update_colormap(

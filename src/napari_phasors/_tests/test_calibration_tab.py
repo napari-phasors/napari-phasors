@@ -1,7 +1,6 @@
 from unittest.mock import patch
 
 import numpy as np
-import pytest
 from numpy.testing import assert_almost_equal, assert_array_equal
 from phasorpy.lifetime import (
     phasor_calibrate,
@@ -15,11 +14,17 @@ from napari_phasors.calibration_tab import _HTML_LABEL_ROLE
 from napari_phasors.plotter import PlotterWidget
 
 
-def test_calibration_widget_initialization(make_viewer_model, qtbot):
-    """Test the initialization of the CalibrationWidget."""
+def test_calibration_widget_without_a_phasor_layer(make_viewer_model, qtbot):
+    """Before a sample is selected the tab shows empty inputs, refuses to
+    calibrate, fills the lifetime from the fluorophore picker (which a
+    manual edit resets) and tracks phasor layers as they come and go."""
+    from qtpy.QtGui import QPainter, QPixmap
+    from qtpy.QtWidgets import QStyle, QStyleOptionViewItem
+
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.calibration_tab
+    calibration_widget = widget.calibration_widget
 
     # Basic widget structure tests
     assert widget.viewer == viewer
@@ -27,189 +32,216 @@ def test_calibration_widget_initialization(make_viewer_model, qtbot):
     assert widget.layout().count() > 0
 
     # Test initial UI state
-    assert widget.calibration_widget.frequency_input.text() == ""
-    assert widget.calibration_widget.lifetime_line_edit_widget.text() == ""
-    assert (
-        widget.calibration_widget.calibrate_push_button.text() == "Calibrate"
-    )
-
-    # Test combobox initialization (should be empty initially)
-    assert widget.calibration_widget.calibration_layer_combobox.count() == 0
-
-
-def test_calibration_widget_populate_comboboxes(make_viewer_model, qtbot):
-    """Test that comboboxes are populated with image layers."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    # Initially empty
-    assert widget.calibration_widget.calibration_layer_combobox.count() == 0
-
-    # Add image layers
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    calibration_layer = create_image_layer_with_phasors()
-    calibration_layer.name = "calibration_layer"
-
-    viewer.add_layer(sample_layer)
-    viewer.add_layer(calibration_layer)
-
-    # Check combobox is populated
-    combobox = widget.calibration_widget.calibration_layer_combobox
-    assert combobox.count() == 2
-    layer_names = [combobox.itemText(i) for i in range(combobox.count())]
-    assert "sample_layer" in layer_names
-    assert "calibration_layer" in layer_names
-
-
-def test_calibration_widget_layer_events(make_viewer_model, qtbot):
-    """Test that widget responds to layer addition/removal events."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    # Add a layer
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Check combobox updated
-    combobox = widget.calibration_widget.calibration_layer_combobox
-    assert combobox.count() == 1
-    assert combobox.itemText(0) == "test_layer"
-
-    # Remove the layer
-    viewer.layers.remove("test_layer")
-
-    # Check combobox updated
+    assert calibration_widget.frequency_input.text() == ""
+    assert calibration_widget.lifetime_line_edit_widget.text() == ""
+    assert calibration_widget.calibrate_push_button.text() == "Calibrate"
+    combobox = calibration_widget.calibration_layer_combobox
     assert combobox.count() == 0
-
-
-def test_calibration_click_no_layers_selected(make_viewer_model, qtbot):
-    """Test calibration click with no layers selected."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
 
     with patch("napari_phasors.calibration_tab.show_error") as mock_show_error:
         widget._on_click()
         mock_show_error.assert_called_once_with(
             "Select sample and calibration layers"
         )
+    assert widget._uncalibrate_layer("") is None
+    widget._update_button_state()
+    assert calibration_widget.calibrate_push_button.text() == "Calibrate"
 
+    # Inverting the calibration parameters.
+    phi_inv, mod_inv = widget._invert_calibration_parameters(0.5, 2.0)
+    assert phi_inv == -0.5
+    assert mod_inv == 0.5
 
-def test_calibration_click_missing_frequency(make_viewer_model, qtbot):
-    """Test calibration click with missing frequency."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
+    # A re-entrant populate returns early and leaves the guard set.
+    widget._populating_comboboxes = True
+    widget._populate_comboboxes()
+    assert widget._populating_comboboxes is True
+    widget._populating_comboboxes = False
 
-    widget = parent.calibration_tab
+    # Selecting a reference fluorophore fills the lifetime edit; the first
+    # item is the placeholder and carries no lifetime.
+    fluorophores = calibration_widget.fluorophore_combobox
+    lifetime_edit = calibration_widget.lifetime_line_edit_widget
+    assert fluorophores.itemData(0) is None
+    assert fluorophores.count() > 1
+    fluorophores.setCurrentIndex(1)
+    assert lifetime_edit.text() == f"{fluorophores.itemData(1):g}"
 
-    # Add layers
+    # Editing the lifetime by hand resets the fluorophore selection
+    # (textEdited fires only on user input).
+    lifetime_edit.setText("2.5")
+    widget._on_lifetime_edited("2.5")
+    assert fluorophores.currentIndex() == 0
+
+    # Selecting the placeholder leaves the lifetime edit untouched.
+    lifetime_edit.setText("3.14")
+    widget._on_fluorophore_selected(0)
+    assert lifetime_edit.text() == "3.14"
+
+    # Programmatic lifetime edits (from the combo) must not reset the combo:
+    # while the guard flag is set, _on_lifetime_edited returns early.
+    fluorophores.setCurrentIndex(1)
+    assert fluorophores.currentIndex() == 1
+    widget._setting_lifetime_from_combo = True
+    widget._on_lifetime_edited("9.9")
+    assert fluorophores.currentIndex() == 1
+    widget._setting_lifetime_from_combo = False
+
+    # The delegate renders an item's HTML label (also while selected, for
+    # the highlighted-text color), and falls back to the default painting
+    # for the placeholder, which has none.
+    delegate = fluorophores.itemDelegate()
+    model = fluorophores.model()
+    pixmap = QPixmap(200, 20)
+    painter = QPainter(pixmap)
+    try:
+        option = QStyleOptionViewItem()
+        option.rect = pixmap.rect()
+        plain_index = model.index(0, 0)
+        assert plain_index.data(_HTML_LABEL_ROLE) is None
+        delegate.paint(painter, option, plain_index)
+        html_index = model.index(1, 0)
+        assert html_index.data(_HTML_LABEL_ROLE) is not None
+        delegate.paint(painter, option, html_index)
+        option.state |= QStyle.State_Selected
+        delegate.paint(painter, option, html_index)
+    finally:
+        painter.end()
+
+    # Filling the lifetime from metadata must not look like the user
+    # typing: a feedback loop would clear the fluorophore selection.
+    edits = []
+    lifetime_edit.textChanged.connect(edits.append)
+    parent._set_calibration_lifetime_from_metadata("3.5")
+    assert lifetime_edit.text() == "3.5"
+    assert edits == []
+    lifetime_edit.textChanged.disconnect(edits.append)
+
+    # The calibration layer combobox follows phasor layers being added and
+    # removed.
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+    assert combobox.count() == 1
+    assert combobox.itemText(0) == "test_layer"
+    viewer.layers.remove("test_layer")
+    assert combobox.count() == 0
+
     sample_layer = create_image_layer_with_phasors()
     sample_layer.name = "sample_layer"
     calibration_layer = create_image_layer_with_phasors()
     calibration_layer.name = "calibration_layer"
     viewer.add_layer(sample_layer)
     viewer.add_layer(calibration_layer)
+    assert combobox.count() == 2
+    layer_names = [combobox.itemText(i) for i in range(combobox.count())]
+    assert "sample_layer" in layer_names
+    assert "calibration_layer" in layer_names
 
-    # Set calibration layer but leave frequency empty
-    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
-        "calibration_layer"
-    )
+    # Closing unhooks the widget; a second close is harmless.
+    class MockEvent:
+        accepted = False
 
-    with patch("napari_phasors.calibration_tab.show_error") as mock_show_error:
-        widget._on_click()
-        mock_show_error.assert_called_once_with("Enter frequency")
+        def accept(self):
+            self.accepted = True
+
+    event = MockEvent()
+    widget.closeEvent(event)
+    widget.closeEvent(event)
 
 
-def test_calibration_click_missing_lifetime(make_viewer_model, qtbot):
-    """Test calibration click with missing reference lifetime."""
+def test_calibration_click_reports_missing_inputs(make_viewer_model, qtbot):
+    """Calibrating needs a calibration layer, a frequency, a reference
+    lifetime and matching harmonics; uncalibrating needs a calibrated
+    layer. The button reads Uncalibrate for a calibrated layer."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
-
     widget = parent.calibration_tab
+    calibration_widget = widget.calibration_widget
 
-    # Add layers
     sample_layer = create_image_layer_with_phasors()
     sample_layer.name = "sample_layer"
     calibration_layer = create_image_layer_with_phasors()
     calibration_layer.name = "calibration_layer"
+    mismatched_layer = create_image_layer_with_phasors()
+    mismatched_layer.name = "mismatched_layer"
+    mismatched_layer.metadata["harmonics"] = [
+        h + 1 for h in sample_layer.metadata["harmonics"]
+    ]
     viewer.add_layer(sample_layer)
     viewer.add_layer(calibration_layer)
-
-    # Set parameters but leave lifetime empty
-    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
-        "calibration_layer"
-    )
-    widget.calibration_widget.frequency_input.setText("80")
-
-    with patch("napari_phasors.calibration_tab.show_error") as mock_show_error:
-        widget._on_click()
-        mock_show_error.assert_called_once_with("Enter reference lifetime")
-
-
-def test_calibration_button_state_updates(make_viewer_model, qtbot):
-    """Test that calibration button text updates based on layer calibration status."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-
-    widget = parent.calibration_tab
-
-    # Test with no layer selected
-    with patch.object(
-        parent.image_layer_with_phasor_features_combobox,
-        'currentText',
-        return_value="",
-    ):
-        widget._update_button_state()
-        assert (
-            widget.calibration_widget.calibrate_push_button.text()
-            == "Calibrate"
-        )
-
-    # Test with uncalibrated layer
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    viewer.add_layer(sample_layer)
-
-    with patch.object(
-        parent.image_layer_with_phasor_features_combobox,
-        'currentText',
-        return_value="sample_layer",
-    ):
-        widget._update_button_state()
-        assert (
-            widget.calibration_widget.calibrate_push_button.text()
-            == "Calibrate"
-        )
-
-        # Test with calibrated layer
-        sample_layer.metadata["settings"] = {"calibrated": True}
-        widget._update_button_state()
-        assert (
-            widget.calibration_widget.calibrate_push_button.text()
-            == "Uncalibrate"
-        )
-
-
-def test_calibrate_layer_success(make_viewer_model, qtbot):
-    """Test calibrating a layer."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    # Add uncalibrated layer
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    viewer.add_layer(sample_layer)
-
-    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
+    viewer.add_layer(mismatched_layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
         "sample_layer"
     )
-    widget.calibration_widget.frequency_input.setText("80")
-    widget.calibration_widget.lifetime_line_edit_widget.setText("2.0")
+    combobox = calibration_widget.calibration_layer_combobox
+
+    def assert_click_reports(message):
+        with patch(
+            "napari_phasors.calibration_tab.show_error"
+        ) as mock_show_error:
+            widget._on_click()
+            mock_show_error.assert_called_once_with(message)
+
+    combobox.setCurrentIndex(-1)
+    assert_click_reports("Select sample and calibration layers")
+
+    combobox.setCurrentText("calibration_layer")
+    assert_click_reports("Enter frequency")
+
+    calibration_widget.frequency_input.setText("80")
+    assert_click_reports("Enter reference lifetime")
+
+    combobox.setCurrentText("mismatched_layer")
+    calibration_widget.lifetime_line_edit_widget.setText("2")
+    assert_click_reports(
+        "Harmonics in sample and calibration layers do not match"
+    )
+
+    # The button follows the selected layer's stored calibration status,
+    # read straight from its metadata (the no-layer case is covered above).
+    button = calibration_widget.calibrate_push_button
+    widget._update_button_state()
+    assert button.text() == "Calibrate"
+
+    # A layer is not calibrated until it has both a phase and a modulation.
+    with patch("napari_phasors.calibration_tab.show_error") as mock_show_error:
+        widget._uncalibrate_layer("sample_layer")
+        mock_show_error.assert_called_once_with("Layer is not calibrated")
+    sample_layer.metadata["settings"].update(
+        {"calibrated": True, "calibration_phase": 0.5}
+    )
+    with patch("napari_phasors.calibration_tab.show_error") as mock_show_error:
+        widget._uncalibrate_layer("sample_layer")
+        mock_show_error.assert_called_once_with("Layer is not calibrated")
+    widget._update_button_state()
+    assert button.text() == "Uncalibrate"
+
+    sample_layer.metadata["settings"] = {}
+    widget._update_button_state()
+    assert button.text() == "Calibrate"
+
+
+def test_calibrate_and_uncalibrate_a_layer(make_viewer_model, qtbot):
+    """Calibrating matches phasorpy's reference calibration and leaves the
+    intensity untouched; uncalibrating restores the original phasors, and
+    both keep the layer's median or wavelet filter and thresholds."""
+    from napari_phasors._utils import apply_filter_and_threshold
+
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+    calibration_widget = widget.calibration_widget
+
+    sample_layer = create_image_layer_with_phasors()
+    sample_layer.name = "sample_layer"
+    viewer.add_layer(sample_layer)
+    calibration_widget.calibration_layer_combobox.setCurrentText(
+        "sample_layer"
+    )
+    calibration_widget.frequency_input.setText("80")
+    calibration_widget.lifetime_line_edit_widget.setText("2.0")
+    button = calibration_widget.calibrate_push_button
 
     # Make copies of the original data before calibration modifies it
     original_image = sample_layer.data.copy()
@@ -247,9 +279,7 @@ def test_calibrate_layer_success(make_viewer_model, qtbot):
         real_center, imag_center, known_re, known_im
     )
 
-    # Click Calibrate button (this will modify the layer's data)
-    widget.calibration_widget.calibrate_push_button.click()
-
+    button.click()
     assert sample_layer.metadata["settings"]["calibrated"] is True
     assert_array_equal(
         sample_layer.metadata["settings"]["calibration_phase"], phi
@@ -257,415 +287,123 @@ def test_calibrate_layer_success(make_viewer_model, qtbot):
     assert_array_equal(
         sample_layer.metadata["settings"]["calibration_modulation"], mod
     )
-    assert_array_equal(
-        sample_layer.metadata['G'],
-        real,
-    )
-    assert_array_equal(
-        sample_layer.metadata['S'],
-        imag,
-    )
+    assert_array_equal(sample_layer.metadata['G'], real)
+    assert_array_equal(sample_layer.metadata['S'], imag)
+    assert not np.array_equal(g_original, sample_layer.metadata['G'])
+    assert not np.array_equal(s_original, sample_layer.metadata['S'])
     assert_array_equal(sample_layer.metadata['original_mean'], mean_original)
     assert_array_equal(sample_layer.data, original_image)
 
-
-def test_uncalibrate_layer_not_calibrated(make_viewer_model, qtbot):
-    """Test uncalibrating a layer that is not calibrated."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    # Add uncalibrated layer
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    viewer.add_layer(sample_layer)
-
-    with patch("napari_phasors.calibration_tab.show_error") as mock_show_error:
-        widget._uncalibrate_layer("sample_layer")
-        mock_show_error.assert_called_once_with("Layer is not calibrated")
-
-
-def test_uncalibrate_layer_missing_modulation(make_viewer_model, qtbot):
-    """Test uncalibrating a layer with missing calibration modulation."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    # Add layer with phase but no modulation
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    sample_layer.metadata["settings"] = {
-        "calibrated": True,
-        "calibration_phase": 0.5,
-    }
-    viewer.add_layer(sample_layer)
-
-    with patch("napari_phasors.calibration_tab.show_error") as mock_show_error:
-        widget._uncalibrate_layer("sample_layer")
-        mock_show_error.assert_called_once_with("Layer is not calibrated")
-
-
-def test_uncalibrate_layer_success(make_viewer_model, qtbot):
-    """Test successful uncalibration of a layer."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    # Add uncalibrated layer
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    viewer.add_layer(sample_layer)
-
-    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
-        "sample_layer"
-    )
-    widget.calibration_widget.frequency_input.setText("80")
-    widget.calibration_widget.lifetime_line_edit_widget.setText("2.0")
-
-    # Make copies of the original data before calibration modifies it
-    original_image = sample_layer.data.copy()
-    g_original = sample_layer.metadata['G_original'].copy()
-    s_original = sample_layer.metadata['S_original'].copy()
-    mean_original = sample_layer.metadata['original_mean'].copy()
-
-    # Click Calibrate button
-    widget.calibration_widget.calibrate_push_button.click()
-
-    assert sample_layer.metadata["settings"]["calibrated"] is True
-
-    with pytest.raises(AssertionError):
-        np.testing.assert_array_equal(
-            g_original,
-            sample_layer.metadata['G'],
-        )
-    with pytest.raises(AssertionError):
-        np.testing.assert_array_equal(
-            s_original,
-            sample_layer.metadata['S'],
-        )
-    assert_array_equal(mean_original, sample_layer.metadata['original_mean'])
-    assert_array_equal(sample_layer.data, original_image)
-
-    # Click Uncalibrate button
-    widget.calibration_widget.calibrate_push_button.click()
-
-    assert sample_layer.metadata["settings"]["calibrated"] is False
-    assert "calibration_phase" not in sample_layer.metadata["settings"]
-    assert "calibration_modulation" not in sample_layer.metadata["settings"]
-    assert_almost_equal(
-        sample_layer.metadata['G'],
-        g_original,
-    )
-    assert_almost_equal(
-        sample_layer.metadata['S'],
-        s_original,
-    )
+    # Uncalibrate
+    button.click()
+    settings = sample_layer.metadata["settings"]
+    assert settings["calibrated"] is False
+    assert "calibration_phase" not in settings
+    assert "calibration_modulation" not in settings
+    assert_almost_equal(sample_layer.metadata['G'], g_original)
+    assert_almost_equal(sample_layer.metadata['S'], s_original)
     assert_almost_equal(sample_layer.metadata['original_mean'], mean_original)
     assert_almost_equal(sample_layer.data, original_image)
 
-
-def test_uncalibrate_layer_empty_name(make_viewer_model, qtbot):
-    """Test uncalibrating with empty layer name."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    result = widget._uncalibrate_layer("")
-    assert result is None
-
-
-def test_harmonic_mismatch_error(make_viewer_model, qtbot):
-    """Test error when sample and calibration harmonics don't match."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-
-    widget = parent.calibration_tab
-
-    # Add layers with different harmonics
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    calibration_layer = create_image_layer_with_phasors()
-    calibration_layer.name = "calibration_layer"
-
-    # Modify harmonics to be different
-    calibration_layer.metadata["harmonics"] = [
-        h + 1 for h in sample_layer.metadata["harmonics"]
-    ]
-
-    viewer.add_layer(sample_layer)
-    viewer.add_layer(calibration_layer)
-
-    # Set up UI inputs
-    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
-        "calibration_layer"
-    )
-    widget.calibration_widget.frequency_input.setText("80")
-    widget.calibration_widget.lifetime_line_edit_widget.setText("2")
-
-    with patch("napari_phasors.calibration_tab.show_error") as mock_show_error:
-        widget._on_click()
-        mock_show_error.assert_called_once_with(
-            "Harmonics in sample and calibration layers do not match"
+    def assert_filter_kept(filter_kwargs, expected):
+        settings = sample_layer.metadata["settings"]
+        for key, value in expected.items():
+            assert settings["filter"][key] == value
+        assert settings["threshold"] == filter_kwargs["threshold"]
+        assert settings["threshold_method"] == (
+            filter_kwargs["threshold_method"]
         )
+        if "threshold_upper" in filter_kwargs:
+            assert settings["threshold_upper"] == (
+                filter_kwargs["threshold_upper"]
+            )
+
+    # Filters and thresholds are preserved through calibration and
+    # uncalibration: median, wavelet with sigma, and wavelet with levels.
+    for filter_kwargs, expected in (
+        (
+            {
+                "threshold": 0.1,
+                "threshold_upper": 0.9,
+                "threshold_method": "Manual",
+                "filter_method": "median",
+                "size": 3,
+                "repeat": 1,
+            },
+            {"method": "median", "size": 3, "repeat": 1},
+        ),
+        (
+            {
+                "threshold": 0.05,
+                "threshold_method": "Otsu",
+                "filter_method": "wavelet",
+                "sigma": 2.5,
+                "levels": 2,
+            },
+            {"method": "wavelet", "sigma": 2.5, "levels": 2},
+        ),
+        (
+            {
+                "threshold": 0.02,
+                "threshold_upper": 0.95,
+                "threshold_method": "Manual",
+                "filter_method": "wavelet",
+                "sigma": 1.5,
+                "levels": 4,
+            },
+            {"method": "wavelet", "sigma": 1.5, "levels": 4},
+        ),
+    ):
+        apply_filter_and_threshold(sample_layer, **filter_kwargs)
+        assert_filter_kept(filter_kwargs, expected)
+        button.click()
+        assert sample_layer.metadata["settings"]["calibrated"] is True
+        assert_filter_kept(filter_kwargs, expected)
+        button.click()
+        assert sample_layer.metadata["settings"]["calibrated"] is False
+        assert_filter_kept(filter_kwargs, expected)
 
 
-def test_on_image_layer_changed_with_frequency(make_viewer_model, qtbot):
-    """Test that frequency and reference lifetime populate from metadata."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-
-    widget = parent.calibration_tab
-
-    # Add layer with frequency and MCS-H5 reference lifetime in metadata
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    test_layer.metadata["settings"] = {
-        "frequency": 80.0,
-        "reference_lifetime_ns": 2.7,
-    }
-    viewer.add_layer(test_layer)
-
-    parent._sync_frequency_inputs_from_metadata()
-    assert widget.calibration_widget.frequency_input.text() == "80.0"
-    assert widget.calibration_widget.lifetime_line_edit_widget.text() == "2.7"
-
-
-def test_calibration_preserves_filters(make_viewer_model, qtbot):
-    """Test that filters and thresholds are preserved during calibration/uncalibration."""
-    from napari_phasors._utils import apply_filter_and_threshold
-
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    # Add uncalibrated layer
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    viewer.add_layer(sample_layer)
-
-    # Apply median filter with threshold to the layer
-    apply_filter_and_threshold(
-        sample_layer,
-        threshold=0.1,
-        threshold_upper=0.9,
-        threshold_method="Manual",
-        filter_method="median",
-        size=3,
-        repeat=1,
-    )
-
-    # Verify filter settings are stored
-    assert sample_layer.metadata["settings"]["filter"]["method"] == "median"
-    assert sample_layer.metadata["settings"]["filter"]["size"] == 3
-    assert sample_layer.metadata["settings"]["filter"]["repeat"] == 1
-    assert sample_layer.metadata["settings"]["threshold"] == 0.1
-    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.9
-    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
-
-    # Set up calibration
-    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
-        "sample_layer"
-    )
-    widget.calibration_widget.frequency_input.setText("80")
-    widget.calibration_widget.lifetime_line_edit_widget.setText("2.0")
-
-    # Calibrate the layer
-    widget.calibration_widget.calibrate_push_button.click()
-
-    # Verify calibration happened
-    assert sample_layer.metadata["settings"]["calibrated"] is True
-
-    # Verify filter settings are still present after calibration
-    assert sample_layer.metadata["settings"]["filter"]["method"] == "median"
-    assert sample_layer.metadata["settings"]["filter"]["size"] == 3
-    assert sample_layer.metadata["settings"]["filter"]["repeat"] == 1
-    assert sample_layer.metadata["settings"]["threshold"] == 0.1
-    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.9
-    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
-
-    # Now uncalibrate the layer
-    widget.calibration_widget.calibrate_push_button.click()
-
-    # Verify uncalibration happened
-    assert sample_layer.metadata["settings"]["calibrated"] is False
-
-    # Verify threshold and filter settings are still preserved after uncalibration
-    assert sample_layer.metadata["settings"]["filter"]["method"] == "median"
-    assert sample_layer.metadata["settings"]["filter"]["size"] == 3
-    assert sample_layer.metadata["settings"]["filter"]["repeat"] == 1
-    assert sample_layer.metadata["settings"]["threshold"] == 0.1
-    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.9
-    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
-
-
-def test_calibration_preserves_wavelet_sigma_filter(make_viewer_model, qtbot):
-    """Test that wavelet filters with sigma parameter are preserved during calibration/uncalibration."""
-    from napari_phasors._utils import apply_filter_and_threshold
-
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    # Add uncalibrated layer
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    viewer.add_layer(sample_layer)
-
-    # Apply wavelet filter with sigma to the layer
-    apply_filter_and_threshold(
-        sample_layer,
-        threshold=0.05,
-        threshold_method="Otsu",
-        filter_method="wavelet",
-        sigma=2.5,
-        levels=2,
-    )
-
-    # Verify filter settings are stored
-    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
-    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 2.5
-    assert sample_layer.metadata["settings"]["filter"]["levels"] == 2
-    assert sample_layer.metadata["settings"]["threshold"] == 0.05
-    assert sample_layer.metadata["settings"]["threshold_method"] == "Otsu"
-
-    # Set up calibration
-    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
-        "sample_layer"
-    )
-    widget.calibration_widget.frequency_input.setText("80")
-    widget.calibration_widget.lifetime_line_edit_widget.setText("2.0")
-
-    # Calibrate the layer
-    widget.calibration_widget.calibrate_push_button.click()
-
-    # Verify calibration happened
-    assert sample_layer.metadata["settings"]["calibrated"] is True
-
-    # Verify wavelet filter settings are still present after calibration
-    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
-    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 2.5
-    assert sample_layer.metadata["settings"]["filter"]["levels"] == 2
-    assert sample_layer.metadata["settings"]["threshold"] == 0.05
-    assert sample_layer.metadata["settings"]["threshold_method"] == "Otsu"
-
-    # Now uncalibrate the layer
-    widget.calibration_widget.calibrate_push_button.click()
-
-    # Verify uncalibration happened
-    assert sample_layer.metadata["settings"]["calibrated"] is False
-
-    # Verify wavelet filter settings are still preserved after uncalibration
-    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
-    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 2.5
-    assert sample_layer.metadata["settings"]["filter"]["levels"] == 2
-    assert sample_layer.metadata["settings"]["threshold"] == 0.05
-    assert sample_layer.metadata["settings"]["threshold_method"] == "Otsu"
-
-
-def test_calibration_preserves_wavelet_levels_filter(make_viewer_model, qtbot):
-    """Test that wavelet filters with different levels parameter are preserved during calibration/uncalibration."""
-    from napari_phasors._utils import apply_filter_and_threshold
-
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    # Add uncalibrated layer
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    viewer.add_layer(sample_layer)
-
-    # Apply wavelet filter with different levels parameter
-    apply_filter_and_threshold(
-        sample_layer,
-        threshold=0.02,
-        threshold_upper=0.95,
-        threshold_method="Manual",
-        filter_method="wavelet",
-        sigma=1.5,
-        levels=4,
-    )
-
-    # Verify filter settings are stored with levels=4
-    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
-    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 1.5
-    assert sample_layer.metadata["settings"]["filter"]["levels"] == 4
-    assert sample_layer.metadata["settings"]["threshold"] == 0.02
-    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.95
-    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
-
-    # Set up calibration
-    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
-        "sample_layer"
-    )
-    widget.calibration_widget.frequency_input.setText("80")
-    widget.calibration_widget.lifetime_line_edit_widget.setText("2.0")
-
-    # Calibrate the layer
-    widget.calibration_widget.calibrate_push_button.click()
-
-    # Verify calibration happened
-    assert sample_layer.metadata["settings"]["calibrated"] is True
-
-    # Verify wavelet filter settings with levels are preserved after calibration
-    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
-    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 1.5
-    assert sample_layer.metadata["settings"]["filter"]["levels"] == 4
-    assert sample_layer.metadata["settings"]["threshold"] == 0.02
-    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.95
-    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
-
-    # Now uncalibrate the layer
-    widget.calibration_widget.calibrate_push_button.click()
-
-    # Verify uncalibration happened
-    assert sample_layer.metadata["settings"]["calibrated"] is False
-
-    # Verify wavelet filter settings with levels are preserved after uncalibration
-    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
-    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 1.5
-    assert sample_layer.metadata["settings"]["filter"]["levels"] == 4
-    assert sample_layer.metadata["settings"]["threshold"] == 0.02
-    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.95
-    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
-
-
-def test_calibration_populate_comboboxes_recursion_guard(
+def test_calibration_inputs_filled_from_layer_metadata(
     make_viewer_model, qtbot
 ):
+    """Files that record their acquisition parameters fill the tab in.
+
+    Calibrated BrightEyes-MCS files carry the reference lifetime alongside
+    the laser frequency, so neither has to be retyped; selecting a layer
+    that records no lifetime must not keep the old one.
+    """
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-    widget._populating_comboboxes = True
-    widget._populate_comboboxes()
-    # It should return early and do nothing, count shouldn't change
-    assert widget._populating_comboboxes is True
+    calibration_widget = parent.calibration_tab.calibration_widget
+
+    _add_layer_with_settings(
+        viewer,
+        parent,
+        {'frequency': 80.0, 'reference_lifetime_ns': 2.7},
+        'mcs calibrated',
+    )
+    assert calibration_widget.frequency_input.text() == "80.0"
+    assert calibration_widget.lifetime_line_edit_widget.text() == "2.7"
+    parent._sync_frequency_inputs_from_metadata()
+    assert calibration_widget.frequency_input.text() == "80.0"
+    assert calibration_widget.lifetime_line_edit_widget.text() == "2.7"
+
+    _add_layer_with_settings(
+        viewer, parent, {'frequency': 40.0}, 'plain layer'
+    )
+    # The stale 2.7 ns would otherwise be applied to the wrong acquisition.
+    assert calibration_widget.lifetime_line_edit_widget.text() == ""
+    assert calibration_widget.frequency_input.text() == "40.0"
 
 
-def test_calibration_click_empty_calibration_name(
+def test_calibration_with_an_already_calibrated_reference(
     make_viewer_model, qtbot, monkeypatch
 ):
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
+    """An already-calibrated reference is only used once the user agrees to
+    use its original data; it then gets its own calibration back."""
+    from qtpy.QtWidgets import QMessageBox
 
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    viewer.add_layer(sample_layer)
-
-    with patch("napari_phasors.calibration_tab.show_error") as mock_show_error:
-        widget.calibration_widget.calibration_layer_combobox.setCurrentIndex(
-            -1
-        )
-        widget._on_click()
-        mock_show_error.assert_called_with(
-            "Select sample and calibration layers"
-        )
-
-
-def test_calibration_with_already_calibrated_calibration_layer(
-    make_viewer_model, qtbot, monkeypatch
-):
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.calibration_tab
@@ -674,32 +412,32 @@ def test_calibration_with_already_calibrated_calibration_layer(
     sample_layer.name = "sample_layer"
     calibration_layer = create_image_layer_with_phasors()
     calibration_layer.name = "calibration_layer"
-
     calibration_layer.metadata["settings"] = {
         "calibrated": True,
         "calibration_phase": [0.1],
         "calibration_modulation": [1.1],
     }
-
     viewer.add_layer(sample_layer)
     viewer.add_layer(calibration_layer)
-
     widget.calibration_widget.calibration_layer_combobox.setCurrentText(
         "calibration_layer"
     )
+
+    # Cancelling calibrates nothing.
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Cancel
+    )
+    widget._on_click()
+    assert not sample_layer.metadata.get("settings", {}).get(
+        "calibrated", False
+    )
+
     widget.calibration_widget.frequency_input.setText("80")
     widget.calibration_widget.lifetime_line_edit_widget.setText("2.5")
-
-    # Mock user saying "Yes" to use original uncalibrated data
-    from qtpy.QtWidgets import QMessageBox
-
     monkeypatch.setattr(
         QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes
     )
-
     widget._on_click()
-
-    # Verify sample was calibrated
     assert sample_layer.metadata["settings"]["calibrated"] is True
     # The reference layer was only uncalibrated to be used as reference; it
     # gets its own calibration back afterwards.
@@ -707,49 +445,6 @@ def test_calibration_with_already_calibrated_calibration_layer(
     assert settings["calibrated"] is True
     assert settings["calibration_phase"] == [0.1]
     assert settings["calibration_modulation"] == [1.1]
-
-
-def test_calibration_with_already_calibrated_calibration_layer_cancel(
-    make_viewer_model, qtbot, monkeypatch
-):
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    sample_layer = create_image_layer_with_phasors()
-    sample_layer.name = "sample_layer"
-    calibration_layer = create_image_layer_with_phasors()
-    calibration_layer.name = "calibration_layer"
-
-    calibration_layer.metadata["settings"] = {"calibrated": True}
-
-    viewer.add_layer(sample_layer)
-    viewer.add_layer(calibration_layer)
-
-    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
-        "calibration_layer"
-    )
-
-    from qtpy.QtWidgets import QMessageBox
-
-    monkeypatch.setattr(
-        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Cancel
-    )
-
-    widget._on_click()
-    assert not sample_layer.metadata.get("settings", {}).get(
-        "calibrated", False
-    )
-
-
-def test_invert_calibration_parameters_scalar(make_viewer_model, qtbot):
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    phi_inv, mod_inv = widget._invert_calibration_parameters(0.5, 2.0)
-    assert phi_inv == -0.5
-    assert mod_inv == 0.5
 
 
 def test_apply_phasor_transformation_lists_and_scalars(
@@ -776,153 +471,6 @@ def test_apply_phasor_transformation_lists_and_scalars(
     assert sample_layer.metadata["G_original"] is not None
 
 
-def test_close_event_unhooking(make_viewer_model, qtbot):
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    class MockEvent:
-        accepted = False
-
-        def accept(self):
-            self.accepted = True
-
-    event = MockEvent()
-    widget.closeEvent(event)
-    # The event is accepted and a second close is harmless (already unhooked).
-    widget.closeEvent(event)
-    assert True  # accept() may be handled by base class
-
-
-def test_fluorophore_combobox_populates_lifetime(make_viewer_model, qtbot):
-    """Selecting a reference fluorophore fills the lifetime edit."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    combobox = widget.calibration_widget.fluorophore_combobox
-    lifetime_edit = widget.calibration_widget.lifetime_line_edit_widget
-
-    # First item is the placeholder and carries no lifetime.
-    assert combobox.itemData(0) is None
-    assert combobox.count() > 1
-
-    # Select the first real fluorophore entry.
-    combobox.setCurrentIndex(1)
-    expected = combobox.itemData(1)
-    assert lifetime_edit.text() == f"{expected:g}"
-
-
-def test_fluorophore_reset_on_manual_lifetime_edit(make_viewer_model, qtbot):
-    """Editing the lifetime by hand resets the fluorophore selection."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    combobox = widget.calibration_widget.fluorophore_combobox
-    lifetime_edit = widget.calibration_widget.lifetime_line_edit_widget
-
-    combobox.setCurrentIndex(1)
-    assert combobox.currentIndex() == 1
-
-    # Simulate a user editing the field (textEdited fires only on user input).
-    lifetime_edit.setText("2.5")
-    widget._on_lifetime_edited("2.5")
-    assert combobox.currentIndex() == 0
-
-
-def test_fluorophore_placeholder_selection_noop(make_viewer_model, qtbot):
-    """Selecting the placeholder entry leaves the lifetime edit untouched."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    lifetime_edit = widget.calibration_widget.lifetime_line_edit_widget
-
-    # Put a value in the lifetime edit, then select the placeholder (index 0,
-    # itemData is None). The handler should hit its early return and not touch
-    # the lifetime edit.
-    lifetime_edit.setText("3.14")
-    widget._on_fluorophore_selected(0)
-    assert lifetime_edit.text() == "3.14"
-
-
-def test_lifetime_edit_from_combo_does_not_reset(make_viewer_model, qtbot):
-    """Programmatic lifetime edits (from the combo) must not reset the combo."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    combobox = widget.calibration_widget.fluorophore_combobox
-
-    combobox.setCurrentIndex(1)
-    assert combobox.currentIndex() == 1
-
-    # While the guard flag is set (as it is during _on_fluorophore_selected),
-    # _on_lifetime_edited must early-return and leave the selection alone.
-    widget._setting_lifetime_from_combo = True
-    widget._on_lifetime_edited("9.9")
-    assert combobox.currentIndex() == 1
-
-
-def test_rich_text_delegate_paint_with_html(make_viewer_model, qtbot):
-    """The delegate renders an item's HTML label without raising."""
-    from qtpy.QtGui import QPainter, QPixmap
-    from qtpy.QtWidgets import QStyle, QStyleOptionViewItem
-
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    combobox = widget.calibration_widget.fluorophore_combobox
-    delegate = combobox.itemDelegate()
-    model = combobox.model()
-
-    pixmap = QPixmap(200, 20)
-    painter = QPainter(pixmap)
-    try:
-        option = QStyleOptionViewItem()
-        option.rect = pixmap.rect()
-
-        # Item 1 carries an HTML label -> the rich-text rendering branch.
-        html_index = model.index(1, 0)
-        assert html_index.data(_HTML_LABEL_ROLE) is not None
-        delegate.paint(painter, option, html_index)
-
-        # Same item painted while selected exercises the highlighted-text color.
-        option.state |= QStyle.State_Selected
-        delegate.paint(painter, option, html_index)
-    finally:
-        painter.end()
-
-
-def test_rich_text_delegate_paint_without_html(make_viewer_model, qtbot):
-    """Items without an HTML label fall back to the default painting path."""
-    from qtpy.QtGui import QPainter, QPixmap
-    from qtpy.QtWidgets import QStyleOptionViewItem
-
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.calibration_tab
-
-    combobox = widget.calibration_widget.fluorophore_combobox
-    delegate = combobox.itemDelegate()
-    model = combobox.model()
-
-    pixmap = QPixmap(200, 20)
-    painter = QPainter(pixmap)
-    try:
-        option = QStyleOptionViewItem()
-        option.rect = pixmap.rect()
-
-        # Item 0 is the placeholder and carries no HTML label -> super().paint.
-        plain_index = model.index(0, 0)
-        assert plain_index.data(_HTML_LABEL_ROLE) is None
-        delegate.paint(painter, option, plain_index)
-    finally:
-        painter.end()
-
-
 def _add_layer_with_settings(viewer, parent, settings, name):
     """Add a phasor layer carrying *settings* and select it in *parent*."""
     layer = create_image_layer_with_phasors()
@@ -931,66 +479,3 @@ def _add_layer_with_settings(viewer, parent, settings, name):
     viewer.add_layer(layer)
     parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
     return layer
-
-
-def test_calibration_inputs_filled_from_layer_metadata(
-    make_viewer_model, qtbot
-):
-    """Files that record their acquisition parameters fill the tab in.
-
-    Calibrated BrightEyes-MCS files carry the reference lifetime alongside
-    the laser frequency, so neither has to be retyped.
-    """
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    calibration_widget = parent.calibration_tab.calibration_widget
-
-    _add_layer_with_settings(
-        viewer,
-        parent,
-        {'frequency': 80.0, 'reference_lifetime_ns': 2.7},
-        'mcs calibrated',
-    )
-
-    assert calibration_widget.frequency_input.text() == "80.0"
-    assert calibration_widget.lifetime_line_edit_widget.text() == "2.7"
-
-
-def test_calibration_lifetime_cleared_for_layer_without_it(
-    make_viewer_model, qtbot
-):
-    """Selecting a layer that records no lifetime must not keep the old one."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    calibration_widget = parent.calibration_tab.calibration_widget
-
-    _add_layer_with_settings(
-        viewer,
-        parent,
-        {'frequency': 80.0, 'reference_lifetime_ns': 2.7},
-        'mcs calibrated',
-    )
-    _add_layer_with_settings(
-        viewer, parent, {'frequency': 40.0}, 'plain layer'
-    )
-
-    # The stale 2.7 ns would otherwise be applied to the wrong acquisition.
-    assert calibration_widget.lifetime_line_edit_widget.text() == ""
-    assert calibration_widget.frequency_input.text() == "40.0"
-
-
-def test_calibration_lifetime_set_without_emitting_signals(
-    make_viewer_model, qtbot
-):
-    """Filling the field in must not look like the user typing."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    field = parent.calibration_tab.calibration_widget.lifetime_line_edit_widget
-    edits = []
-    field.textChanged.connect(edits.append)
-
-    parent._set_calibration_lifetime_from_metadata("3.5")
-
-    assert field.text() == "3.5"
-    # A feedback loop here would clear the fluorophore dropdown selection.
-    assert edits == []

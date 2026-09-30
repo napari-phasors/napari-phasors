@@ -4,6 +4,7 @@ This module contains utility functions used by other modules.
 """
 
 import contextlib
+import io
 import os
 import re
 import warnings
@@ -21,6 +22,7 @@ from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image, Labels
 from napari.utils import progress as _napari_progress
+from napari.utils.colormaps import AVAILABLE_COLORMAPS
 from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
 from qtpy.QtCore import (
     QEvent,
@@ -438,7 +440,7 @@ _PRIMARY_BUTTON_BLOCKED_QSS = (
 )
 
 
-#: Text colour of the notes warning that a run replaces stored settings.
+#: Text colour of the notes cautioning about the layers' settings.
 SETTINGS_NOTE_COLOR = "#e67e22"
 
 
@@ -446,8 +448,8 @@ def create_settings_note_label(parent=None):
     """Return a hidden, word-wrapped label for settings cautions.
 
     Tabs place it next to their run button and fill it through
-    :func:`set_settings_note`, e.g. with "running will overwrite the
-    parameters stored in ..." when several layers are selected.
+    :func:`set_settings_note`, e.g. with the frequencies stored in the other
+    selected layers.
     """
     label = QLabel(parent)
     label.setObjectName("settings_note")
@@ -942,6 +944,15 @@ def resolve_napari_layer_colormap(
     if custom_color is None:
         return None
     return create_napari_colormap_from_qcolor(custom_color)
+
+
+#: The colormaps napari (and matplotlib, which it falls back to) knows
+#: before any layer registers its own. A layer's colormap is registered
+#: under its name as soon as it is used, so only these names are sure to be
+#: found again in another session.
+BUILTIN_COLORMAP_NAMES = frozenset(AVAILABLE_COLORMAPS) | frozenset(
+    plt.colormaps()
+)
 
 
 def layer_colormap_to_settings(colormap, gamma=None) -> dict:
@@ -2013,6 +2024,124 @@ def format_phasor_layer_name(
     if channel_label is not None and str(channel_label).strip() != "":
         name = f"{name}: Channel {channel_label}"
     return f"{name} [Phasor]"
+
+
+_PHASOR_TAG_RE = re.compile(r"\s*\[Phasor\](?P<dup>\s*\[\d+\])?$")
+_ANALYSIS_TAG_RE = re.compile(
+    r"^(?P<base>.*?)\s*\[(?P<label>[^\[\]]+)\](?P<dup>\s*\[\d+\])?$"
+)
+
+
+def analysis_layer_name(analysis: str, source_name: str) -> str:
+    """Return the name of a layer derived from a phasor layer by an analysis.
+
+    The analysis goes in the trailing square brackets, in place of the
+    ``[Phasor]`` tag of the source layer, so
+    ``analysis_layer_name("FRET efficiency", "s Intensity [Phasor]")`` is
+    ``"s Intensity [FRET efficiency]"``. A source that carries no
+    ``[Phasor]`` tag (a renamed layer) simply gets the tag appended.
+
+    Parameters
+    ----------
+    analysis : str
+        Analysis label, e.g. ``"FRET efficiency"`` or
+        ``"(Linear Projection) Donor"``.
+    source_name : str
+        Name of the phasor layer the result was computed from.
+
+    Returns
+    -------
+    str
+        Name of the derived layer.
+    """
+    match = _PHASOR_TAG_RE.search(source_name)
+    if match:
+        base = source_name[: match.start()]
+        dup = match.group("dup") or ""
+    else:
+        base, dup = source_name, ""
+    return f"{base} [{analysis}]{dup}"
+
+
+def split_analysis_layer_name(name: str) -> tuple[str, str | None]:
+    """Split a derived layer name into its source base name and analysis.
+
+    Inverse of :func:`analysis_layer_name`: the base is the source layer's
+    name without its trailing ``[Phasor]``, so it can be compared with
+    :func:`phasor_layer_base_name` of a candidate source layer.
+
+    Returns
+    -------
+    tuple of (str, str or None)
+        ``(base, analysis)``, or ``(name, None)`` when *name* has no
+        trailing bracketed label.
+    """
+    match = _ANALYSIS_TAG_RE.match(name)
+    if match is None:
+        return name, None
+    return match.group("base") + (match.group("dup") or ""), match.group(
+        "label"
+    )
+
+
+_COMPONENT_LABEL_RE = re.compile(
+    r"^\((?P<method>Linear Projection|Component Fit)\) (?P<name>.+)$"
+)
+
+
+def component_analysis_label(component_name: str, fit: bool = False) -> str:
+    """Return the bracket label of a component-analysis fraction layer.
+
+    ``component_analysis_label("Donor")`` is
+    ``"(Linear Projection) Donor"`` and, with ``fit=True``,
+    ``"(Component Fit) Donor"``. The component name is kept because a fit
+    yields one layer per component, and the method keeps the two methods'
+    layers apart.
+    """
+    method = "Component Fit" if fit else "Linear Projection"
+    return f"({method}) {component_name}"
+
+
+def parse_component_analysis_label(label: str | None):
+    """Return ``(method, component_name)`` or None if not a match."""
+    match = _COMPONENT_LABEL_RE.match(label or "")
+    if match is None:
+        return None
+    return match.group("method"), match.group("name")
+
+
+_CONCENTRATION_LABEL_RE = re.compile(
+    r"^\(Absolute Concentration\) (?P<name>.+)$"
+)
+
+
+def concentration_analysis_label(component_name: str) -> str:
+    """Return the bracket label of an absolute-concentration layer.
+
+    ``concentration_analysis_label("Free")`` is
+    ``"(Absolute Concentration) Free"``; the summed map uses ``"Total"``.
+    """
+    return f"(Absolute Concentration) {component_name}"
+
+
+def parse_concentration_analysis_label(label: str | None) -> str | None:
+    """Return the component name of a concentration label, else None."""
+    match = _CONCENTRATION_LABEL_RE.match(label or "")
+    return None if match is None else match.group("name")
+
+
+def is_component_fit_label(label: str | None) -> bool:
+    """Whether *label* is a component *fit* label (vs linear projection)."""
+    match = _COMPONENT_LABEL_RE.match(label or "")
+    return match is not None and match.group("method") == "Component Fit"
+
+
+def phasor_layer_base_name(name: str) -> str:
+    """Return *name* without its trailing ``[Phasor]`` tag (if any)."""
+    match = _PHASOR_TAG_RE.search(name)
+    if match is None:
+        return name
+    return name[: match.start()] + (match.group("dup") or "")
 
 
 def extract_channel_label(
@@ -3192,6 +3321,17 @@ class CheckableComboBox(QComboBox):
         # Only emit signals if they weren't blocked by parent
         if not signals_were_blocked:
             self._refresh_primary_and_notify()
+        else:
+            self._mark_primary_announced()
+
+    def _mark_primary_announced(self):
+        """Record a primary set while the parent blocks the signals.
+
+        The parent announces that change itself, so it must neither be
+        announced again on the next refresh nor hide the next real change
+        (unchecking the last layer would otherwise go unnoticed).
+        """
+        self._last_emitted_primary = self._primary_layer_name
 
     def _set_primary_by_name(self, name, emit=True):
         """Set the primary layer and update role data on all items."""
@@ -3199,7 +3339,9 @@ class CheckableComboBox(QComboBox):
         self._primary_layer_name = name
         self._sync_primary_role()
         self._update_display_text()
-        if emit and old != name:
+        if self.signalsBlocked():
+            self._mark_primary_announced()
+        elif emit and old != name:
             self._last_emitted_primary = name
             self.primaryLayerChanged.emit(name)
 
@@ -3416,6 +3558,52 @@ class ExclusiveGroupRowsMixin:
             self._syncing_group_rows = False
 
 
+LEGEND_POSITIONS = {
+    "inside": (
+        ("Upper right", "upper right"),
+        ("Upper left", "upper left"),
+        ("Lower right", "lower right"),
+        ("Lower left", "lower left"),
+        ("Center right", "center right"),
+        ("Center left", "center left"),
+        ("Upper center", "upper center"),
+        ("Lower center", "lower center"),
+        ("Center", "center"),
+        ("Best", "best"),
+    ),
+    "outside": (
+        ("Right", "right"),
+        ("Top", "top"),
+        ("Bottom", "bottom"),
+    ),
+}
+
+_OUTSIDE_LEGEND_LOCS = {
+    "right": "outside right center",
+    "top": "outside upper center",
+    "bottom": "outside lower center",
+}
+
+
+def default_legend_position(placement: str) -> str:
+    """Return the position a legend takes by default for *placement*."""
+    return LEGEND_POSITIONS[placement][0][1]
+
+
+def normalize_legend_location(placement, position) -> tuple:
+    """Return a valid ``(placement, position)`` pair.
+
+    Stored or copied settings can name a placement or a position that no
+    longer exists (or belongs to the other placement); anything unusable
+    falls back to the default rather than failing to draw the legend.
+    """
+    if placement not in LEGEND_POSITIONS:
+        placement = "inside"
+    if position not in [key for _label, key in LEGEND_POSITIONS[placement]]:
+        position = default_legend_position(placement)
+    return placement, position
+
+
 class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     """Dialog for histogram visualization settings.
 
@@ -3427,7 +3615,7 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     - Logarithmic y axis.
     - Number of histogram bins.
     - Central-tendency vertical line (Mean / Median / Center of mass).
-    - Show / hide legend.
+    - Show / hide legend, and place it inside or outside the plot.
     - Per-layer colour selection (Individual layers mode).
     - Curve colouring and per-series colours when several quantities are
       merged into one curve each (Merged mode).
@@ -3445,6 +3633,11 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         Initial central-tendency line selection.
     show_legend : bool
         Initial state of the *Show legend* checkbox.
+    legend_placement : {"inside", "outside"}, optional
+        Whether the legend is drawn inside or outside the axes.
+    legend_position : str, optional
+        Initial legend position, one of :data:`LEGEND_POSITIONS` for the
+        placement. Falls back to the placement's default when it is not.
     log_scale : bool, optional
         Initial state of the *Logarithmic y axis* checkbox.
     bins : int, optional
@@ -3454,6 +3647,8 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     split_mask_labels_available : bool, optional
         Whether that checkbox is shown at all. It only means something when
         the analysed layers are masked with several labels.
+    fill_opacity : float, optional
+        Initial opacity (0-1) of the area under the curves.
     layer_labels : list of str, optional
         Dataset names offered per-curve colours in *Individual layers* mode.
     group_labels : list of str, optional
@@ -3498,11 +3693,13 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         normalize: bool = False,
         central_tendency: str = "None",
         show_legend: bool = False,
-        aspect_ratio: str = "auto",
+        legend_placement: str = "inside",
+        legend_position: str = "upper right",
         log_scale: bool = False,
         bins: int = 150,
         split_mask_labels: bool = False,
         split_mask_labels_available: bool = False,
+        fill_opacity: float = 0.5,
         layer_labels: list = None,
         group_labels: list = None,
         group_assignments: dict = None,
@@ -3528,7 +3725,36 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.mode_combo.addItems(list(self.DISPLAY_MODES))
         self.mode_combo.setCurrentText(display_mode)
         mode_layout.addWidget(self.mode_combo)
+        mode_layout.addStretch()
         layout.addLayout(mode_layout)
+
+        # --- Number of bins ---
+        bins_layout = QHBoxLayout()
+        bins_layout.addWidget(QLabel("Number of bins:"))
+        self.bins_spinbox = QSpinBox()
+        self.bins_spinbox.setRange(self.MIN_BINS, self.MAX_BINS)
+        self.bins_spinbox.setValue(
+            int(np.clip(int(bins), self.MIN_BINS, self.MAX_BINS))
+        )
+        self.bins_spinbox.setToolTip(
+            "How many bins the value range is divided into. The statistics "
+            "that depend on the bins (center of mass) follow the same choice."
+        )
+        bins_layout.addWidget(self.bins_spinbox)
+        bins_layout.addStretch()
+        layout.addLayout(bins_layout)
+
+        # --- Central tendency ---
+        ct_layout = QHBoxLayout()
+        ct_layout.addWidget(QLabel("Show Center of Mass, Mean or Median:"))
+        self.central_tendency_combo = QComboBox()
+        self.central_tendency_combo.addItems(
+            list(self.CENTRAL_TENDENCY_OPTIONS)
+        )
+        self.central_tendency_combo.setCurrentText(central_tendency)
+        ct_layout.addWidget(self.central_tendency_combo)
+        ct_layout.addStretch()
+        layout.addLayout(ct_layout)
 
         # --- Separate mask labels ---
         self.split_labels_checkbox = QCheckBox("Separate mask labels")
@@ -3550,6 +3776,33 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.sd_checkbox.setChecked(show_sd)
         layout.addWidget(self.sd_checkbox)
 
+        # --- Fill area under the curve ---
+        self.fill_checkbox = QCheckBox("Fill area under the curve")
+        self.fill_checkbox.setToolTip(
+            "Colour the area under each curve. Available when no standard "
+            "deviation band is drawn, for instance with a single layer."
+        )
+        self.fill_checkbox.setChecked(True)
+        layout.addWidget(self.fill_checkbox)
+
+        fill_opacity_layout = QHBoxLayout()
+        fill_opacity_layout.setContentsMargins(20, 0, 0, 0)
+        self._fill_opacity_label = QLabel("Fill opacity:")
+        fill_opacity_layout.addWidget(self._fill_opacity_label)
+        self.fill_opacity_spinbox = QSpinBox()
+        self.fill_opacity_spinbox.setRange(0, 100)
+        self.fill_opacity_spinbox.setSingleStep(5)
+        self.fill_opacity_spinbox.setSuffix(" %")
+        self.fill_opacity_spinbox.setValue(int(round(fill_opacity * 100)))
+        fill_opacity_layout.addWidget(self.fill_opacity_spinbox)
+        fill_opacity_layout.addStretch()
+        layout.addLayout(fill_opacity_layout)
+        self.fill_checkbox.toggled.connect(
+            lambda _checked: self._update_ui_for_mode(
+                self.mode_combo.currentText()
+            )
+        )
+
         # --- Normalise to maximum ---
         self.normalize_checkbox = QCheckBox("Normalize to maximum")
         self.normalize_checkbox.setToolTip(
@@ -3570,38 +3823,6 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.log_scale_checkbox.setChecked(log_scale)
         layout.addWidget(self.log_scale_checkbox)
 
-        # --- Number of bins ---
-        bins_layout = QHBoxLayout()
-        bins_layout.addWidget(QLabel("Number of bins:"))
-        self.bins_spinbox = QSpinBox()
-        self.bins_spinbox.setRange(self.MIN_BINS, self.MAX_BINS)
-        self.bins_spinbox.setValue(
-            int(np.clip(int(bins), self.MIN_BINS, self.MAX_BINS))
-        )
-        self.bins_spinbox.setToolTip(
-            "How many bins the value range is divided into. The statistics "
-            "that depend on the bins (center of mass) follow the same choice."
-        )
-        bins_layout.addWidget(self.bins_spinbox)
-        bins_layout.addStretch()
-        layout.addLayout(bins_layout)
-
-        # --- Central tendency ---
-        ct_layout = QHBoxLayout()
-        ct_layout.addWidget(QLabel("Show line:"))
-        self.central_tendency_combo = QComboBox()
-        self.central_tendency_combo.addItems(
-            list(self.CENTRAL_TENDENCY_OPTIONS)
-        )
-        self.central_tendency_combo.setCurrentText(central_tendency)
-        ct_layout.addWidget(self.central_tendency_combo)
-        layout.addLayout(ct_layout)
-
-        # --- Show legend ---
-        self.legend_checkbox = QCheckBox("Show legend")
-        self.legend_checkbox.setChecked(show_legend)
-        layout.addWidget(self.legend_checkbox)
-
         # --- White background ---
         self.white_bg_checkbox = QCheckBox("White background")
         self.white_bg_checkbox.setChecked(False)
@@ -3612,17 +3833,45 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.smooth_checkbox.setChecked(True)
         layout.addWidget(self.smooth_checkbox)
 
-        # --- Aspect ratio ---
-        aspect_layout = QHBoxLayout()
-        aspect_layout.addWidget(QLabel("Aspect ratio:"))
-        self.aspect_ratio_combo = QComboBox()
-        self.aspect_ratio_combo.addItem("Auto (Rectangle)", "auto")
-        self.aspect_ratio_combo.addItem("Equal (Square)", "equal")
-        self.aspect_ratio_combo.setCurrentText(
-            "Auto (Rectangle)" if aspect_ratio == "auto" else "Equal (Square)"
+        # --- Show legend ---
+        self.legend_checkbox = QCheckBox("Show legend")
+        self.legend_checkbox.setChecked(show_legend)
+        layout.addWidget(self.legend_checkbox)
+
+        legend_placement, legend_position = normalize_legend_location(
+            legend_placement, legend_position
         )
-        aspect_layout.addWidget(self.aspect_ratio_combo)
-        layout.addLayout(aspect_layout)
+        legend_layout = QHBoxLayout()
+        legend_layout.setContentsMargins(20, 0, 0, 0)
+        self._legend_location_label = QLabel("Legend location:")
+        legend_layout.addWidget(self._legend_location_label)
+        self.legend_placement_combo = QComboBox()
+        self.legend_placement_combo.addItem("Inside plot", "inside")
+        self.legend_placement_combo.addItem("Outside plot", "outside")
+        self.legend_placement_combo.setToolTip(
+            "Draw the legend over the plot, or next to it where it never "
+            "hides a curve."
+        )
+        self.legend_placement_combo.setCurrentIndex(
+            self.legend_placement_combo.findData(legend_placement)
+        )
+        legend_layout.addWidget(self.legend_placement_combo)
+        self.legend_position_combo = QComboBox()
+        self._fill_legend_positions(legend_position)
+        legend_layout.addWidget(self.legend_position_combo)
+        legend_layout.addStretch()
+        layout.addLayout(legend_layout)
+        self.legend_placement_combo.currentIndexChanged.connect(
+            lambda _index: self._fill_legend_positions()
+        )
+        self.legend_checkbox.toggled.connect(self._update_legend_controls)
+        # SD pools source layers, not the curves derived from each of them
+        self._sd_layer_count = len(group_labels or layer_labels or [])
+        self.sd_checkbox.toggled.connect(
+            lambda _checked: self._update_ui_for_mode(
+                self.mode_combo.currentText()
+            )
+        )
 
         # --- Layer colours (Individual layers mode) ---
         default_tab10 = plt.cm.tab10.colors
@@ -3636,7 +3885,6 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             for idx, label in enumerate(layer_labels):
                 row = QHBoxLayout()
                 name_lbl = QLabel(label)
-                name_lbl.setMaximumWidth(200)
                 row.addWidget(name_lbl)
                 if layer_colors and label in layer_colors:
                     color = layer_colors[label]
@@ -3673,12 +3921,16 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         style_row.addStretch()
         series_layout.addLayout(style_row)
 
+        # The colour buttons only matter for solid colours
+        self._series_colors_widget = QWidget()
+        series_colors_layout = QVBoxLayout(self._series_colors_widget)
+        series_colors_layout.setContentsMargins(0, 0, 0, 0)
+        series_layout.addWidget(self._series_colors_widget)
         self._series_color_buttons = {}
         if series_labels:
             for idx, label in enumerate(series_labels):
                 row = QHBoxLayout()
                 name_lbl = QLabel(label)
-                name_lbl.setMaximumWidth(200)
                 row.addWidget(name_lbl)
                 if series_colors and label in series_colors:
                     color = series_colors[label]
@@ -3689,8 +3941,12 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
                 self._set_btn_color(btn, color)
                 btn.clicked.connect(lambda checked, b=btn: self._pick_color(b))
                 row.addWidget(btn)
-                series_layout.addLayout(row)
+                series_colors_layout.addLayout(row)
                 self._series_color_buttons[label] = btn
+        self.series_style_combo.currentIndexChanged.connect(
+            lambda _index: self._update_series_colors_visibility()
+        )
+        self._update_series_colors_visibility()
         layout.addWidget(self._series_section)
 
         # --- Group section (Grouped mode) ---
@@ -3829,10 +4085,77 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             and not is_grouped
             and not is_individual
         )
-        # SD only meaningful for Merged / Grouped
-        self.sd_checkbox.setEnabled(not is_individual)
-        # Legend only meaningful for Individual / Grouped
-        self.legend_checkbox.setEnabled(is_individual or is_grouped)
+        # SD needs several layers to pool, and only applies to Merged / Grouped
+        sd_available = not is_individual and self._sd_layer_count > 1
+        self.sd_checkbox.setEnabled(sd_available)
+        # The fill stands in for the SD band on a single merged curve
+        fill_available = not (sd_available and self.sd_checkbox.isChecked())
+        self.fill_checkbox.setEnabled(fill_available)
+        fill_opacity_enabled = (
+            fill_available and self.fill_checkbox.isChecked()
+        )
+        self._fill_opacity_label.setEnabled(fill_opacity_enabled)
+        self.fill_opacity_spinbox.setEnabled(fill_opacity_enabled)
+        # Merged draws a legend only when it shows several series at once
+        self.legend_checkbox.setEnabled(
+            is_individual or is_grouped or bool(self._series_color_buttons)
+        )
+        self._update_legend_controls()
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        """Resize the dialog's height to the sections now showing."""
+        if not self.isVisible():
+            return
+        self.layout().activate()
+        height = self.sizeHint().height()
+        screen = self.screen()
+        if screen is not None:
+            height = min(height, screen.availableGeometry().height())
+        self.resize(self.width(), height)
+
+    def showEvent(self, event) -> None:
+        """Widen the dialog to fit the full layer names, up to the screen."""
+        super().showEvent(event)
+        screen = self.screen()
+        if screen is None:
+            return
+        limit = int(screen.availableGeometry().width() * 0.9)
+        wanted = min(max(self.sizeHint().width(), self.width()), limit)
+        if wanted > self.width():
+            self.resize(wanted, self.height())
+
+    def _update_series_colors_visibility(self) -> None:
+        """Show the per-series colour buttons only for solid colours."""
+        self._series_colors_widget.setVisible(
+            self.series_style_combo.currentData() == "solid"
+        )
+        self._fit_height()
+
+    def _update_legend_controls(self, *_args) -> None:
+        """Enable the legend location controls only while a legend is shown."""
+        enabled = (
+            self.legend_checkbox.isEnabled()
+            and self.legend_checkbox.isChecked()
+        )
+        self._legend_location_label.setEnabled(enabled)
+        self.legend_placement_combo.setEnabled(enabled)
+        self.legend_position_combo.setEnabled(enabled)
+
+    def _fill_legend_positions(self, selected: str = None) -> None:
+        """List the positions of the chosen placement, keeping *selected*.
+
+        Without *selected* the current position is kept when the new
+        placement offers it, and the placement's default is used otherwise.
+        """
+        placement = self.legend_placement_combo.currentData()
+        if selected is None:
+            selected = self.legend_position_combo.currentData()
+        self.legend_position_combo.clear()
+        for label, key in LEGEND_POSITIONS[placement]:
+            self.legend_position_combo.addItem(label, key)
+        index = self.legend_position_combo.findData(selected)
+        self.legend_position_combo.setCurrentIndex(max(index, 0))
 
     # ------------------------------------------------------------------
     # Group row management
@@ -3956,6 +4279,14 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             return
         super().accept()
 
+    def get_legend_placement(self) -> str:
+        """Return ``"inside"`` or ``"outside"`` for the legend."""
+        return self.legend_placement_combo.currentData()
+
+    def get_legend_position(self) -> str:
+        """Return the legend position key for the chosen placement."""
+        return self.legend_position_combo.currentData()
+
     def get_series_style(self) -> str:
         """Return ``"colormap"`` or ``"solid"`` for the merged curves."""
         return self.series_style_combo.currentData()
@@ -4004,6 +4335,460 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             i + 1: row["color_btn"]._color
             for i, row in enumerate(self._group_row_data)
         }
+
+
+class HistogramExportDialog(QDialog):
+    """Choose how to export a histogram, with a preview of the result.
+
+    The dialog picks the file format (PNG, SVG, JPG or CSV) and, for the
+    image formats, the aspect ratio, size (in cm, inches or pixels), DPI,
+    text and tick sizes, background and legend location. The preview is the
+    histogram drawn with those choices, so what it shows is what is saved.
+    The choices only apply to the exported file, not to the plot on screen.
+    It only collects them; :class:`HistogramWidget` writes the file.
+
+    Parameters
+    ----------
+    histogram : HistogramWidget
+        Histogram to export. It draws the preview and supplies the aspect
+        ratio, background and legend location of the plot as currently shown.
+    options : dict, optional
+        Choices to start from, as returned by :meth:`options` on an earlier
+        export. Unknown or invalid entries are ignored.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    FORMATS = (
+        ("PNG image", "png"),
+        ("SVG vector image", "svg"),
+        ("JPG image", "jpg"),
+        ("CSV data", "csv"),
+    )
+
+    ASPECT_RATIOS = (
+        ("As shown", None),
+        ("Square (1:1)", 1.0),
+        ("4:3", 4 / 3),
+        ("3:2", 3 / 2),
+        ("16:9", 16 / 9),
+        ("2:1", 2.0),
+        ("Custom", "custom"),
+    )
+
+    UNITS = ("cm", "in", "px")
+    _INCHES_PER_UNIT = {"cm": 1 / 2.54, "in": 1.0}
+
+    _SIZE_SPEC = {
+        "cm": (0.5, 200.0, 1, 0.5, 12.0),
+        "in": (0.5, 200.0, 1, 0.5, 5.0),
+        "px": (50, 20000, 0, 50, 1500),
+    }
+    MIN_DPI = 50
+    MAX_DPI = 1200
+    MIN_FONT_SIZE = 1.0
+    MAX_FONT_SIZE = 72.0
+
+    MAX_PIXELS = 100_000_000
+    PREVIEW_SIZE = (480, 300)
+
+    MIN_PREVIEW_DPI = 30
+
+    def __init__(self, histogram, options: dict = None, parent=None):
+        """Build the controls, starting from *options* when given."""
+        super().__init__(parent)
+        self.setWindowTitle("Save Histogram")
+        self._histogram = histogram
+        options = options or {}
+
+        layout = QVBoxLayout(self)
+
+        format_row = QHBoxLayout()
+        format_row.addWidget(QLabel("Format:"))
+        self.format_combo = QComboBox()
+        for label, key in self.FORMATS:
+            self.format_combo.addItem(label, key)
+        format_row.addWidget(self.format_combo)
+        format_row.addStretch()
+        layout.addLayout(format_row)
+
+        self._image_options = QWidget()
+        image_layout = QVBoxLayout(self._image_options)
+        image_layout.setContentsMargins(0, 0, 0, 0)
+
+        aspect_row = QHBoxLayout()
+        aspect_row.addWidget(QLabel("Aspect ratio:"))
+        self.aspect_combo = QComboBox()
+        for label, ratio in self.ASPECT_RATIOS:
+            self.aspect_combo.addItem(label, ratio)
+        aspect_row.addWidget(self.aspect_combo)
+        aspect_row.addStretch()
+        image_layout.addLayout(aspect_row)
+
+        size_row = QHBoxLayout()
+        size_row.addWidget(QLabel("Width:"))
+        self.width_spin = QDoubleSpinBox()
+        size_row.addWidget(self.width_spin)
+        size_row.addWidget(QLabel("Height:"))
+        self.height_spin = QDoubleSpinBox()
+        size_row.addWidget(self.height_spin)
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(list(self.UNITS))
+        size_row.addWidget(self.unit_combo)
+        size_row.addStretch()
+        for spin in (self.width_spin, self.height_spin):
+            # Typing a size would otherwise redraw the preview on every digit.
+            spin.setKeyboardTracking(False)
+        image_layout.addLayout(size_row)
+
+        dpi_row = QHBoxLayout()
+        dpi_row.addWidget(QLabel("DPI:"))
+        self.dpi_spin = QSpinBox()
+        self.dpi_spin.setRange(self.MIN_DPI, self.MAX_DPI)
+        self.dpi_spin.setValue(300)
+        self.dpi_spin.setKeyboardTracking(False)
+        self.dpi_spin.setToolTip(
+            "Pixels per inch of the saved image. An SVG is drawn with "
+            "vector graphics; the DPI only sets the resolution of the "
+            "parts that are raster images, such as gradient fills. With the "
+            "size in pixels, the DPI sets the physical size instead."
+        )
+        dpi_row.addWidget(self.dpi_spin)
+        dpi_row.addStretch()
+        image_layout.addLayout(dpi_row)
+
+        self.size_label = QLabel()
+        image_layout.addWidget(self.size_label)
+
+        text_row = QHBoxLayout()
+        text_row.addWidget(QLabel("Text size:"))
+        self.text_size_spin = self._make_font_spinbox(
+            histogram._label_fontsize,
+            "Size in points of the axis labels. The legend is drawn one "
+            "point smaller.",
+        )
+        text_row.addWidget(self.text_size_spin)
+        text_row.addWidget(QLabel("Tick size:"))
+        self.tick_size_spin = self._make_font_spinbox(
+            histogram._tick_fontsize,
+            "Size in points of the numbers along the axes.",
+        )
+        text_row.addWidget(self.tick_size_spin)
+        text_row.addWidget(QLabel("pt"))
+        text_row.addStretch()
+        image_layout.addLayout(text_row)
+
+        self.white_bg_checkbox = QCheckBox("White background")
+        self.white_bg_checkbox.setChecked(histogram._white_background)
+        self.white_bg_checkbox.setToolTip(
+            "Fill the background with white instead of leaving it "
+            "transparent. A JPG is always white."
+        )
+        image_layout.addWidget(self.white_bg_checkbox)
+
+        legend_row = QHBoxLayout()
+        self._legend_label = QLabel("Legend location:")
+        legend_row.addWidget(self._legend_label)
+        self.legend_placement_combo = QComboBox()
+        self.legend_placement_combo.addItem("Inside plot", "inside")
+        self.legend_placement_combo.addItem("Outside plot", "outside")
+        placement, position = normalize_legend_location(
+            histogram._legend_placement, histogram._legend_position
+        )
+        self.legend_placement_combo.setCurrentIndex(
+            self.legend_placement_combo.findData(placement)
+        )
+        legend_row.addWidget(self.legend_placement_combo)
+        self.legend_position_combo = QComboBox()
+        self._fill_legend_positions(position)
+        legend_row.addWidget(self.legend_position_combo)
+        legend_row.addStretch()
+        image_layout.addLayout(legend_row)
+        self._has_legend = histogram.has_legend()
+        if not self._has_legend:
+            no_legend = (
+                "The histogram shows no legend. Turn on Show legend in the "
+                "Histogram Settings; it is drawn in the Individual layers and "
+                "Grouped display modes, or when several quantities are "
+                "merged."
+            )
+            for widget in (
+                self._legend_label,
+                self.legend_placement_combo,
+                self.legend_position_combo,
+            ):
+                widget.setEnabled(False)
+                widget.setToolTip(no_legend)
+        layout.addWidget(self._image_options)
+
+        self.preview_label = QLabel()
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setFixedSize(*self.PREVIEW_SIZE)
+        self.preview_label.setStyleSheet("background-color: #d9d9d9;")
+        layout.addWidget(self.preview_label, 0, Qt.AlignCenter)
+        self.preview_note = QLabel()
+        self.preview_note.setWordWrap(True)
+        self.preview_note.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(self.preview_note)
+
+        buttons = QHBoxLayout()
+        self.save_button = QPushButton("Save…")
+        self.save_button.setDefault(True)
+        cancel_button = QPushButton("Cancel")
+        self.save_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        buttons.addStretch()
+        buttons.addWidget(self.save_button)
+        buttons.addWidget(cancel_button)
+        layout.addLayout(buttons)
+
+        self._apply_options(options)
+
+        self._unit = self.unit_combo.currentText()
+        self.format_combo.currentIndexChanged.connect(self._refresh)
+        self.aspect_combo.currentIndexChanged.connect(self._refresh)
+        self.width_spin.valueChanged.connect(self._refresh)
+        self.height_spin.valueChanged.connect(self._refresh)
+        self.dpi_spin.valueChanged.connect(self._refresh)
+        self.text_size_spin.valueChanged.connect(self._refresh)
+        self.tick_size_spin.valueChanged.connect(self._refresh)
+        self.white_bg_checkbox.toggled.connect(self._refresh)
+        self.legend_position_combo.currentIndexChanged.connect(self._refresh)
+        self.legend_placement_combo.currentIndexChanged.connect(
+            self._on_legend_placement_changed
+        )
+        self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
+        self._refresh()
+
+    def _make_font_spinbox(self, value: float, tooltip: str):
+        """Return a spinbox for a text size in points, committed on Enter."""
+        spin = QDoubleSpinBox()
+        spin.setRange(self.MIN_FONT_SIZE, self.MAX_FONT_SIZE)
+        spin.setDecimals(1)
+        spin.setSingleStep(0.5)
+        spin.setValue(value)
+        spin.setKeyboardTracking(False)
+        spin.setToolTip(tooltip)
+        return spin
+
+    def _fill_legend_positions(self, selected: str = None) -> None:
+        """List the positions of the chosen placement, keeping *selected*."""
+        placement = self.legend_placement_combo.currentData()
+        if selected is None:
+            selected = self.legend_position_combo.currentData()
+        self.legend_position_combo.clear()
+        for label, key in LEGEND_POSITIONS[placement]:
+            self.legend_position_combo.addItem(label, key)
+        index = self.legend_position_combo.findData(selected)
+        self.legend_position_combo.setCurrentIndex(max(index, 0))
+
+    def _on_legend_placement_changed(self, _index: int) -> None:
+        """Offer the positions of the new placement, then refresh."""
+        self.legend_position_combo.blockSignals(True)
+        self._fill_legend_positions()
+        self.legend_position_combo.blockSignals(False)
+        self._refresh()
+
+    def _configure_size_spinboxes(self, unit: str) -> None:
+        """Set the range and precision of the size boxes for *unit*."""
+        minimum, maximum, decimals, step, _default = self._SIZE_SPEC[unit]
+        for spin in (self.width_spin, self.height_spin):
+            spin.blockSignals(True)
+            spin.setDecimals(decimals)
+            spin.setRange(minimum, maximum)
+            spin.setSingleStep(step)
+            spin.blockSignals(False)
+
+    def _apply_options(self, options: dict) -> None:
+        """Set the controls from *options*, ignoring anything invalid."""
+        self.format_combo.setCurrentIndex(
+            max(self.format_combo.findData(options.get("format")), 0)
+        )
+        for combo, key in (
+            (self.aspect_combo, "aspect"),
+            (self.unit_combo, "unit"),
+        ):
+            index = combo.findText(options.get(key, ""), Qt.MatchExactly)
+            combo.setCurrentIndex(max(index, 0))
+        unit = self.unit_combo.currentText()
+        self._configure_size_spinboxes(unit)
+        default_width = self._SIZE_SPEC[unit][4]
+        self.width_spin.setValue(
+            _number_or(options.get("width"), default_width)
+        )
+        self.height_spin.setValue(
+            _number_or(options.get("height"), self.width_spin.value() / 2)
+        )
+        self.dpi_spin.setValue(int(_number_or(options.get("dpi"), 300)))
+        for spin, key in (
+            (self.text_size_spin, "text_size"),
+            (self.tick_size_spin, "tick_size"),
+        ):
+            spin.setValue(_number_or(options.get(key), spin.value()))
+
+    def export_format(self) -> str:
+        """Return the chosen format: ``png``, ``svg``, ``jpg`` or ``csv``."""
+        return self.format_combo.currentData()
+
+    def dpi(self) -> int:
+        """Return the chosen resolution, in dots per inch."""
+        return self.dpi_spin.value()
+
+    def _inches_per_unit(self, unit: str = None) -> float:
+        """Return how many inches one *unit* of size is (at the current DPI)."""
+        unit = unit or self.unit_combo.currentText()
+        if unit == "px":
+            return 1 / self.dpi()
+        return self._INCHES_PER_UNIT[unit]
+
+    def _aspect_ratio(self):
+        """Return width / height, or ``"custom"`` when the height is free."""
+        ratio = self.aspect_combo.currentData()
+        if ratio is None:
+            width, height = self._histogram.fig.get_size_inches()
+            return width / max(height, 1e-6)
+        return ratio
+
+    def size_inches(self) -> tuple:
+        """Return the ``(width, height)`` of the export, in inches."""
+        inches = self._inches_per_unit()
+        width = self.width_spin.value() * inches
+        ratio = self._aspect_ratio()
+        if ratio == "custom":
+            return width, self.height_spin.value() * inches
+        return width, width / ratio
+
+    def size_pixels(self) -> tuple:
+        """Return the ``(width, height)`` of the export, in pixels."""
+        width, height = self.size_inches()
+        return round(width * self.dpi()), round(height * self.dpi())
+
+    def is_opaque(self) -> bool:
+        """Whether the background is filled: white chosen, or a JPG."""
+        return self.white_bg_checkbox.isChecked() or self.export_format() == (
+            "jpg"
+        )
+
+    def style(self) -> dict:
+        """Return the export-only appearance chosen in the dialog."""
+        return {
+            "white_background": self.white_bg_checkbox.isChecked(),
+            "text_size": self.text_size_spin.value(),
+            "tick_size": self.tick_size_spin.value(),
+            "legend_location": (
+                self.legend_placement_combo.currentData(),
+                self.legend_position_combo.currentData(),
+            ),
+        }
+
+    def options(self) -> dict:
+        """Return the choices worth keeping for the next export.
+
+        The background and legend location are not among them: they start
+        from the histogram's own settings every time.
+        """
+        return {
+            "format": self.export_format(),
+            "aspect": self.aspect_combo.currentText(),
+            "unit": self.unit_combo.currentText(),
+            "width": self.width_spin.value(),
+            "height": self.height_spin.value(),
+            "dpi": self.dpi(),
+            "text_size": self.text_size_spin.value(),
+            "tick_size": self.tick_size_spin.value(),
+        }
+
+    def _on_unit_changed(self, _index: int) -> None:
+        """Keep the physical size when the unit changes, then refresh."""
+        old_inches = self._inches_per_unit(self._unit)
+        self._unit = self.unit_combo.currentText()
+        scale = old_inches / self._inches_per_unit(self._unit)
+        widths = (self.width_spin.value(), self.height_spin.value())
+        self._configure_size_spinboxes(self._unit)
+        for spin, value in zip(
+            (self.width_spin, self.height_spin), widths, strict=True
+        ):
+            spin.blockSignals(True)
+            spin.setValue(value * scale)
+            spin.blockSignals(False)
+        self._refresh()
+
+    def _refresh(self, *_args) -> None:
+        """Bring the controls, size label and preview up to date."""
+        is_image = self.export_format() != "csv"
+        self._image_options.setVisible(is_image)
+        self.preview_label.setVisible(is_image)
+        if not is_image:
+            self.preview_note.setText(
+                "The bin centers and counts are saved as a table; there is "
+                "no image to size."
+            )
+            self.save_button.setEnabled(True)
+            return
+
+        custom = self.aspect_combo.currentData() == "custom"
+        self.height_spin.setEnabled(custom)
+        if not custom:
+            width, height = self.size_inches()
+            self.height_spin.blockSignals(True)
+            self.height_spin.setValue(height / self._inches_per_unit())
+            self.height_spin.blockSignals(False)
+
+        width_px, height_px = self.size_pixels()
+        too_large = width_px * height_px > self.MAX_PIXELS
+        if too_large:
+            self.size_label.setText(
+                f"{width_px} × {height_px} px is too large: reduce the size "
+                "or the DPI."
+            )
+        elif self.export_format() == "svg":
+            width_in, height_in = self.size_inches()
+            self.size_label.setText(
+                f"{width_in * 2.54:.1f} × {height_in * 2.54:.1f} cm "
+                "(vector graphics)"
+            )
+        else:
+            self.size_label.setText(f"{width_px} × {height_px} px")
+        self.save_button.setEnabled(not too_large)
+        self._update_preview()
+
+    def _update_preview(self) -> None:
+        """Draw the histogram at the export size, scaled to fit the preview."""
+        width_in, height_in = self.size_inches()
+        max_width, max_height = self.PREVIEW_SIZE
+        preview_dpi = max(
+            min(max_width / width_in, max_height / height_in),
+            self.MIN_PREVIEW_DPI,
+        )
+        buffer = io.BytesIO()
+        self._histogram._export_figure(
+            buffer,
+            "png",
+            width_in,
+            height_in,
+            preview_dpi,
+            opaque=self.is_opaque(),
+            style=self.style(),
+        )
+        pixmap = QPixmap()
+        pixmap.loadFromData(buffer.getvalue())
+        if pixmap.width() > max_width or pixmap.height() > max_height:
+            pixmap = pixmap.scaled(
+                max_width,
+                max_height,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+        self.preview_label.setPixmap(pixmap)
+
+
+def _number_or(value, default: float) -> float:
+    """Return *value* as a float when it is a usable number, else *default*."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if np.isfinite(number) else default
 
 
 class HistogramWidget(QWidget):
@@ -4058,6 +4843,10 @@ class HistogramWidget(QWidget):
     parent : QWidget, optional
         Parent widget.
     """
+
+    DEFAULT_LABEL_FONTSIZE = 6
+    DEFAULT_TICK_FONTSIZE = 7
+    DEFAULT_LEGEND_FONTSIZE = 5
 
     rangeChanged = Signal(float, float)
     """Signal emitted with (min, max) values whenever the effective range changes."""
@@ -4164,12 +4953,19 @@ class HistogramWidget(QWidget):
         self._group_names = {}  # {group_id: str}
         self._central_tendency = "None"
         self._show_legend = True
+        self._legend_placement = "inside"
+        self._legend_position = default_legend_position("inside")
+        self._label_fontsize = self.DEFAULT_LABEL_FONTSIZE
+        self._tick_fontsize = self.DEFAULT_TICK_FONTSIZE
+        self._legend_fontsize = self.DEFAULT_LEGEND_FONTSIZE
         self._layer_colors = {}  # {label: (r,g,b)}
         self._group_colors = {}  # {group_id: (r,g,b)}
         self._white_background = False
         self._smooth_curves = True
-        self._aspect_ratio = "auto"
+        self._fill_area = True
+        self._fill_alpha = 0.5
         self._log_scale = False
+        self._export_options = None
 
         # Range slider state
         self._range_slider_enabled = range_slider_enabled
@@ -4223,6 +5019,9 @@ class HistogramWidget(QWidget):
         self.fig = Figure(figsize=(8, 4), constrained_layout=True)
         self.ax = self.fig.add_subplot(111)
         self._style_axes()
+        # Whether the axes hold nothing but styling, so clearing them again
+        # (as every tab does when it resets) can skip ``ax.clear()``.
+        self._axes_blank = True
 
         canvas = FigureCanvas(self.fig)
         # Let the canvas grow with the window instead of staying a fixed
@@ -4243,7 +5042,7 @@ class HistogramWidget(QWidget):
 
         self.save_button = QPushButton("Save Histogram…")
         self.save_button.setMinimumWidth(180)
-        self.save_button.clicked.connect(self._show_save_menu)
+        self.save_button.clicked.connect(self._open_export_dialog)
         controls_layout.addWidget(self.save_button)
 
         layout.addLayout(controls_layout)
@@ -4394,48 +5193,200 @@ class HistogramWidget(QWidget):
         lo_out, hi_out = self.get_range()
         self.rangeChanged.emit(lo_out, hi_out)
 
-    def _show_save_menu(self):
-        """Show a menu to choose the histogram export format."""
-        menu = QMenu(self)
-        png_action = menu.addAction("Save as PNG")
-        csv_action = menu.addAction("Save as CSV")
-        action = menu.exec(
-            self.save_button.mapToGlobal(self.save_button.rect().bottomLeft())
-        )
-        if action == png_action:
-            self._save_histogram_png()
-        elif action == csv_action:
-            self._save_histogram_csv()
+    def _open_export_dialog(self):
+        """Ask how to export the histogram, then save it.
 
-    def _save_histogram_png(self):
-        """Save the histogram as a high-DPI PNG image."""
+        The dialog picks the format (PNG, SVG, JPG or CSV) and, for images,
+        the aspect ratio, size and DPI, with a preview of the result.
+        """
+        dlg = HistogramExportDialog(
+            self, options=self._export_options, parent=self
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self._export_options = dlg.options()
+        fmt = dlg.export_format()
+        if fmt == "csv":
+            self._save_histogram_csv()
+        else:
+            width_in, height_in = dlg.size_inches()
+            self._save_histogram_image(
+                fmt, width_in, height_in, dlg.dpi(), style=dlg.style()
+            )
+
+    _IMAGE_SUFFIXES = {
+        "png": (".png",),
+        "svg": (".svg",),
+        "jpg": (".jpg", ".jpeg"),
+    }
+
+    def _save_histogram_image(
+        self,
+        fmt: str,
+        width_in: float,
+        height_in: float,
+        dpi: int,
+        style: dict = None,
+    ) -> None:
+        """Ask for a file and save the histogram as a PNG, SVG or JPG image.
+
+        Parameters
+        ----------
+        fmt : {"png", "svg", "jpg"}
+            Image format.
+        width_in, height_in : float
+            Size of the exported figure, in inches.
+        dpi : int
+            Resolution of raster output (and of the rasterised parts of an
+            SVG).
+        style : dict, optional
+            Export-only appearance, see :meth:`_export_style`.
+        """
+        label = fmt.upper()
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Histogram as PNG",
+            f"Save Histogram as {label}",
             "",
-            "PNG Files (*.png)",
+            f"{label} Files (*.{fmt})",
         )
-
         if not file_path:
             return
 
-        if not file_path.endswith('.png'):
-            file_path += '.png'
+        suffixes = self._IMAGE_SUFFIXES[fmt]
+        if not file_path.lower().endswith(suffixes):
+            file_path += suffixes[0]
 
-        self._style_axes(export_mode=True)
-        self.fig.canvas.draw_idle()
-
-        use_transparent = not self._white_background
-        self.fig.savefig(
-            file_path,
-            dpi=300,
-            bbox_inches='tight',
-            transparent=use_transparent,
-            facecolor='white' if self._white_background else 'none',
+        self._export_figure(
+            file_path, fmt, width_in, height_in, dpi, style=style
         )
 
-        self._style_axes(export_mode=False)
-        self.fig.canvas.draw_idle()
+    def has_legend(self) -> bool:
+        """Whether a legend is currently drawn, inside or outside the plot."""
+        return self.ax.get_legend() is not None or bool(self.fig.legends)
+
+    def _export_is_opaque(self, fmt: str) -> bool:
+        """Whether the exported background is filled rather than transparent.
+
+        It follows the *White background* setting, except for JPG, which has
+        no transparency.
+        """
+        return self._white_background or fmt == "jpg"
+
+    @contextlib.contextmanager
+    def _export_style(self, style: dict = None):
+        """Draw with an export-only appearance, then put the plot back.
+
+        Parameters
+        ----------
+        style : dict, optional
+            Any of ``white_background`` (bool), ``text_size`` (pt, axis
+            labels and legend), ``tick_size`` (pt, tick labels) and
+            ``legend_location`` (``(placement, position)``). The legend is
+            one point smaller than ``text_size``. Missing keys
+            keep the on-screen setting.
+        """
+        style = style or {}
+        keys = (
+            "_white_background",
+            "_label_fontsize",
+            "_tick_fontsize",
+            "_legend_fontsize",
+            "_legend_placement",
+            "_legend_position",
+        )
+        saved = {key: getattr(self, key) for key in keys}
+        if "white_background" in style:
+            self._white_background = bool(style["white_background"])
+        if "text_size" in style:
+            self._label_fontsize = style["text_size"]
+            # The legend keeps its usual place below the axis labels in size.
+            self._legend_fontsize = max(
+                style["text_size"]
+                - (self.DEFAULT_LABEL_FONTSIZE - self.DEFAULT_LEGEND_FONTSIZE),
+                1,
+            )
+        if "tick_size" in style:
+            self._tick_fontsize = style["tick_size"]
+        if "legend_location" in style:
+            self._legend_placement, self._legend_position = (
+                normalize_legend_location(*style["legend_location"])
+            )
+        changed = any(getattr(self, key) != saved[key] for key in keys)
+        try:
+            if changed:
+                self._render()
+            yield
+        finally:
+            for key, value in saved.items():
+                setattr(self, key, value)
+            if changed:
+                self._render()
+
+    def _export_figure(
+        self,
+        target,
+        fmt: str,
+        width_in: float,
+        height_in: float,
+        dpi: int,
+        opaque: bool = None,
+        style: dict = None,
+    ) -> None:
+        """Draw the histogram at export size and save it to *target*.
+
+        The figure is restyled for export and resized to ``width_in`` by
+        ``height_in`` inches, then put back as it was, so the on-screen plot
+        is untouched. Constrained layout refits the axes to the new size, so
+        labels and legend stay inside the image. Raster images are sized to
+        a whole number of pixels, since matplotlib truncates a fractional
+        one.
+
+        Parameters
+        ----------
+        target : str or file-like
+            Path or binary buffer to write to.
+        fmt : {"png", "svg", "jpg"}
+            Image format.
+        width_in, height_in : float
+            Size of the exported figure, in inches.
+        dpi : int
+            Resolution of raster output.
+        opaque : bool, optional
+            Force a filled (``True``) or transparent (``False``) background;
+            by default see :meth:`_export_is_opaque`.
+        style : dict, optional
+            Export-only appearance, see :meth:`_export_style`.
+        """
+        if fmt != "svg":
+            # A quarter pixel of slack survives both truncation and rounding.
+            width_in = (round(width_in * dpi) + 0.25) / dpi
+            height_in = (round(height_in * dpi) + 0.25) / dpi
+        original_size = self.fig.get_size_inches().copy()
+        with self._export_style(style):
+            if opaque is None:
+                opaque = self._export_is_opaque(fmt)
+            self._style_axes(export_mode=True)
+            if opaque:
+                # ``_style_axes`` leaves the figure patch transparent unless
+                # the white background is on.
+                self.fig.patch.set_facecolor('white')
+                self.fig.patch.set_alpha(1)
+            self.fig.set_size_inches(width_in, height_in, forward=False)
+            try:
+                self.fig.savefig(
+                    target,
+                    format="jpeg" if fmt == "jpg" else fmt,
+                    dpi=dpi,
+                    transparent=not opaque,
+                    facecolor='white' if opaque else 'none',
+                    **(
+                        {"pil_kwargs": {"quality": 95}} if fmt == "jpg" else {}
+                    ),
+                )
+            finally:
+                self.fig.set_size_inches(*original_size, forward=False)
+                self._style_axes(export_mode=False)
+                self.fig.canvas.draw_idle()
 
     def _save_histogram_csv(self):
         """Save the histogram data as a CSV file.
@@ -4979,6 +5930,8 @@ class HistogramWidget(QWidget):
             normalize=self._normalize,
             central_tendency=self._central_tendency,
             show_legend=self._show_legend,
+            legend_placement=self._legend_placement,
+            legend_position=self._legend_position,
             split_mask_labels=self._split_by_mask_labels,
             split_mask_labels_available=self.mask_label_split_available(),
             layer_labels=layer_labels,
@@ -4990,13 +5943,14 @@ class HistogramWidget(QWidget):
             layer_colors=layer_colors,
             group_colors=group_colors,
             group_names=group_names,
-            aspect_ratio=self._aspect_ratio,
             log_scale=self._log_scale,
             bins=self.bins,
             parent=self,
         )
         dlg.white_bg_checkbox.setChecked(self._white_background)
         dlg.smooth_checkbox.setChecked(self._smooth_curves)
+        dlg.fill_checkbox.setChecked(self._fill_area)
+        dlg.fill_opacity_spinbox.setValue(int(round(self._fill_alpha * 100)))
 
         if dlg.exec() == QDialog.Accepted:
             split_changed = (
@@ -5014,7 +5968,10 @@ class HistogramWidget(QWidget):
             self._show_legend = dlg.legend_checkbox.isChecked()
             self._white_background = dlg.white_bg_checkbox.isChecked()
             self._smooth_curves = dlg.smooth_checkbox.isChecked()
-            self._aspect_ratio = dlg.aspect_ratio_combo.currentData()
+            self._fill_area = dlg.fill_checkbox.isChecked()
+            self._fill_alpha = dlg.fill_opacity_spinbox.value() / 100
+            self._legend_placement = dlg.get_legend_placement()
+            self._legend_position = dlg.get_legend_position()
             if dlg._group_row_data:
                 self._group_assignments = dlg.get_group_assignments()
                 self._group_colors = dlg.get_group_colors()
@@ -5521,7 +6478,10 @@ class HistogramWidget(QWidget):
         if clear_frame_source:
             self._frame_context = None
             self._frame_source_datasets = {}
-        self.ax.clear()
+        if not self._axes_blank:
+            self._clear_figure_legends()
+            self.ax.clear()
+            self._axes_blank = True
         self._style_axes()
         self.fig.canvas.draw_idle()
         self._settings_button.setEnabled(False)
@@ -5641,8 +6601,10 @@ class HistogramWidget(QWidget):
         ylabel = (
             f"{self.ylabel} (normalized)" if self._normalize else self.ylabel
         )
-        self.ax.set_ylabel(ylabel, fontsize=6, color=color)
-        self.ax.set_xlabel(self.xlabel, fontsize=6, color=color)
+        self.ax.set_ylabel(ylabel, fontsize=self._label_fontsize, color=color)
+        self.ax.set_xlabel(
+            self.xlabel, fontsize=self._label_fontsize, color=color
+        )
 
         if self._range_slider_enabled:
             lo, hi = self.get_range()
@@ -5653,22 +6615,63 @@ class HistogramWidget(QWidget):
             )
         for which in ("major", "minor"):
             self.ax.tick_params(
-                axis="x", which=which, labelsize=7, colors=color
+                axis="x",
+                which=which,
+                labelsize=self._tick_fontsize,
+                colors=color,
             )
             self.ax.tick_params(
-                axis="y", which=which, labelsize=7, colors=color
+                axis="y",
+                which=which,
+                labelsize=self._tick_fontsize,
+                colors=color,
             )
 
-        self._apply_aspect_ratio()
+    def _draw_legend(self) -> None:
+        """Draw the legend of the plotted curves where the user placed it.
 
-    def _apply_aspect_ratio(self) -> None:
-        """Make the axes box square or let it fill the canvas.
-
-        ``set_box_aspect`` constrains the shape of the axes box only. The
-        data aspect must stay "auto": x is in data units and y is in counts,
-        so tying them together would collapse one of the axes.
+        Inside the plot it is an axes legend at the chosen corner or edge.
+        Outside it is a figure legend beside, above or below the axes, which
+        constrained layout makes room for (it would not for an axes legend
+        anchored outside the axes).
         """
-        self.ax.set_box_aspect(1 if self._aspect_ratio == "equal" else None)
+        handles, labels = self.ax.get_legend_handles_labels()
+        if not handles:
+            return
+        handles = [
+            (
+                ColormapLegendProxy(h._legend_cmap, h.get_linewidths()[0])
+                if hasattr(h, "_legend_cmap")
+                else h
+            )
+            for h in handles
+        ]
+        handler_map = {ColormapLegendProxy: ColormapLegendHandler()}
+        placement, position = normalize_legend_location(
+            self._legend_placement, self._legend_position
+        )
+        if placement == "inside":
+            self.ax.legend(
+                handles,
+                labels,
+                fontsize=self._legend_fontsize,
+                loc=position,
+                handler_map=handler_map,
+            )
+        else:
+            self.fig.legend(
+                handles,
+                labels,
+                fontsize=self._legend_fontsize,
+                loc=_OUTSIDE_LEGEND_LOCS[position],
+                ncol=1 if position == "right" else min(len(handles), 4),
+                handler_map=handler_map,
+            )
+
+    def _clear_figure_legends(self) -> None:
+        """Remove outside legends, which ``Axes.clear`` leaves on the figure."""
+        for legend in list(self.fig.legends):
+            legend.remove()
 
     def _get_cmap_and_norm(self):
         """Return (cmap, norm) from current colormap state."""
@@ -5844,7 +6847,9 @@ class HistogramWidget(QWidget):
 
     def _render(self) -> None:
         """Re-draw the histogram using the active display mode."""
+        self._clear_figure_legends()
         self.ax.clear()
+        self._axes_blank = False
 
         n_datasets = len(self._counts_per_dataset)
 
@@ -5989,6 +6994,8 @@ class HistogramWidget(QWidget):
         lc = LineCollection(segments, colors=colors, linewidths=linewidth)
         if label is not None:
             lc.set_label(label)
+            # The legend shows the whole colormap, not just one of its colors
+            lc._legend_cmap = cmap
         self.ax.add_collection(lc)
         # A LineCollection does not take part in autoscaling, so make sure the
         # curve it draws is inside the view.
@@ -6188,13 +7195,6 @@ class HistogramWidget(QWidget):
             self._draw_gradient_line(
                 x_fine, mean_fine, cmap, norm, linewidth=2
             )
-        elif self._show_sd and n == 1:
-            counts = list(self._counts_per_dataset.values())[0]
-            x_fine, y_fine = self._smooth_curve(counts)
-            y_fine = y_fine * self._display_scale(y_fine)
-            self._draw_gradient_line(x_fine, y_fine, cmap, norm, linewidth=2)
-            self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
-            self.ax.set_ylim(0, float(np.max(y_fine)) * 1.05)
         else:
             if n > 1:
                 all_counts = np.array(
@@ -6207,16 +7207,33 @@ class HistogramWidget(QWidget):
             x_fine, mean_fine = self._smooth_curve(mean_counts)
             mean_fine = mean_fine * self._display_scale(mean_fine)
 
-            self._fill_gradient(
-                x_fine,
-                mean_fine,
-                np.zeros_like(mean_fine),
-                cmap,
-                norm,
-                alpha=0.8,
-            )
+            if self._fill_area:
+                self._fill_gradient(
+                    x_fine,
+                    mean_fine,
+                    np.zeros_like(mean_fine),
+                    cmap,
+                    norm,
+                    alpha=self._fill_alpha,
+                )
             self._draw_gradient_line(
                 x_fine, mean_fine, cmap, norm, linewidth=2
+            )
+            if not self._fill_area:
+                self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
+                self.ax.set_ylim(0, float(np.max(mean_fine)) * 1.05)
+
+    def _fill_under_curve(self, x, y, color=None, cmap=None, norm=None):
+        """Colour the area under a curve when the fill option is on."""
+        if not self._fill_area:
+            return
+        if cmap is not None:
+            self._fill_gradient(
+                x, y, np.zeros_like(y), cmap, norm, alpha=self._fill_alpha
+            )
+        else:
+            self.ax.fill_between(
+                x, 0, y, color=color, alpha=self._fill_alpha, linewidth=0
             )
 
     def _render_merged_series(self, series: dict) -> None:
@@ -6244,8 +7261,13 @@ class HistogramWidget(QWidget):
                 if self._series_style == "colormap"
                 else None
             )
+            has_band = self._show_sd and len(members) > 1
             if series_cmap is not None:
                 cmap, norm = series_cmap
+                if not has_band:
+                    self._fill_under_curve(
+                        x_fine, mean_fine, cmap=cmap, norm=norm
+                    )
                 self._draw_gradient_line(
                     x_fine,
                     mean_fine,
@@ -6255,6 +7277,8 @@ class HistogramWidget(QWidget):
                     label=str(name),
                 )
             else:
+                if not has_band:
+                    self._fill_under_curve(x_fine, mean_fine, color=color)
                 self.ax.plot(
                     x_fine,
                     mean_fine,
@@ -6279,7 +7303,7 @@ class HistogramWidget(QWidget):
                 )
 
         if self._show_legend:
-            self.ax.legend(fontsize=5, loc="upper right")
+            self._draw_legend()
 
     def _render_individual(self) -> None:
         """Render each dataset as a smooth outline."""
@@ -6289,6 +7313,7 @@ class HistogramWidget(QWidget):
             color = self._dataset_color(label, idx)
             x_fine, y_fine = self._smooth_curve(counts)
             y_fine = y_fine * self._display_scale(y_fine)
+            self._fill_under_curve(x_fine, y_fine, color=color)
             self.ax.plot(
                 x_fine,
                 y_fine,
@@ -6297,7 +7322,7 @@ class HistogramWidget(QWidget):
                 label=label,
             )
         if self._show_legend and self._counts_per_dataset:
-            self.ax.legend(fontsize=5, loc="upper right")
+            self._draw_legend()
 
     def _render_grouped(self) -> None:
         """Render grouped histograms with smooth curves and optional SD.
@@ -6321,6 +7346,8 @@ class HistogramWidget(QWidget):
             x_fine, mean_fine = self._smooth_curve(mean_counts)
             scale = self._display_scale(mean_fine)
             mean_fine = mean_fine * scale
+            if not (self._show_sd and len(members) > 1):
+                self._fill_under_curve(x_fine, mean_fine, color=color)
             self.ax.plot(
                 x_fine,
                 mean_fine,
@@ -6350,7 +7377,7 @@ class HistogramWidget(QWidget):
                 )
 
         if self._show_legend and curves:
-            self.ax.legend(fontsize=5, loc="upper right")
+            self._draw_legend()
 
 
 class CollapsibleSection(QWidget):

@@ -2,6 +2,7 @@ import csv
 import sys
 import types
 from dataclasses import replace
+from unittest.mock import patch
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -70,6 +71,20 @@ def test_histogram_widget_update_data_and_clear(qtbot):
     assert widget._raw_valid_data is None
     assert not widget._settings_button.isEnabled()
     assert not widget.save_button.isEnabled()
+    assert not widget.ax.patches
+
+    # Clearing an already blank histogram (every tab resets its histogram
+    # when a layer is loaded) skips ax.clear(), but still restyles it.
+    with patch.object(widget.ax, "clear", wraps=widget.ax.clear) as ax_clear:
+        widget.xlabel = "Lifetime (ns)"
+        widget.clear()
+        ax_clear.assert_not_called()
+        assert widget.ax.get_xlabel() == "Lifetime (ns)"
+        widget.update_data(data)
+        ax_clear.reset_mock()
+        widget.clear()
+        ax_clear.assert_called_once()
+    assert not widget.ax.patches
 
 
 def test_histogram_empty_updates_reset_previous_data(qtbot):
@@ -425,8 +440,23 @@ def test_histogram_widget_grouped_sd_band(qtbot):
     assert len(bands) >= 2  # one SD band per group
 
     widget.show_sd = False
+    widget._fill_area = False
+    widget._render()
     bands = [c for c in widget.ax.collections if isinstance(c, PolyCollection)]
     assert bands == []  # no bands when SD shading is off
+    widget._fill_area = True
+    widget._render()
+    bands = [c for c in widget.ax.collections if isinstance(c, PolyCollection)]
+    assert len(bands) == 2  # one fill per group instead
+
+    # A single merged curve can drop its colored area under the curve
+    widget.display_mode = "Merged"
+    widget.update_multi_data({"only": datasets["G1::a"]})
+    n_filled = len(widget.ax.images)
+    widget._fill_area = False
+    widget._render()
+    assert n_filled > 0
+    assert len(widget.ax.images) == 0
 
 
 def test_statistics_table_widget_populates_rows(qtbot):
@@ -2589,64 +2619,9 @@ def test_histogram_widget_taller_default_canvas_height(qtbot):
     assert widget.fig.canvas.minimumHeight() >= 180
 
 
-def test_histogram_widget_save_menu_dispatches_to_png_and_csv(qtbot):
-    """The merged "Save Histogram…" button opens a menu that dispatches to
-    the correct export routine depending on which action is chosen."""
-    from unittest.mock import MagicMock, patch
-
-    widget = HistogramWidget(bins=4)
-    qtbot.addWidget(widget)
-    widget.update_data(np.array([1.0, 2.0, 3.0]))
-    assert widget.save_button.isEnabled()
-
-    def _mock_menu_returning(chosen_index):
-        mock_menu = MagicMock()
-        png_action = MagicMock(name="png_action")
-        csv_action = MagicMock(name="csv_action")
-        mock_menu.addAction.side_effect = [png_action, csv_action]
-        actions = [png_action, csv_action]
-        mock_menu.exec.return_value = (
-            actions[chosen_index] if chosen_index is not None else None
-        )
-        return mock_menu
-
-    # Choosing "Save as PNG" calls the PNG export only.
-    with (
-        patch.object(widget, '_save_histogram_png') as mock_png,
-        patch.object(widget, '_save_histogram_csv') as mock_csv,
-        patch('napari_phasors._utils.QMenu') as mock_menu_cls,
-    ):
-        mock_menu_cls.return_value = _mock_menu_returning(0)
-        widget._show_save_menu()
-        mock_png.assert_called_once()
-        mock_csv.assert_not_called()
-
-    # Choosing "Save as CSV" calls the CSV export only.
-    with (
-        patch.object(widget, '_save_histogram_png') as mock_png,
-        patch.object(widget, '_save_histogram_csv') as mock_csv,
-        patch('napari_phasors._utils.QMenu') as mock_menu_cls,
-    ):
-        mock_menu_cls.return_value = _mock_menu_returning(1)
-        widget._show_save_menu()
-        mock_csv.assert_called_once()
-        mock_png.assert_not_called()
-
-    # Dismissing the menu without a choice triggers neither export.
-    with (
-        patch.object(widget, '_save_histogram_png') as mock_png,
-        patch.object(widget, '_save_histogram_csv') as mock_csv,
-        patch('napari_phasors._utils.QMenu') as mock_menu_cls,
-    ):
-        mock_menu_cls.return_value = _mock_menu_returning(None)
-        widget._show_save_menu()
-        mock_png.assert_not_called()
-        mock_csv.assert_not_called()
-
-
-def test_histogram_widget_save_button_wired_to_save_menu(qtbot):
+def test_histogram_widget_save_button_wired_to_export_dialog(qtbot):
     """The merged save button's ``clicked`` signal is wired to the
-    export-format menu handler (not to the old per-format buttons)."""
+    export dialog (not to the old per-format buttons)."""
     widget = HistogramWidget(bins=4)
     qtbot.addWidget(widget)
     widget.update_data(np.array([1.0, 2.0, 3.0]))
@@ -2727,69 +2702,6 @@ def test_statistics_dock_export_csv(qtbot, tmp_path, monkeypatch):
         QFileDialog, "getSaveFileName", lambda *a, **k: ("", "")
     )
     dock._export_table_csv_impl()
-
-
-def test_histogram_widget_save_png(qtbot, tmp_path, monkeypatch):
-    """Save the histogram figure as a PNG (and handle the cancel path)."""
-    from qtpy.QtWidgets import QFileDialog
-
-    w = HistogramWidget(bins=5)
-    qtbot.addWidget(w)
-    w.update_data(np.array([1.0, 2.0, 3.0, 4.0, 5.0]))
-
-    out = tmp_path / "hist.png"
-    monkeypatch.setattr(
-        QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), "")
-    )
-    w._save_histogram_png()
-    assert out.exists()
-
-    monkeypatch.setattr(
-        QFileDialog, "getSaveFileName", lambda *a, **k: ("", "")
-    )
-    w._save_histogram_png()
-
-
-def test_histogram_widget_square_aspect_keeps_data(
-    qtbot, tmp_path, monkeypatch
-):
-    """The square option squares the axes box without squashing the data.
-
-    The x axis is in data units and y is in counts, so a 1:1 *data* aspect
-    collapses the x range. Only the box aspect may be constrained, and it
-    must survive an export so the viewer plot stays square.
-    """
-    from qtpy.QtWidgets import QFileDialog
-
-    w = HistogramWidget(bins=50)
-    qtbot.addWidget(w)
-    # Counts far larger than the x range: the regime a data aspect ruins.
-    w.update_data(np.repeat(np.linspace(0.0, 10.0, 50), 400))
-
-    w._aspect_ratio = "equal"
-    w._render()
-    expected_xlim = w.ax.get_xlim()
-
-    assert w.ax.get_box_aspect() == 1
-    assert w.ax.get_aspect() == "auto"
-
-    out = tmp_path / "square.png"
-    monkeypatch.setattr(
-        QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), "")
-    )
-    w._save_histogram_png()
-    assert out.exists()
-
-    # The exported figure keeps the full x range, and the on-screen plot is
-    # still square once the export has finished.
-    assert w.ax.get_xlim() == expected_xlim
-    assert w.ax.get_box_aspect() == 1
-    assert w.ax.get_aspect() == "auto"
-
-    # Switching back to auto releases the box constraint.
-    w._aspect_ratio = "auto"
-    w._render()
-    assert w.ax.get_box_aspect() is None
 
 
 def test_checkable_combobox_event_filter(qtbot):

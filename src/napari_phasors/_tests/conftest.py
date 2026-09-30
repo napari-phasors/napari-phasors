@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QDialog, QWidget
+from qtpy.QtWidgets import QComboBox, QDialog, QWidget
 
 # Patch napari's _QtMainWindow.eventFilter to guard against PySide6 passing
 # QWidgetItem (a non-QObject) as the `watched` argument, which causes a
@@ -357,6 +357,16 @@ def _hide_widgets_on_screen(monkeypatch):
     monkeypatch.setattr(QWidget, "show", _make_hidden_show(QWidget.show))
     monkeypatch.setattr(QDialog, "show", _make_hidden_show(QDialog.show))
 
+    # A combobox popup is a window of its own that Qt shows from C++, past
+    # the patches above, so opening one mapped a real native popup.
+    orig_show_popup = QComboBox.showPopup
+
+    def hidden_show_popup(self):
+        self.view().window().setAttribute(Qt.WA_DontShowOnScreen, True)
+        return orig_show_popup(self)
+
+    monkeypatch.setattr(QComboBox, "showPopup", hidden_show_popup)
+
 
 @pytest.fixture(autouse=True)
 def _stub_color_dialog(monkeypatch):
@@ -387,22 +397,63 @@ def _stub_color_dialog(monkeypatch):
     monkeypatch.setattr(QColorDialog, "getColor", _fake_get_color)
 
 
-@pytest.fixture(autouse=True)
-def _cleanup_widgets_after_test(request):
-    """Ensure all Phasor widgets instantiated during the test are properly deleted.
+def _is_plugin_widget(widget):
+    """Whether ``widget`` is an instance of a class defined by this plugin."""
+    return type(widget).__module__.split(".")[0] == "napari_phasors"
 
-    This avoids PySide6 segmentation faults and background timer leaks caused by
-    unclean widget lifecycles in PySide6.
+
+def _has_plugin_close_event(widget):
+    """Whether one of the plugin's own classes gives ``widget`` a closeEvent."""
+    return any(
+        "closeEvent" in vars(cls)
+        for cls in type(widget).__mro__
+        if cls.__module__.split(".")[0] == "napari_phasors"
+    )
+
+
+def _plugin_depth(widget, plugin_ids):
+    """Number of plugin widgets above ``widget``, or None if it is deleted."""
+    depth = 0
+    try:
+        parent = widget.parentWidget()
+        while parent is not None:
+            if id(parent) in plugin_ids:
+                depth += 1
+            parent = parent.parentWidget()
+    except RuntimeError:  # the C++ object is already gone
+        return None
+    return depth
+
+
+def _close_and_delete_plugin_widgets():
+    """Tear down every plugin widget the way the running application would.
+
+    The widgets are closed from the outside in and then only the outermost
+    ones are deleted, so Qt destroys each tree in one go. The tree is never
+    taken apart widget by widget: reparenting a tab page out of its
+    ``QTabWidget`` emits ``currentChanged``, and reparenting a combobox makes
+    Qt re-polish it and ask its item delegate for size hints, so doing that
+    to every plugin widget (in the arbitrary order ``allWidgets`` returns
+    them) used to run the plugin's own handlers, up to whole histogram and
+    statistics redraws, on a half-dismantled tree. Both calls showed up as
+    the crashing frame of PySide6 workers on CI.
     """
-    if "make_napari_viewer" in request.fixturenames:
-        request.getfixturevalue("make_napari_viewer")
-    yield
     import contextlib
 
     import matplotlib.pyplot as plt
+    from qtpy.QtCore import QCoreApplication, QEvent
     from qtpy.QtWidgets import QApplication
 
     from napari_phasors.plotter import PlotterWidget
+
+    # A popup left open by the test (combobox list, menu) would otherwise be
+    # destroyed while Qt still routes input to it.
+    with contextlib.suppress(Exception):
+        for _ in range(10):
+            popup = QApplication.activePopupWidget()
+            if popup is None:
+                break
+            popup.close()
 
     widgets = []
     with contextlib.suppress(Exception):
@@ -413,32 +464,13 @@ def _cleanup_widgets_after_test(request):
     # never explicitly closed — notably BatchAnalysisWidget (~140 instances in
     # test_batch_analysis.py) and the standalone analysis tabs — otherwise
     # accumulate on one ``loadfile`` xdist worker and segfault during PySide6
-    # teardown near the end of the file. Closing them here also runs each
-    # widget's ``closeEvent``, which disconnects its ``viewer.layers.events``
-    # handlers so the (longer-lived) viewer can't fire into a freed widget.
-    phasor_widgets = [
-        w
-        for w in widgets
-        if type(w).__module__.split(".")[0] == "napari_phasors"
-    ]
+    # teardown near the end of the file.
+    plugin_widgets = [w for w in widgets if _is_plugin_widget(w)]
+    del widgets
+    plugin_ids = {id(w) for w in plugin_widgets}
 
-    # 1. Break parent relationships to avoid double-free/deletion issues in PySide6
-    for w in phasor_widgets:
-        with contextlib.suppress(Exception):
-            w.setParent(None)
-
-    # 2. Clean up Matplotlib canvases and figures
-    for w in phasor_widgets:
-        if hasattr(w, "figure") and w.figure is not None:
-            with contextlib.suppress(Exception):
-                plt.close(w.figure)
-        if hasattr(w, "canvas") and w.canvas is not None:
-            with contextlib.suppress(Exception):
-                w.canvas.setParent(None)
-                w.canvas.deleteLater()
-
-    # 3. Safely stop timers, close, and delete our widgets
-    for w in phasor_widgets:
+    # 1. Stop the plotter's background timers before anything else moves.
+    for w in plugin_widgets:
         if isinstance(w, PlotterWidget):
             for attr in (
                 '_dock_check_timer',
@@ -447,30 +479,55 @@ def _cleanup_widgets_after_test(request):
                 '_layer_selection_timer',
                 '_bins_timer',
                 '_resize_canvas_timer',
+                '_claim_height_timer',
             ):
-                with contextlib.suppress(AttributeError):
+                with contextlib.suppress(AttributeError, RuntimeError):
                     timer = getattr(w, attr, None)
                     if timer is not None:
                         timer.stop()
 
+    # 2. Close, outermost first, the widgets that have something to undo: the
+    # plugin's windows and every widget with its own ``closeEvent``. Those
+    # handlers disconnect the ``viewer.layers.events`` callbacks (so the
+    # longer-lived viewer cannot fire into a freed widget) and remove the
+    # docks the plotter added to the napari window.
+    depths = {id(w): _plugin_depth(w, plugin_ids) for w in plugin_widgets}
+    for w in sorted(
+        (w for w in plugin_widgets if depths[id(w)] is not None),
+        key=lambda w: depths[id(w)],
+    ):
         with contextlib.suppress(Exception):
-            w.close()
-            w.deleteLater()
+            if w.isWindow() or _has_plugin_close_event(w):
+                w.close()
 
-    # 4. Process all pending Qt events to execute deleteLater calls.
+    # 3. Release pyplot-managed figures (a no-op for plain ``Figure``s).
+    for w in plugin_widgets:
+        with contextlib.suppress(Exception):
+            figure = getattr(w, "figure", None)
+            if figure is not None:
+                plt.close(figure)
+
+    # 4. Delete the outermost plugin widgets; their children go with them.
+    # Closing may have moved widgets around (a closing plotter takes its
+    # docks down, which orphans their contents), so look again.
+    for w in plugin_widgets:
+        if _plugin_depth(w, plugin_ids) == 0:
+            with contextlib.suppress(Exception):
+                w.deleteLater()
+    del plugin_widgets
+
+    # 5. Process all pending Qt events to execute deleteLater calls.
     # ``processEvents()`` alone does NOT deliver ``DeferredDelete`` events,
     # so without the explicit ``sendPostedEvents`` flush the C++ side of the
     # widgets deleteLater()'d above is destroyed at some arbitrary later
     # event-loop spin — e.g. while the next test is constructing its napari
     # viewer — leaving Python wrappers pointing at freed Qt objects.
-    from qtpy.QtCore import QCoreApplication, QEvent
-
     with contextlib.suppress(Exception):
         QCoreApplication.processEvents()
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         QCoreApplication.processEvents()
 
-    # 5. Collect cyclic garbage now, at a controlled point.
+    # 6. Collect cyclic garbage now, at a controlled point.
     # The root conftest disables automatic GC under PySide6, so reference
     # cycles (matplotlib Figure <-> canvas, closed widgets captured by
     # lambdas/signal closures) otherwise accumulate for the worker's whole
@@ -481,11 +538,33 @@ def _cleanup_widgets_after_test(request):
     # make_napari_viewer test after widget-heavy files). Collecting here —
     # right after the plugin widgets were closed and their deferred
     # deletions flushed, with no viewer half-built — keeps every collection
-    # small and safe.
+    # small and safe. With automatic GC enabled (PyQt) there is no backlog to
+    # defuse, and a full collection per test costs ~80 ms over a heap holding
+    # napari, so only collect when the root conftest turned GC off.
     import gc
 
-    with contextlib.suppress(Exception):
-        gc.collect()
+    if not gc.isenabled():
+        with contextlib.suppress(Exception):
+            gc.collect()
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_widgets_after_test(request):
+    """Ensure all Phasor widgets instantiated during the test are properly deleted.
+
+    This avoids PySide6 segmentation faults and background timer leaks caused by
+    unclean widget lifecycles in PySide6.
+    """
+    # Instantiate the viewer factories from here so they are torn down *after*
+    # this fixture's cleanup. ``make_viewer_model`` clears every layer on
+    # teardown; with the plugin widgets still alive and connected to
+    # ``viewer.layers.events``, each removal re-ran their layer-selection
+    # handlers (histogram redraws, combobox rebuilds) for nothing.
+    for factory in ("make_napari_viewer", "make_viewer_model"):
+        if factory in request.fixturenames:
+            request.getfixturevalue(factory)
+    yield
+    _close_and_delete_plugin_widgets()
 
 
 @pytest.fixture

@@ -95,4 +95,5 @@ installer/icon.ico
 installer/app.icns
 
 # Test data folder
-test_data
+
+test_data/

@@ -2,6 +2,7 @@ import contextlib
 import copy
 import math
 import warnings
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Patch
+from matplotlib.transforms import Bbox
 from napari.layers import Image, Labels, Shapes
 from napari.utils import notifications
 from phasorpy.lifetime import phasor_from_lifetime
@@ -66,7 +68,6 @@ from ._parallel import (
     set_parallel_items_enabled,
 )
 from ._settings_store import (
-    ANALYSIS_LABELS,
     ANALYSIS_SETTINGS_KEYS,
     LayerSettingsStore,
     format_layer_list,
@@ -98,11 +99,12 @@ from ._utils import (
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     confirm_unassigned_layers,
-    create_settings_note_label,
     make_experimental_warning,
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
+    parse_component_analysis_label,
+    phasor_layer_base_name,
     phasor_storage_dtype,
     populate_colormap_combobox,
     rank_mask_candidates,
@@ -110,7 +112,7 @@ from ._utils import (
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
     set_phasor_storage_dtype,
-    set_settings_note,
+    split_analysis_layer_name,
     split_items_by_group,
     unassigned_layer_labels,
     update_frequency_in_metadata,
@@ -123,6 +125,37 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
+
+
+class _SameArrays:
+    """Cache-key part equal only while it names the very same G/S arrays.
+
+    A layer whose G or S array was replaced (or removed) no longer matches,
+    so the phasor caches recompute without anyone invalidating them. Weak
+    references keep the caches from holding replaced arrays alive, and
+    from mistaking a new array that reuses a freed one's ``id`` for it.
+    """
+
+    __slots__ = ("_refs",)
+
+    def __init__(self, layers):
+        self._refs = tuple(
+            None if array is None else weakref.ref(array)
+            for layer in layers
+            for array in (layer.metadata.get("G"), layer.metadata.get("S"))
+        )
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, _SameArrays)
+            and len(self._refs) == len(other._refs)
+            and all(
+                a is b or (a is not None and b is not None and a() is b())
+                for a, b in zip(self._refs, other._refs, strict=True)
+            )
+        )
+
+    __hash__ = None
 
 
 def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
@@ -181,6 +214,8 @@ class MaskAssignmentDialog(QDialog):
         self.setWindowTitle("Assign Mask Layers")
         self.setMinimumWidth(560)
 
+        self._user_resized = False
+
         if current_assignments is None:
             current_assignments = {}
         if current_invert_assignments is None:
@@ -224,6 +259,8 @@ class MaskAssignmentDialog(QDialog):
         form_widget = QWidget()
         form_layout = QFormLayout(form_widget)
         form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self._scroll = scroll
+        self._form_widget = form_widget
 
         self._combos = {}  # image_layer_name -> QComboBox
         self._invert_checks = {}  # image_layer_name -> QCheckBox
@@ -317,6 +354,7 @@ class MaskAssignmentDialog(QDialog):
                     container.setVisible(False)
                     lc.setVisible(False)
                 self._sync_invert_all_check()
+                self._fit_width_to_content()
 
             combo.currentTextChanged.connect(_on_mask_changed)
             combo.currentTextChanged.connect(self._sync_apply_all_combo)
@@ -363,6 +401,54 @@ class MaskAssignmentDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _fit_width_to_content(self):
+        """Widen the dialog so every row is fully visible.
+
+        The width is capped at the available screen width. It is skipped
+        once the user has resized the dialog by hand.
+        """
+        if self._user_resized or not self.isVisible():
+            return
+        self._form_widget.layout().activate()
+        margins = self.layout().contentsMargins()
+        extra = (
+            self._scroll.frameWidth() * 2
+            + self._scroll.verticalScrollBar().sizeHint().width()
+            + margins.left()
+            + margins.right()
+        )
+        wanted = max(
+            self.minimumWidth(), self._form_widget.sizeHint().width() + extra
+        )
+        screen = self.screen()
+        if screen is not None:
+            frame = self.frameGeometry().width() - self.width()
+            wanted = min(wanted, screen.availableGeometry().width() - frame)
+        if wanted != self.width():
+            self.resize(wanted, self.height())
+            screen = self.screen()
+            if screen is not None:
+                geo = self.frameGeometry()
+                avail = screen.availableGeometry()
+                if geo.right() > avail.right() or geo.left() < avail.left():
+                    geo.moveLeft(
+                        max(avail.left(), avail.right() - geo.width())
+                    )
+                    self.move(geo.topLeft())
+
+    def showEvent(self, event):
+        """Fit the width to the content when first shown."""
+        super().showEvent(event)
+        self._fit_width_to_content()
+        # Combo boxes settle on their final size once shown; fit again.
+        QTimer.singleShot(0, self._fit_width_to_content)
+
+    def resizeEvent(self, event):
+        """Stop auto-fitting once the window system resizes the dialog."""
+        super().resizeEvent(event)
+        if event.spontaneous():
+            self._user_resized = True
 
     def _on_auto_assign(self):
         """Pair each image layer with the best matching mask layer by name.
@@ -1685,6 +1771,8 @@ class PlotterWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         # Initialize data attributes
+        # Whether the plot currently shows no layer at all.
+        self._showing_no_layer = False
         self._g_array = None
         self._s_array = None
         self._g_original_array = None
@@ -3129,45 +3217,6 @@ class PlotterWidget(QWidget):
             if key in settings
         }
 
-    def settings_overwrite_message(
-        self,
-        group,
-        values=None,
-        merge=None,
-        action="Running this analysis",
-        keys=None,
-    ):
-        """Return the note naming the layers whose settings a run replaces.
-
-        Only the non-primary selected layers are considered: their stored
-        *group* settings (only *keys* of them, if given) are replaced by the
-        primary layer's when the analysis runs on all of them. Returns
-        ``None`` when nothing would be overwritten.
-        """
-        primary = self.get_primary_layer()
-        others = [
-            layer
-            for layer in self.get_selected_layers()
-            if layer is not primary
-        ]
-        if not others:
-            return None
-        if values is None:
-            values = self.pending_settings_values(group)
-        overwritten = self.settings_store.overwritten_layers(
-            others,
-            ANALYSIS_SETTINGS_KEYS[group] if keys is None else keys,
-            values,
-            merge,
-        )
-        if not overwritten:
-            return None
-        names = format_layer_list(layer.name for layer in overwritten)
-        return (
-            f"{action} will overwrite the {ANALYSIS_LABELS[group]} "
-            f"parameters stored in: {names}."
-        )
-
     @staticmethod
     def _as_frequency(value):
         """Return *value* as a valid frequency (MHz), or ``None``."""
@@ -3252,22 +3301,17 @@ class PlotterWidget(QWidget):
         return messages
 
     def _refresh_settings_notes(self):
-        """Update the notes about settings a run would overwrite, per tab."""
+        """Update the notes about the layers' frequencies, per tab."""
         if getattr(self, '_is_closing', False) or getattr(
             self, '_refreshing_settings_notes', False
         ):
             return
         self._refreshing_settings_notes = True
         try:
-            with contextlib.suppress(RuntimeError, AttributeError):
-                self._refresh_plot_settings_note()
             for tab_name in (
                 'calibration_tab',
-                'filter_tab',
                 'phasor_mapping_tab',
                 'fret_tab',
-                'components_tab',
-                'selection_tab',
             ):
                 tab = getattr(self, tab_name, None)
                 refresh = getattr(tab, '_refresh_settings_note', None)
@@ -3276,40 +3320,6 @@ class PlotterWidget(QWidget):
                         refresh()
         finally:
             self._refreshing_settings_notes = False
-
-    def _refresh_plot_settings_note(self):
-        """Name the selected layers storing other plot settings than shown."""
-        label = getattr(self, '_plot_settings_note', None)
-        if label is None:
-            return
-        primary = self.get_primary_layer()
-        others = [
-            layer
-            for layer in self.get_selected_layers()
-            if layer is not primary
-        ]
-        message = None
-        if others:
-            current = self._current_plot_settings()
-            differing = [
-                layer
-                for layer in others
-                if any(
-                    key in self.settings_store.committed(layer)
-                    and not settings_equal(
-                        self.settings_store.committed(layer)[key], value
-                    )
-                    for key, value in current.items()
-                )
-            ]
-            if differing:
-                names = format_layer_list(layer.name for layer in differing)
-                message = (
-                    f"The plot settings stored in {names} differ from the "
-                    "ones shown; changing a plot setting stores it in all "
-                    "selected layers."
-                )
-        set_settings_note(label, [message])
 
     def _get_default_plot_settings(self):
         """Get default settings dictionary for plot parameters."""
@@ -3475,10 +3485,20 @@ class PlotterWidget(QWidget):
                         image_layer.metadata['mask'],
                         name=matching_mask_layer_name,
                         scale=image_layer.scale,
+                        units=image_layer.units,
                     )
-                self.mask_layer_combobox.setCurrentText(
-                    matching_mask_layer_name
-                )
+                # With several layers selected each keeps its own mask,
+                # invert and labels; the editor change must not re-apply the
+                # primary layer's mask (with the checkbox's stale invert) to
+                # all of them.
+                multi_selection = len(self.get_selected_layer_names()) > 1
+                self.mask_layer_combobox.blockSignals(multi_selection)
+                try:
+                    self.mask_layer_combobox.setCurrentText(
+                        matching_mask_layer_name
+                    )
+                finally:
+                    self.mask_layer_combobox.blockSignals(False)
 
             # Keys the layer has no value for show their defaults.
             settings = {
@@ -5900,8 +5920,6 @@ class PlotterWidget(QWidget):
         sections_layout = QVBoxLayout(contents)
         sections_layout.setContentsMargins(0, 0, 0, 0)
         sections_layout.addWidget(self._import_settings_box)
-        self._plot_settings_note = create_settings_note_label(contents)
-        sections_layout.addWidget(self._plot_settings_note)
         sections_layout.addWidget(type_box)
         sections_layout.addWidget(appearance_box)
         sections_layout.addWidget(pc_box)
@@ -7344,10 +7362,23 @@ class PlotterWidget(QWidget):
 
             # If image layers were renamed, update selections and notify tabs
             old_image_layers_by_id = getattr(self, '_image_layers_by_id', {})
+            # Only phasor source images: renaming an analysis output (which
+            # the tabs do themselves when a component is renamed) is not a
+            # source rename.
+            phasor_layer_ids = {
+                id(layer)
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "G" in layer.metadata
+                and "S" in layer.metadata
+                and "G_original" in layer.metadata
+                and "S_original" in layer.metadata
+            }
             renamed_images = {
                 old_name: new_name
                 for layer_id, new_name in image_layers_by_id.items()
-                if layer_id in old_image_layers_by_id
+                if layer_id in phasor_layer_ids
+                and layer_id in old_image_layers_by_id
                 and (old_name := old_image_layers_by_id[layer_id]) != new_name
             }
             if renamed_images:
@@ -7425,10 +7456,14 @@ class PlotterWidget(QWidget):
 
             self.mask_layer_combobox.addItems(["None"] + mask_layer_names)
 
-            # Check if previously selected mask layer was deleted
+            # Check if a mask in use was deleted: the one the selector shows,
+            # or one assigned per layer through the assignment dialog.
             mask_layer_was_deleted = (
                 mask_layer_combobox_current_text != "None"
                 and mask_layer_combobox_current_text not in mask_layer_names
+            ) or any(
+                mask_name not in mask_layer_names
+                for mask_name in self._mask_assignments.values()
             )
 
             if mask_layer_combobox_current_text in mask_layer_names:
@@ -7542,14 +7577,12 @@ class PlotterWidget(QWidget):
             )
         ):
             return True
-        name = layer.name
-        if " fractions: " in name or " fraction: " in name:
-            return True
-        if name.startswith("FRET efficiency: "):
-            return True
-        return any(
-            name.startswith(f"{output_type}: ")
-            for output_type in (
+        analysis = split_analysis_layer_name(layer.name)[1]
+        return (
+            parse_component_analysis_label(analysis) is not None
+            or analysis == "FRET efficiency"
+            or analysis
+            in (
                 "Phase",
                 "Modulation",
                 "Apparent Phase Lifetime",
@@ -7626,6 +7659,11 @@ class PlotterWidget(QWidget):
         self._invalidate_features_cache()
 
         if not layer_name:
+            if self._showing_no_layer:
+                # Already torn down: the selection was emptied through the
+                # combobox and a caller re-applies it.
+                return
+            self._showing_no_layer = True
             self._g_array = None
             self._s_array = None
             self._g_original_array = None
@@ -7666,6 +7704,7 @@ class PlotterWidget(QWidget):
             self.canvas_widget.figure.canvas.draw_idle()
             return
 
+        self._showing_no_layer = False
         layer = self.viewer.layers[layer_name]
         layer_metadata = layer.metadata
 
@@ -7859,8 +7898,8 @@ class PlotterWidget(QWidget):
         their derived analysis layers.
 
         Association is determined by napari-phasors' layer naming
-        convention: analysis layers are named ``"<descriptor>: <intensity
-        layer name>"``. Layers that are not associated with any phasor
+        convention: analysis layers are named ``"<intensity layer name without
+        [Phasor]> [<analysis>]"``. Layers that are not associated with any phasor
         intensity layer (e.g. unrelated reference layers) are left
         untouched. Redundant writes to ``layer.visible`` are skipped so
         napari does not emit unnecessary redraw events.
@@ -7870,25 +7909,22 @@ class PlotterWidget(QWidget):
         selected_names : set of str
             Names of the currently selected intensity layers.
         """
-        # Intensity layer names sorted longest-first so the most specific
-        # suffix wins when one layer name is a suffix of another.
-        intensity_names = sorted(
-            (
-                layer.name
-                for layer in self.viewer.layers
-                if self._is_phasor_intensity_layer(layer)
-            ),
-            key=len,
-            reverse=True,
-        )
-        intensity_name_set = set(intensity_names)
+        intensity_name_set = {
+            layer.name
+            for layer in self.viewer.layers
+            if self._is_phasor_intensity_layer(layer)
+        }
+        intensity_by_base = {
+            phasor_layer_base_name(name): name
+            for name in sorted(intensity_name_set)
+        }
 
         def associated_intensity_name(layer_name):
             """Return the intensity layer this layer derives from, or None."""
-            for intensity_name in intensity_names:
-                if layer_name.endswith(f": {intensity_name}"):
-                    return intensity_name
-            return None
+            base, analysis = split_analysis_layer_name(layer_name)
+            if analysis is None:
+                return None
+            return intensity_by_base.get(base)
 
         for layer in self.viewer.layers:
             if layer.name in intensity_name_set:
@@ -8272,6 +8308,7 @@ class PlotterWidget(QWidget):
             np.asarray(mask_data).copy(),
             name=name,
             scale=reference_layer.scale,
+            units=reference_layer.units,
         )
         return name
 
@@ -8742,7 +8779,11 @@ class PlotterWidget(QWidget):
         return self._mask_assignments.get(layer_name, "None")
 
     def refresh_phasor_data(self):
-        """Reload phasor data from the current layer metadata and replot."""
+        """Reload phasor data from the current layer metadata and replot.
+
+        Needed after editing a layer's G/S arrays in place; arrays that were
+        replaced are picked up by the next plot anyway.
+        """
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -8965,8 +9006,8 @@ class PlotterWidget(QWidget):
         layer) keeps frames directly comparable, which is the point of
         stepping through them.
 
-        The result is cached; it only depends on the selected layers, the
-        harmonic, the bin count and the frame axis.
+        The result is cached; it only depends on the selected layers and
+        their G/S arrays, the harmonic, the bin count and the frame axis.
 
         Returns
         -------
@@ -8988,6 +9029,7 @@ class PlotterWidget(QWidget):
             self.histogram_bins,
             ctx.axis,
             ctx.n_frames,
+            _SameArrays(selected_layers),
         )
         if self._frame_histogram_cache_key == cache_key:
             return self._frame_histogram_cache
@@ -9063,10 +9105,9 @@ class PlotterWidget(QWidget):
     def _invalidate_features_cache(self):
         """Invalidate the merged-features cache.
 
-        Call this whenever a layer's G/S arrays are mutated (filter,
-        threshold, calibration, mask application/restoration, etc.) so
-        that the next call to :meth:`get_merged_features` recomputes
-        from the layer metadata instead of returning stale data.
+        Replacing a layer's G/S arrays is noticed without it (the caches are
+        keyed on the arrays themselves); call this when they are edited in
+        place, as :meth:`refresh_phasor_data` does.
         """
         self._features_cache = None
         self._features_cache_key = None
@@ -9093,9 +9134,9 @@ class PlotterWidget(QWidget):
         for unified plotting. Each layer's data is extracted at the current
         harmonic and merged together.
 
-        Results are cached and reused when the selected layers and harmonic
-        haven't changed (e.g. when only visual parameters like bins or
-        colormap are modified).
+        Results are cached and reused while the selected layers, their G/S
+        arrays and the harmonic are unchanged (e.g. when only visual
+        parameters like bins or colormap are modified).
 
         Returns
         -------
@@ -9109,6 +9150,7 @@ class PlotterWidget(QWidget):
         cache_key = (
             tuple(layer.name for layer in selected_layers),
             self.harmonic,
+            _SameArrays(selected_layers),
             self.frame_context.state_key(),
         )
         if (
@@ -9978,6 +10020,7 @@ class PlotterWidget(QWidget):
         # Determine which axes to use for inset
         ax = self.canvas_widget.axes
         self.cax = ax.inset_axes([1.05, 0, 0.05, 1])
+        self.cax.set_axes_locator(self._colorbar_locator(ax))
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -10046,10 +10089,12 @@ class PlotterWidget(QWidget):
             return
 
         ax = self.canvas_widget.axes
-        # Position mapping colorbar to the right at 1.35 for compact right-hand labels.
         try:
-            # Create an inset axes for the mapping colorbar to match the density colorbar's dimensions exactly
+            # Same size as the density colorbar, placed just past its labels.
             self.mapping_cax = ax.inset_axes([1.35, 0, 0.05, 1])
+            self.mapping_cax.set_axes_locator(
+                self._colorbar_locator(ax, after=lambda: self.cax)
+            )
             self.mapping_colorbar = self.canvas_widget.figure.colorbar(
                 mappable, cax=self.mapping_cax, orientation='vertical'
             )
@@ -10072,6 +10117,35 @@ class PlotterWidget(QWidget):
             self.canvas_widget.figure.canvas.draw_idle()
         except ValueError:
             self._remove_mapping_colorbar()
+
+    #: Gap (pt) between a colorbar and whatever sits to its left.
+    _COLORBAR_GAP_PT = 8
+
+    @classmethod
+    def _colorbar_locator(cls, ax, after=None):
+        """Return an axes locator that places a colorbar right of *ax*.
+
+        The colorbar keeps the height of the plot and 5 % of its width, and
+        sits a fixed ``_COLORBAR_GAP_PT`` past the plot, or past the ticks and
+        label of the colorbar returned by *after* when that one is shown.
+        Fixed gaps, unlike offsets in axes fractions, do not grow and shrink
+        with the plot, so the layout engine can reserve room for them in one
+        pass instead of pushing the outer colorbar's labels off the figure.
+        """
+
+        def locate(cax, renderer):
+            fig = ax.figure
+            ax.apply_aspect()
+            pos = ax.get_position(original=False)
+            fig_w = fig.bbox.width
+            gap = cls._COLORBAR_GAP_PT * fig.dpi / 72 / fig_w
+            x0 = pos.x1 + gap
+            left_bar = after() if after is not None else None
+            if left_bar is not None and left_bar.get_visible():
+                x0 = left_bar.get_tightbbox(renderer).x1 / fig_w + gap
+            return Bbox.from_bounds(x0, pos.y0, 0.05 * pos.width, pos.height)
+
+        return locate
 
     def _remove_colorbar(self):
         """Remove colorbar if it exists."""
@@ -10406,6 +10480,13 @@ class PlotterWidget(QWidget):
                 combo.primaryLayerChanged.disconnect(
                     self._sync_frequency_inputs_from_metadata
                 )
+
+        # Destroying the tab widget removes its pages one by one, and each
+        # removal emits ``currentChanged``; left connected, that re-ran the
+        # tab-switch handler (and the analysis redraws behind it) on tabs
+        # that were already being deleted.
+        with contextlib.suppress(TypeError, RuntimeError, AttributeError):
+            self.tab_widget.currentChanged.disconnect(self._on_tab_changed)
 
         # Ensure child tabs run their own cleanup.
         for tab_name in (

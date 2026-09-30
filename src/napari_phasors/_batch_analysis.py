@@ -79,16 +79,24 @@ from ._utils import (
     HistogramSettingsDialog,
     HistogramWidget,
     PopoutWindowMixin,
+    analysis_layer_name,
     apply_calibration_correction,
     apply_filter_and_threshold,
+    component_analysis_label,
     compute_calibration_parameters,
+    concentration_analysis_label,
     make_solid_contour_cmap,
+    normalize_legend_location,
     normalize_rgb,
+    parse_component_analysis_label,
+    parse_concentration_analysis_label,
     populate_colormap_combobox,
     rank_mask_candidates,
     read_ome_tiff_settings,
     required_component_harmonics,
     resolve_colormap_by_name,
+    setup_primary_button,
+    split_analysis_layer_name,
 )
 from ._writer import (
     export_layer_as_csv,
@@ -97,7 +105,6 @@ from ._writer import (
 )
 from .components_tab import (
     ABSOLUTE_CONCENTRATION,
-    CONCENTRATION_SEP,
     CONCENTRATION_UNITS,
     MANUAL_REFERENCE,
     TOTAL_CONCENTRATION,
@@ -398,18 +405,27 @@ def _apply_image_mask(layer, mask, invert=False):
 
 
 def _select_harmonic_arrays(layer, harmonic):
-    """Return ``(real, imag)`` for ``harmonic`` from a layer's phasor data."""
+    """Return ``(real, imag)`` for ``harmonic`` from a layer's phasor data.
+
+    A single-harmonic layout (``G``/``S`` shaped like the image) is returned
+    as is. A multi-harmonic layout (``G``/``S`` stacked along a leading
+    harmonic axis) yields that harmonic's plane, or ``(None, None)`` when the
+    layer never computed it, so callers skip the file instead of computing on
+    the whole stack.
+    """
     g_array = layer.metadata.get("G")
     s_array = layer.metadata.get("S")
     if g_array is None or s_array is None:
         return None, None
+    if g_array.ndim <= layer.data.ndim:
+        return g_array, s_array
     harmonics = layer.metadata.get("harmonics")
-    if harmonics is not None:
-        harmonics_array = np.atleast_1d(harmonics)
-        idx = np.where(harmonics_array == harmonic)[0]
-        if g_array.ndim == layer.data.ndim + 1 and idx.size > 0:
-            return g_array[idx[0]], s_array[idx[0]]
-    return g_array, s_array
+    if harmonics is None:
+        return None, None
+    idx = np.where(np.atleast_1d(harmonics) == harmonic)[0]
+    if idx.size == 0 or idx[0] >= g_array.shape[0]:
+        return None, None
+    return g_array[idx[0]], s_array[idx[0]]
 
 
 def _apply_component_fraction(layer, components):
@@ -473,7 +489,9 @@ def _apply_component_fraction(layer, components):
         outputs = [
             _make_output_image(
                 fraction,
-                f"{names[0]} fraction: {layer.name}",
+                analysis_layer_name(
+                    component_analysis_label(names[0]), layer.name
+                ),
                 colormap=_cmap(0),
                 contrast_limits=contrast,
             )
@@ -484,7 +502,10 @@ def _apply_component_fraction(layer, components):
             outputs.append(
                 _make_output_image(
                     1.0 - np.asarray(fraction),
-                    f"{names[1]} fraction: {layer.name}",
+                    analysis_layer_name(
+                        component_analysis_label(names[1]),
+                        layer.name,
+                    ),
                     colormap=_reversed_colormap(_cmap(0)),
                     contrast_limits=contrast,
                 )
@@ -504,7 +525,10 @@ def _apply_component_fraction(layer, components):
         layers.append(
             _make_output_image(
                 fraction,
-                f"{name} fraction: {layer.name}",
+                analysis_layer_name(
+                    component_analysis_label(name, fit=True),
+                    layer.name,
+                ),
                 colormap=_cmap(index),
                 contrast_limits=contrast,
             )
@@ -561,7 +585,9 @@ def _apply_component_concentration(layer, components):
             colormap = colormaps[index] if index < len(colormaps) else None
         image = _make_output_image(
             data,
-            f"{name}{CONCENTRATION_SEP}{layer.name}",
+            analysis_layer_name(
+                concentration_analysis_label(name), layer.name
+            ),
             colormap=colormap,
             contrast_limits=components.get("contrast_limits"),
         )
@@ -653,7 +679,7 @@ def _apply_phasor_mapping(layer, mapping):
         layers.append(
             _make_output_image(
                 values,
-                f"{output_type}: {layer.name}",
+                analysis_layer_name(output_type, layer.name),
                 colormap=mapping.get("colormap"),
                 contrast_limits=mapping.get("contrast_limits"),
             )
@@ -689,7 +715,7 @@ def _apply_fret(layer, fret):
     fret_efficiency = phasor_nearest_neighbor(
         real, imag, neighbor_real, neighbor_imag, values=efficiencies
     )
-    name = f"FRET efficiency: {layer.name}"
+    name = analysis_layer_name("FRET efficiency", layer.name)
     return [
         _make_output_image(
             fret_efficiency,
@@ -744,7 +770,7 @@ def _apply_selection(layer, selection):
             color_dict[idx + 1] = _cursor_rgba(
                 None, idx, cluster.get("colors")
             )
-        name = f"Cluster selection: {layer.name}"
+        name = analysis_layer_name("Cluster selection", layer.name)
         return [_make_selection_labels(selection_map, name, color_dict)]
 
     cursors = selection["cursors"]
@@ -753,7 +779,7 @@ def _apply_selection(layer, selection):
         selection_map[_cursor_mask(real, imag, cursor)] = idx + 1
         color_dict[idx + 1] = _cursor_rgba(cursor.get("color"), idx)
 
-    name = f"Cursor selection: {layer.name}"
+    name = analysis_layer_name("Cursor selection", layer.name)
     return [_make_selection_labels(selection_map, name, color_dict)]
 
 
@@ -1130,8 +1156,12 @@ def default_group_config():
         "normalize": False,
         "central_tendency": "None",
         "show_legend": True,
+        "legend_placement": "inside",
+        "legend_position": "upper right",
         "white_background": False,
         "smooth_curves": True,
+        "fill_area": True,
+        "fill_opacity": 0.5,
         "log_scale": False,
         "bins": 150,
         # Per-key contour styling (filled by the Contour Layer Settings dialog).
@@ -3839,6 +3869,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "central_tendency", "None"
             ),
             show_legend=self._group_config.get("show_legend", True),
+            legend_placement=self._group_config.get(
+                "legend_placement", "inside"
+            ),
+            legend_position=self._group_config.get(
+                "legend_position", "upper right"
+            ),
             log_scale=self._group_config.get("log_scale", False),
             bins=self._group_config.get("bins", 150),
             layer_labels=names,
@@ -3853,6 +3889,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         dialog.smooth_checkbox.setChecked(
             self._group_config.get("smooth_curves", True)
+        )
+        dialog.fill_checkbox.setChecked(
+            self._group_config.get("fill_area", True)
+        )
+        dialog.fill_opacity_spinbox.setValue(
+            int(round(self._group_config.get("fill_opacity", 0.5) * 100))
         )
 
         if dialog.exec() == QDialog.Accepted:
@@ -3869,8 +3911,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                         dialog.central_tendency_combo.currentText()
                     ),
                     "show_legend": dialog.legend_checkbox.isChecked(),
+                    "legend_placement": dialog.get_legend_placement(),
+                    "legend_position": dialog.get_legend_position(),
                     "white_background": dialog.white_bg_checkbox.isChecked(),
                     "smooth_curves": dialog.smooth_checkbox.isChecked(),
+                    "fill_area": dialog.fill_checkbox.isChecked(),
+                    "fill_opacity": dialog.fill_opacity_spinbox.value() / 100,
                     "log_scale": dialog.log_scale_checkbox.isChecked(),
                     "bins": dialog.bins_spinbox.value(),
                 }
@@ -3958,7 +4004,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
     def _build_run_footer(self, layout):
         """Add the run button and progress footer to *layout*."""
         self.run_button = QPushButton("Run batch analysis")
-        self.run_button.clicked.connect(self.run_batch)
+        self.run_button.setMinimumHeight(34)
+        self._refresh_run_button = setup_primary_button(
+            self.run_button,
+            self._run_validation,
+            self.run_batch,
+            ready_tooltip="Run the batch analysis.",
+        )
         layout.addWidget(self.run_button)
 
         self.progress_bar = QProgressBar()
@@ -5012,10 +5064,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 return True
         return False
 
-    def _update_run_enabled(self):
-        """Enable the run button only once the batch is fully configured."""
-        has_files = self.format_combobox.count() > 0
-        has_export = bool(self._export_folder)
+    def _run_validation(self):
+        """Return why the batch cannot run yet, or ``None`` when it can."""
+        if self.format_combobox.count() == 0:
+            return "Select an input folder containing supported files."
+        if not self._export_folder:
+            return "Select an export folder."
         has_type = (
             any(
                 checkbox.isChecked()
@@ -5027,16 +5081,15 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             or self._has_extra_outputs()
         )
-        self.run_button.setEnabled(has_files and has_export and has_type)
-        if not has_files:
-            tip = "Select an input folder containing supported files."
-        elif not has_export:
-            tip = "Select an export folder."
-        elif not has_type:
-            tip = "Select an export format or enable an analysis output."
-        else:
-            tip = "Run the batch analysis."
-        self.run_button.setToolTip(tip)
+        if not has_type:
+            return "Select an export format or enable an analysis output."
+        return None
+
+    def _update_run_enabled(self):
+        """Refresh the run button's ready/blocked look and tooltip."""
+        refresh = getattr(self, "_refresh_run_button", None)
+        if refresh is not None:
+            refresh()
 
     def _apply_settings_to_ui(self, settings):
         """Populate the analysis tabs from a settings dict."""
@@ -5217,6 +5270,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "normalize": stored.get("normalize", False),
             "central_tendency": stored.get("central_tendency", "None"),
             "show_legend": stored.get("show_legend", True),
+            "legend_placement": stored.get("legend_placement", "inside"),
+            "legend_position": stored.get("legend_position", "upper right"),
             "log_scale": stored.get("log_scale", False),
             "bins": int(stored.get("bins") or 150),
         }
@@ -5990,6 +6045,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 data,
                 name=add_kw.get("name", os.path.basename(path)),
                 metadata=add_kw.get("metadata", {}),
+                scale=add_kw.get("scale"),
+                units=add_kw.get("units"),
             )
             extra_layers = apply_pipeline(layer, local_pipeline)
             if self._signal_export_cfg is not None:
@@ -6043,32 +6100,42 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _subfolder_for_layer(self, layer_name):
         """Return the analysis-tab *key* that produced ``layer_name``."""
-        if "fraction: " in layer_name or CONCENTRATION_SEP in layer_name:
+        analysis = split_analysis_layer_name(layer_name)[1]
+        if (
+            parse_component_analysis_label(analysis) is not None
+            or parse_concentration_analysis_label(analysis) is not None
+        ):
             return "components"
-        elif any(
-            layer_name.startswith(f"{t}: ")
-            for t in [
-                "Phase",
-                "Modulation",
-                "Normal Lifetime",
-                "Apparent Phase Lifetime",
-                "Apparent Modulation Lifetime",
-            ]
+        if analysis in (
+            "Phase",
+            "Modulation",
+            "Normal Lifetime",
+            "Apparent Phase Lifetime",
+            "Apparent Modulation Lifetime",
         ):
             return "phasor_mapping"
-        elif layer_name.startswith("FRET efficiency: "):
+        if analysis == "FRET efficiency":
             return "fret"
-        elif layer_name.startswith(
-            ("Cursor selection: ", "Cluster selection: ")
-        ):
+        if analysis in ("Cursor selection", "Cluster selection"):
             return "selection"
         return None
 
     def _clean_layer_name(self, layer_name):
-        """Return *layer_name* without its trailing ``": <source>"`` suffix."""
-        if ": " in layer_name:
-            return layer_name.split(": ", 1)[0]
-        return layer_name
+        """Return the analysis label of *layer_name* (its bracketed tag).
+
+        A component-analysis layer yields ``"<component> fraction"`` and an
+        absolute-concentration layer ``"<component> concentration"``.
+        """
+        analysis = split_analysis_layer_name(layer_name)[1]
+        if analysis is None:
+            return layer_name
+        concentration = parse_concentration_analysis_label(analysis)
+        if concentration is not None:
+            return f"{concentration} concentration"
+        parsed = parse_component_analysis_label(analysis)
+        if parsed is not None:
+            return f"{parsed[1]} fraction"
+        return analysis
 
     def _emit_file_outputs(
         self,
@@ -6174,10 +6241,19 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         if load_into_viewer:
             self.viewer.add_image(
-                layer.data, name=layer.name, metadata=layer.metadata
+                layer.data,
+                name=layer.name,
+                metadata=layer.metadata,
+                scale=layer.scale,
+                units=layer.units,
             )
             for extra in extra_layers:
-                self.viewer.add_image(extra.data, name=extra.name)
+                self.viewer.add_image(
+                    extra.data,
+                    name=extra.name,
+                    scale=layer.scale,
+                    units=layer.units,
+                )
 
     def _derive_output_path(
         self, src_path, ext, suffix, preserve, subfolder=None
@@ -8675,9 +8751,14 @@ def _new_export_histogram(config, label):
     hw = HistogramWidget()
     hw.white_background = config.get("white_background", False)
     hw._smooth_curves = config.get("smooth_curves", True)
+    hw._fill_area = config.get("fill_area", True)
+    hw._fill_alpha = config.get("fill_opacity", 0.5)
     hw._normalize = config.get("normalize", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)
+    hw._legend_placement, hw._legend_position = normalize_legend_location(
+        config.get("legend_placement"), config.get("legend_position")
+    )
     hw._log_scale = config.get("log_scale", False)
     hw.bins = int(config.get("bins") or hw.bins)
     hw.xlabel = label
@@ -8893,6 +8974,10 @@ def _store_plot_settings(layer, plot_settings, group_config=None):
             "normalize": group_config.get("normalize"),
             "central_tendency": group_config.get("central_tendency"),
             "show_legend": group_config.get("show_legend"),
+            "legend_placement": group_config.get("legend_placement", "inside"),
+            "legend_position": group_config.get(
+                "legend_position", "upper right"
+            ),
             "log_scale": group_config.get("log_scale", False),
             "bins": group_config.get("bins", 150),
         }

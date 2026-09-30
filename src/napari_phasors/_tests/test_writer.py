@@ -783,6 +783,78 @@ def test_export_image_labels_layer(tmp_path):
     assert os.path.exists(out[0])
 
 
+def _cursor_selection_labels(name="selection"):
+    """A Labels layer coloured like the ones the cursor selections create."""
+    from napari.layers import Labels
+    from napari.utils import DirectLabelColormap
+
+    return Labels(
+        np.array([[0, 1, 2], [3, 0, 1]], dtype=int),
+        name=name,
+        colormap=DirectLabelColormap(
+            color_dict={
+                0: [0, 0, 0, 0],
+                1: [1, 0, 0, 1],
+                2: [0, 1, 0, 1],
+                3: [0, 0, 1, 1],
+                None: [0, 0, 0, 0],
+            },
+            name="manual_selection_colors",
+        ),
+    )
+
+
+def test_export_labels_layer_as_svg(tmp_path):
+    """A cursor-selection Labels layer is written as a real SVG."""
+    from napari_phasors._writer import export_layer_as_image
+
+    out = export_layer_as_image(
+        str(tmp_path / "selection.svg"), _cursor_selection_labels()
+    )
+    assert out == [str(tmp_path / "selection.svg")]
+    assert "<svg" in (tmp_path / "selection.svg").read_text()
+
+
+def test_svg_writer_routing_uses_napari_phasors_for_labels_only():
+    """Labels go to napari-phasors for ``.svg``; other layers keep napari-svg.
+
+    napari-svg cannot draw a ``DirectLabelColormap``, so a cursor selection
+    failed to save. The manifest claims the extension for labels only, so
+    the layers it handled correctly are still handled by it.
+    """
+    from npe2 import PluginManager
+
+    pm = PluginManager.instance()
+    pm.discover()
+
+    def writer_for(*layer_types):
+        writer, _ = pm.get_writer("layer.svg", layer_types=list(layer_types))
+        return writer.command
+
+    assert writer_for("labels") == "napari-phasors.export_layer_as_image"
+    assert (
+        writer_for("labels", "labels")
+        == "napari-phasors.export_layer_as_image"
+    )
+    assert writer_for("image") == "napari-svg.svg_writer"
+    assert writer_for("points") == "napari-svg.svg_writer"
+
+
+def test_save_cursor_selection_labels_as_svg_via_viewer(
+    make_napari_viewer, tmp_path
+):
+    """Saving a cursor-selection Labels layer to ``.svg`` goes through napari."""
+    viewer = make_napari_viewer()
+    layer = viewer.add_layer(_cursor_selection_labels())
+    viewer.layers.selection = {layer}
+    path = str(tmp_path / "selection.svg")
+
+    written = viewer.layers.save(path, selected=True)
+
+    assert written == [path]
+    assert "<svg" in (tmp_path / "selection.svg").read_text()
+
+
 def test_export_image_colormap_object_with_colorbar(tmp_path):
     """A napari Colormap object (with .colors) and a colorbar are handled."""
     from napari.layers import Image

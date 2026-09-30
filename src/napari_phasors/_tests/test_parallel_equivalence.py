@@ -202,10 +202,13 @@ def make_phasor_arrays(layout, mean_dtype, gs_dtype, nan_fraction, seed):
     phasorpy.
     """
     rng = np.random.default_rng(seed)
+    # 240 rows is what splits into several bands wider than the largest
+    # halo; the images are split by rows only, so 16 columns (more than the
+    # largest kernel) cover the same geometry for a third of the work.
     if layout == "stack":
-        mean_shape, skip_axis = (3, 240, 48), (0,)
+        mean_shape, skip_axis = (3, 240, 16), (0,)
     else:
-        mean_shape, skip_axis = (240, 48), None
+        mean_shape, skip_axis = (240, 16), None
     gs_shape = (2,) + mean_shape if layout == "harmonic" else mean_shape
 
     mean = (rng.random(mean_shape) * 500).astype(mean_dtype)
@@ -800,14 +803,16 @@ def test_fret_efficiency_matrix(force_split, make_viewer_model, n_layers):
     assert_same(parallel, sequential, "FRET efficiency")
 
 
-@pytest.mark.parametrize("n_layers", (1, 3))
-@pytest.mark.parametrize(
-    "output_type",
-    ("Phase", "Modulation", "Normal Lifetime", "Apparent Phase Lifetime"),
+MAPPING_OUTPUTS = (
+    ("Phase", None),
+    ("Modulation", None),
+    ("Lifetime", "Normal Lifetime"),
+    ("Lifetime", "Apparent Phase Lifetime"),
 )
-def test_phasor_mapping_matrix(
-    force_split, make_viewer_model, n_layers, output_type
-):
+
+
+@pytest.mark.parametrize("n_layers", (1, 3))
+def test_phasor_mapping_matrix(force_split, make_viewer_model, n_layers):
     """Every mapping output type matches its sequential run."""
     from napari_phasors.plotter import PlotterWidget
 
@@ -817,27 +822,36 @@ def test_phasor_mapping_matrix(
         sources = add_phasor_layers(viewer, n_layers)
         select_layers(plotter, sources)
         widget = plotter.phasor_mapping_tab
-        # Type before frequency: setting the frequency triggers a
-        # calculation of its own, so choosing the type first keeps the run
-        # from also producing maps of the default type.
-        widget.lifetime_type_combobox.setCurrentText(output_type)
-        widget.frequency_input.setText("80.0")
-        widget._on_frequency_changed()
-        widget._on_calculate_lifetime_clicked()
-        result = analysis_layer_data(viewer, set(sources))
+        results = {}
+        for mode, lifetime_type in MAPPING_OUTPUTS:
+            # Output and type before frequency: setting the frequency
+            # triggers a calculation of its own, so choosing them first keeps
+            # the run from also producing maps of the default type.
+            widget.output_mode_combobox.setCurrentText(mode)
+            if lifetime_type is not None:
+                widget.lifetime_type_combobox.setCurrentText(lifetime_type)
+            widget.frequency_input.setText("80.0")
+            widget._on_frequency_changed()
+            widget._on_calculate_lifetime_clicked()
+            output_type = lifetime_type or mode
+            results[output_type] = {
+                name: data
+                for name, data in analysis_layer_data(
+                    viewer, set(sources)
+                ).items()
+                if name.endswith(f"[{output_type}]")
+            }
         plotter.deleteLater()
-        return result
+        return results
 
     sequential, parallel = both_ways(run)
-    assert len(sequential) >= n_layers, f"{output_type} produced no maps"
-    assert_same(parallel, sequential, output_type)
+    for output_type, maps in sequential.items():
+        assert len(maps) == n_layers, f"{output_type} produced no maps"
+    assert_same(parallel, sequential, "mapping outputs")
 
 
 @pytest.mark.parametrize("n_layers", (1, 3))
-@pytest.mark.parametrize("analysis", ("Linear Projection", "Component Fit"))
-def test_components_analysis_matrix(
-    force_split, make_viewer_model, n_layers, analysis
-):
+def test_components_analysis_matrix(force_split, make_viewer_model, n_layers):
     """Component fractions match whether the layers are fitted in a pool."""
     from napari_phasors.plotter import PlotterWidget
 
@@ -848,19 +862,28 @@ def test_components_analysis_matrix(
         select_layers(plotter, sources)
         widget = plotter.components_tab
         plotter.tab_widget.setCurrentWidget(widget)
-        widget.analysis_type_combo.setCurrentText(analysis)
-        for index, (g, s) in enumerate(((0.2, 0.1), (0.8, 0.5))):
-            widget.components[index].g_edit.setText(str(g))
-            widget.components[index].s_edit.setText(str(s))
-            widget._on_component_coords_changed(index)
-        widget._run_analysis()
-        result = analysis_layer_data(viewer, set(sources))
+        results = {}
+        for analysis in ("Linear Projection", "Component Fit"):
+            widget.analysis_type_combo.setCurrentText(analysis)
+            for index, (g, s) in enumerate(((0.2, 0.1), (0.8, 0.5))):
+                widget.components[index].g_edit.setText(str(g))
+                widget.components[index].s_edit.setText(str(s))
+                widget._on_component_coords_changed(index)
+            widget._run_analysis()
+            results[analysis] = {
+                name: data
+                for name, data in analysis_layer_data(
+                    viewer, set(sources)
+                ).items()
+                if f"({analysis})" in name
+            }
         plotter.deleteLater()
-        return result
+        return results
 
     sequential, parallel = both_ways(run)
-    assert len(sequential) >= n_layers, f"{analysis} produced no fraction maps"
-    assert_same(parallel, sequential, analysis)
+    for analysis, maps in sequential.items():
+        assert len(maps) >= n_layers, f"{analysis} produced no fraction maps"
+    assert_same(parallel, sequential, "component fractions")
 
 
 @pytest.mark.parametrize("brightness_ratio", (None, 1.5))

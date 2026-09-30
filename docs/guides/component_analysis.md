@@ -143,9 +143,10 @@ calibrate, filter and threshold it like the samples.
 | **Brightness ratio** | Molecular brightness of the other component relative to the calibrated one. Needed for the second component: bound NADH is about 3 to 5 times brighter than free NADH, and 1 treats both as equally bright (as Ma et al. did). |
 | **Show total in histogram and statistics** | Plots the total concentration next to the components checked on their cards. |
 
-Each analysed image gets a `<component> concentration: <image>` layer, plus a
-second component and a `Total concentration: <image>` layer when the second
-component is computed. Pixels where the model is undefined are left empty
+Each analysed image gets an `<image> [(Absolute Concentration) <component>]`
+layer, plus one for the second component and an
+`<image> [(Absolute Concentration) Total]` layer when the second component is
+computed. Pixels where the model is undefined are left empty
 (NaN). The histogram and statistics docks switch to concentrations, labelled
 with their unit, and each component card's **Show in histogram and
 statistics** toggle works as it does for fractions.
@@ -185,6 +186,10 @@ Filters always evaluate against **the fractions of the latest analysis run**. Mo
 
 > [!IMPORTANT]
 > Fraction filters belong to the **same stack** as the criteria in the **Phasor Mapping** and **FRET** tabs. A pixel is kept only when *every* enabled criterion across all tabs keeps it. Because each criterion evaluates independently against the unfiltered data, the order you add them in does not change the result.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20filter.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20filter.mp4" type="video/mp4">
+</video>
 
 ### Pixel counts and percentages in the filter
 

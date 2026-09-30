@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 from napari.layers import Image
 from qtpy.QtCore import QEvent
 from qtpy.QtGui import QColor
@@ -27,126 +26,128 @@ from napari_phasors.plotter import (
 )
 
 
-def test_phasor_plotter_mask_layer_ui_initialization(make_viewer_model):
-    """Test mask layer UI components exist and are initialized correctly."""
+def test_applying_and_restoring_a_mask_on_one_layer(make_viewer_model):
+    """A Labels or Shapes mask blanks G/S outside it, optionally inverted,
+    and restoring brings the original coordinates back."""
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
 
-    # Test mask layer combobox and label exist
-    assert hasattr(plotter, 'mask_layer_combobox')
-    assert hasattr(plotter, 'mask_layer_label')
+    # Before any mask exists the selector reads "None" and Invert is off.
     assert isinstance(plotter.mask_layer_combobox, QComboBox)
     assert isinstance(plotter.mask_layer_label, QLabel)
-
-    # Test initial state - should have "None" as default
     assert plotter.mask_layer_combobox.currentText() == "None"
+    assert isinstance(plotter.mask_invert_checkbox, QCheckBox)
+    assert not plotter.mask_invert_checkbox.isChecked()
+    assert not plotter.mask_invert_checkbox.isEnabled()
 
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    original_g = layer.metadata["G"].copy()
+    original_s = layer.metadata["S"].copy()
+    shape = _make_mask_shape(layer)
+    half = shape[0] // 2
 
-def test_phasor_plotter_apply_mask_to_phasor_data(make_viewer_model):
-    """Test that applying a mask sets G and S values outside mask to NaN."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
+    def g_2d():
+        g = layer.metadata["G"]
+        return g[0] if g.ndim == 3 else g
 
-    # Add image layer with phasors
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-
-    # Get original G and S shape
-    G_original = intensity_image_layer.metadata["G"]
-
-    # Create a mask - need to match the spatial dimensions of G and S
-    if G_original.ndim == 3:
-        # Multi-harmonic: shape is (n_harmonics, height, width)
-        mask_shape = G_original.shape[1:]
-    else:
-        # Single harmonic: shape is (height, width)
-        mask_shape = G_original.shape
-
-    mask_data = np.zeros(mask_shape, dtype=int)
-    mask_data[mask_shape[0] // 2 :, :] = 1  # Mask in bottom half
-    labels_layer = viewer.add_labels(mask_data, name="test_mask")
-
-    # Apply mask
-    plotter._apply_mask_to_phasor_data(labels_layer, intensity_image_layer)
-
-    # Check that mask was stored in metadata
-    assert 'mask' in intensity_image_layer.metadata
-
-    # Check that G and S values outside mask are now NaN
-    current_g = intensity_image_layer.metadata["G"]
-    current_s = intensity_image_layer.metadata["S"]
-    assert np.isnan(current_g).sum() > 0
-    assert np.isnan(current_s).sum() > 0
-
-
-def test_phasor_plotter_restore_original_phasor_data(make_viewer_model):
-    """Test restoring original phasor data removes mask effects."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    # Add image layer with phasors
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-
-    # Get original data
-    original_g = intensity_image_layer.metadata["G"].copy()
-    original_s = intensity_image_layer.metadata["S"].copy()
-
-    # Get the shape for the mask
-    if original_g.ndim == 3:
-        mask_shape = original_g.shape[1:]
-    else:
-        mask_shape = original_g.shape
-
-    # Apply mask to modify data
-    mask_data = np.zeros(mask_shape, dtype=int)
-    mask_data[mask_shape[0] // 2 :, :] = 1
-    labels_layer = viewer.add_labels(mask_data, name="test_mask")
-    plotter._apply_mask_to_phasor_data(labels_layer, intensity_image_layer)
-
-    # Verify data was modified (some values are NaN)
-    assert np.isnan(intensity_image_layer.metadata["G"]).sum() > 0
-
-    # Restore original data
-    plotter._restore_original_phasor_data(intensity_image_layer)
-
-    # Verify data was restored (no NaN values in original)
-    np.testing.assert_array_almost_equal(
-        intensity_image_layer.metadata["G"], original_g
-    )
-    np.testing.assert_array_almost_equal(
-        intensity_image_layer.metadata["S"], original_s
+    # An empty mask selects nothing, so it is ignored; inverted, it keeps
+    # every pixel.
+    empty = viewer.add_labels(np.zeros(shape, dtype=int), name="empty")
+    plotter._apply_mask_to_phasor_data(empty, layer, invert=False)
+    np.testing.assert_array_equal(layer.metadata["G"], original_g)
+    assert "mask" not in layer.metadata
+    plotter._apply_mask_to_phasor_data(empty, layer, invert=True)
+    np.testing.assert_array_equal(
+        np.isnan(layer.metadata["G"]), np.isnan(original_g)
     )
 
+    # A bottom-half mask blanks the top half; inverted, the bottom half.
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[half:, :] = 1
+    labels_layer = viewer.add_labels(mask_data, name="test_mask")
+    plotter._apply_mask_to_phasor_data(labels_layer, layer, invert=False)
+    assert "mask" in layer.metadata
+    assert np.isnan(layer.metadata["S"]).sum() > 0
+    assert np.isnan(g_2d()[:half, :]).all()
+    assert not np.isnan(g_2d()[half:, :]).all()
 
-def test_mask_layer_rename_updates_combobox_and_assignments(
-    make_viewer_model,
-):
-    """Regression test for mask-layer rename synchronization in the plotter."""
+    plotter._restore_original_phasor_data(layer)
+    np.testing.assert_array_almost_equal(layer.metadata["G"], original_g)
+    np.testing.assert_array_almost_equal(layer.metadata["S"], original_s)
+
+    plotter._apply_mask_to_phasor_data(labels_layer, layer, invert=True)
+    assert not np.isnan(g_2d()[:half, :]).all()
+    assert np.isnan(g_2d()[half:, :]).all()
+    plotter._restore_original_phasor_data(layer)
+
+    # A Shapes layer is rasterised into a mask.
+    rect = np.array(
+        [[0, 0], [0, shape[1]], [shape[0], shape[1]], [shape[0], 0]]
+    )
+    shapes_layer = viewer.add_shapes(
+        [rect], shape_type="polygon", name="shape_mask"
+    )
+    plotter._apply_mask_to_phasor_data(shapes_layer, layer)
+    assert "mask" in layer.metadata
+
+    # Applying without a label subset drops one stored earlier.
+    plotter._apply_mask_array_to_phasor_data(mask_data, layer, labels=[1])
+    assert "mask_labels" in layer.metadata
+    plotter._apply_mask_array_to_phasor_data(mask_data, layer, labels=None)
+    assert "mask_labels" not in layer.metadata
+
+
+def test_renaming_layers_keeps_the_selectors_in_sync(make_viewer_model):
+    """Renamed image and mask layers stay selected and assigned under their
+    new names, including an image that only gains phasors later."""
     viewer = make_viewer_model()
-
     layer1 = create_image_layer_with_phasors()
     layer2 = create_image_layer_with_phasors()
+    raw = Image(np.ones((10, 10)), name="raw_image")
     viewer.add_layer(layer1)
     viewer.add_layer(layer2)
-
-    # Build a mask compatible with phasor spatial dimensions.
-    g_data = layer1.metadata["G"]
-    mask_shape = g_data.shape[1:] if g_data.ndim == 3 else g_data.shape
-    mask = np.ones(mask_shape, dtype=int)
-    labels_layer = viewer.add_labels(mask, name="mask_before_rename")
-
+    viewer.add_layer(raw)
+    labels_layer = viewer.add_labels(
+        np.ones(_make_mask_shape(layer1), dtype=int),
+        name="mask_before_rename",
+    )
     plotter = PlotterWidget(viewer)
+    combobox = plotter.image_layers_checkable_combobox
 
-    # Single-layer mode: selecting a mask updates the combobox and assignments.
-    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
+    # A layer without phasors is not offered, but its renames are tracked
+    # so it shows up under its current name once it has them.
+    assert "raw_image" not in combobox.allItems()
+    raw.name = "renamed_raw_image"
+    raw.metadata = {
+        "G": np.ones((10, 10)),
+        "S": np.ones((10, 10)),
+        "G_original": np.ones((10, 10)),
+        "S_original": np.ones((10, 10)),
+        "harmonics": [1],
+    }
+    plotter.reset_layer_choices()
+    assert "renamed_raw_image" in combobox.allItems()
+
+    # Renaming a selected layer keeps it selected under the new name.
+    combobox.setCheckedItems(["renamed_raw_image"])
+    raw.name = "final_image_name"
+    assert plotter.get_selected_layer_names() == ["final_image_name"]
+    assert "final_image_name" in combobox.allItems()
+    assert "renamed_raw_image" not in combobox.allItems()
+
+    combobox.setCheckedItems([layer1.name])
+    old_name = layer1.name
+    layer1.name = "renamed_image_layer"
+    assert plotter.get_selected_layer_names() == ["renamed_image_layer"]
+    assert "renamed_image_layer" in combobox.allItems()
+    assert old_name not in combobox.allItems()
+
+    # Renaming the mask layer updates the selector and the assignment.
     plotter.mask_layer_combobox.setCurrentText("mask_before_rename")
     assert plotter.mask_layer_combobox.currentText() == "mask_before_rename"
     assert plotter._mask_assignments.get(layer1.name) == "mask_before_rename"
-
-    # Renaming the mask layer should propagate to UI and assignments.
     labels_layer.name = "mask_after_rename"
-
     combo_items = [
         plotter.mask_layer_combobox.itemText(i)
         for i in range(plotter.mask_layer_combobox.count())
@@ -161,514 +162,242 @@ def test_mask_layer_rename_updates_combobox_and_assignments(
     assert plotter.mask_layer_combobox.currentText() == "mask_after_rename"
 
 
-def test_image_layer_rename_updates_combobox(make_viewer_model):
-    """Test that renaming an image layer keeps it selected and updates the name in the checkable combobox."""
+def test_assigning_masks_to_several_layers(make_viewer_model):
+    """Each selected layer gets its own mask and Invert flag, the summary
+    counts the masked layers, and a repainted mask is re-applied only to
+    the layers using it."""
     viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-
     plotter = PlotterWidget(viewer)
 
-    # Select the layer
-    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
-    assert plotter.get_selected_layer_names() == [layer1.name]
+    # With no layer selected a repainted mask has nothing to update.
+    stray = viewer.add_labels(np.ones((5, 5), dtype=int), name="stray")
+    plotter._on_mask_data_changed(type("Event", (), {"source": stray})())
+    viewer.layers.remove(stray)
 
-    # Rename the layer
-    old_name = layer1.name
-    new_name = "renamed_image_layer"
-    layer1.name = new_name
-
-    assert plotter.get_selected_layer_names() == [new_name]
-    assert new_name in plotter.image_layers_checkable_combobox.allItems()
-    assert old_name not in plotter.image_layers_checkable_combobox.allItems()
-
-
-def test_image_layer_rename_without_initial_phasors(make_viewer_model):
-    """Test that renaming an image layer that starts without phasor metadata correctly tracks rename when it later gets phasors."""
-    viewer = make_viewer_model()
-    # Create image layer without phasors
-    layer1 = Image(np.ones((10, 10)), name="raw_image")
-    viewer.add_layer(layer1)
-
-    plotter = PlotterWidget(viewer)
-
-    # It should not be in the combobox yet
-    assert (
-        "raw_image" not in plotter.image_layers_checkable_combobox.allItems()
-    )
-
-    # Rename the layer before it has phasor metadata
-    layer1.name = "renamed_raw_image"
-
-    # Set phasor metadata to simulate calibration/calculation
-    layer1.metadata = {
-        "G": np.ones((10, 10)),
-        "S": np.ones((10, 10)),
-        "G_original": np.ones((10, 10)),
-        "S_original": np.ones((10, 10)),
-        "harmonics": [1],
-    }
-
-    # Trigger reset_layer_choices (e.g. simulation of tab change or manual refresh)
-    plotter.reset_layer_choices()
-
-    # It should now be in the combobox with the renamed name
-    assert (
-        "renamed_raw_image"
-        in plotter.image_layers_checkable_combobox.allItems()
-    )
-
-    # If we select it
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        ["renamed_raw_image"]
-    )
-
-    # Rename it again (while it has phasor metadata and is selected)
-    layer1.name = "final_image_name"
-
-    # It should keep being selected and update the name in the combobox
-    assert plotter.get_selected_layer_names() == ["final_image_name"]
-    assert (
-        "final_image_name"
-        in plotter.image_layers_checkable_combobox.allItems()
-    )
-    assert (
-        "renamed_raw_image"
-        not in plotter.image_layers_checkable_combobox.allItems()
-    )
-
-
-def test_mask_row_keeps_its_shape_across_selection_counts(make_viewer_model):
-    """The summary button is the whole row, whatever the selection count."""
-    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_image_layer_with_phasors()
     viewer.add_layer(layer1)
     viewer.add_layer(layer2)
-    plotter = PlotterWidget(viewer)
+    shape = _make_mask_shape(layer1)
+    half = shape[0] // 2
+    bottom = np.zeros(shape, dtype=int)
+    bottom[half:, :] = 1
+    top = np.zeros(shape, dtype=int)
+    top[:half, :] = 1
+    mask_bottom = viewer.add_labels(bottom, name="mask_bottom")
+    mask_top = viewer.add_labels(top, name="mask_top")
 
-    # Use not isHidden() because the plotter is not rendered in a window during
-    # tests, so isVisible() would be False regardless of setVisible() state.
-    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
-    assert not plotter.mask_summary_button.isHidden()
-    assert not plotter.mask_button_label.isHidden()
+    def g_2d(layer):
+        g = layer.metadata["G"]
+        return g[0] if g.ndim == 3 else g
 
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [layer1.name, layer2.name]
-    )
-    assert not plotter.mask_summary_button.isHidden()
-    assert not plotter.mask_button_label.isHidden()
+    def repaint(mask_layer):
+        event = type("Event", (), {"source": mask_layer})()
+        plotter._on_mask_data_changed(event)
 
-    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
-    assert not plotter.mask_summary_button.isHidden()
-
-    # The editor controls live in the popover, not in the row.
+    # The summary button is the whole row, whatever the selection count;
+    # the editor controls live in the popover, not in the row.
+    combobox = plotter.image_layers_checkable_combobox
+    for names in ([layer1.name], [layer1.name, layer2.name], [layer1.name]):
+        combobox.setCheckedItems(names)
+        assert not plotter.mask_summary_button.isHidden()
+        assert not plotter.mask_button_label.isHidden()
     assert plotter.mask_layer_combobox.parent() is plotter.mask_editor_popover
     assert plotter.mask_invert_checkbox.parent() is plotter.mask_editor_popover
 
+    # Several selected layers go to the per-layer assignment dialog.
+    combobox.setCheckedItems([layer1.name, layer2.name])
+    with (
+        patch.object(plotter, '_open_mask_assignment_dialog') as dialog,
+        patch.object(plotter, '_show_mask_editor_popover') as popover,
+    ):
+        plotter.mask_summary_button.click()
+    dialog.assert_called_once()
+    popover.assert_not_called()
 
-def test_mask_assignment_dialog_get_assignments(make_viewer_model):
-    """Test that MaskAssignmentDialog returns correct per-layer assignments."""
-    from napari_phasors.plotter import MaskAssignmentDialog
+    # Nothing assigned: the summary says so and a repaint changes nothing.
+    plotter._mask_assignments = {}
+    plotter._update_mask_summary_text()
+    assert plotter._mask_summary_full_text == "None"
+    repaint(mask_bottom)
+    assert "mask" not in layer1.metadata
+    assert "mask" not in layer2.metadata
 
-    image_names = ["layer_A", "layer_B", "layer_C"]
-    mask_names = ["mask_1", "mask_2"]
-    current = {"layer_A": "mask_1", "layer_C": "mask_2"}
-
-    dialog = MaskAssignmentDialog(
-        image_layer_names=image_names,
-        mask_layer_names=mask_names,
-        current_assignments=current,
-        parent=None,
+    # One layer masked: counted, and the only one a repaint touches.
+    plotter._mask_assignments = {layer1.name: mask_bottom.name}
+    assert plotter.get_mask_for_layer(layer1.name) == mask_bottom.name
+    assert plotter.get_mask_for_layer(layer2.name) == "None"
+    plotter._update_mask_summary_text()
+    assert plotter._mask_summary_full_text == "1 of 2 layers"
+    assert "1 of 2 selected layers masked" in (
+        plotter.mask_summary_button.toolTip()
     )
+    repaint(mask_bottom)
+    assert "mask" in layer1.metadata
+    assert "mask" not in layer2.metadata
 
-    # Initial assignments should reflect current_assignments
-    assignments = dialog.get_assignments()
-    assert assignments["layer_A"] == "mask_1"
-    assert assignments["layer_B"] == "None"
-    assert assignments["layer_C"] == "mask_2"
+    plotter._mask_assignments = {
+        layer1.name: mask_bottom.name,
+        layer2.name: mask_bottom.name,
+    }
+    plotter._update_mask_summary_text()
+    assert plotter._mask_summary_full_text == "2 of 2 layers"
 
-
-def test_mask_assignment_dialog_apply_all(make_viewer_model):
-    """Test that 'Set all to' applies the same mask to every layer in the dialog."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
-    image_names = ["layer_A", "layer_B"]
-    mask_names = ["mask_1", "mask_2"]
-
-    dialog = MaskAssignmentDialog(
-        image_layer_names=image_names,
-        mask_layer_names=mask_names,
-        parent=None,
+    # Distinct masks per layer.
+    plotter._apply_mask_assignments(
+        {layer1.name: mask_bottom.name, layer2.name: mask_top.name}
     )
+    assert np.isnan(g_2d(layer1)[:half, :]).all()
+    assert not np.isnan(g_2d(layer1)[half:, :]).all()
+    assert np.isnan(g_2d(layer2)[half:, :]).all()
+    assert not np.isnan(g_2d(layer2)[:half, :]).all()
+    assert plotter._mask_assignments[layer1.name] == mask_bottom.name
+    assert plotter._mask_assignments[layer2.name] == mask_top.name
 
-    # Trigger apply-all by changing the combo
-    dialog._apply_all_combo.setCurrentText("mask_2")
-
-    assignments = dialog.get_assignments()
-    assert assignments["layer_A"] == "mask_2"
-    assert assignments["layer_B"] == "mask_2"
-
-
-def test_mask_assignment_dialog_apply_all_defaults_to_placeholder(
-    make_viewer_model,
-):
-    """'Set all to' defaults to 'Select ...' when layers have differing masks."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
-    image_names = ["layer_A", "layer_B"]
-    mask_names = ["mask_1", "mask_2"]
-    current = {"layer_A": "mask_1", "layer_B": "None"}
-
-    dialog = MaskAssignmentDialog(
-        image_layer_names=image_names,
-        mask_layer_names=mask_names,
-        current_assignments=current,
-        parent=None,
+    # The same mask, inverted for one layer only.
+    plotter._apply_mask_assignments(
+        {layer1.name: mask_bottom.name, layer2.name: mask_bottom.name},
+        invert_assignments={layer1.name: False, layer2.name: True},
     )
+    assert np.isnan(g_2d(layer1)[:half, :]).all()
+    assert np.isnan(g_2d(layer2)[half:, :]).all()
 
+    # Accepting the dialog applies its Invert choices too.
+    mock_dialog = MagicMock()
+    mock_dialog.exec.return_value = 1  # QDialog.Accepted
+    mock_dialog.get_assignments.return_value = {
+        layer1.name: mask_top.name,
+        layer2.name: "None",
+    }
+    mock_dialog.get_invert_assignments.return_value = {
+        layer1.name: True,
+        layer2.name: False,
+    }
+    with patch(
+        "napari_phasors.plotter.MaskAssignmentDialog",
+        return_value=mock_dialog,
+    ):
+        plotter._open_mask_assignment_dialog()
+    assert plotter._mask_invert_assignments.get(layer1.name, False)
+
+    # Assigning "None" removes a layer's mask.
+    combobox.setCheckedItems([layer1.name])
+    plotter._apply_mask_assignments({layer1.name: "None"})
+    assert 'mask' not in layer1.metadata
+
+
+def test_mask_assignment_dialog_set_all_to():
+    """Rows start from the current assignments (unknown masks fall back to
+    "None"), and "Set all to" mirrors the shared mask, or shows a
+    placeholder while the rows differ."""
+
+    def open_dialog(current, names=("layer_A", "layer_B")):
+        return MaskAssignmentDialog(
+            image_layer_names=list(names),
+            mask_layer_names=["mask_1", "mask_2"],
+            current_assignments=current,
+            parent=None,
+        )
+
+    dialog = open_dialog(
+        {"layer_A": "mask_1", "layer_C": "mask_2", "layer_D": "deleted"},
+        names=("layer_A", "layer_B", "layer_C", "layer_D"),
+    )
+    assert dialog.get_assignments() == {
+        "layer_A": "mask_1",
+        "layer_B": "None",
+        "layer_C": "mask_2",
+        "layer_D": "None",
+    }
+    # Differing masks always show the placeholder, never a stale value.
     assert dialog._apply_all_combo.currentText() == "Select ..."
-    # Selecting the placeholder must not clobber the per-layer assignments.
-    assignments = dialog.get_assignments()
-    assert assignments["layer_A"] == "mask_1"
-    assert assignments["layer_B"] == "None"
-
     dialog.close()
 
-
-def test_mask_assignment_dialog_apply_all_defaults_to_common_mask(
-    make_viewer_model,
-):
-    """'Set all to' defaults to the shared mask when all layers match."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
-    image_names = ["layer_A", "layer_B"]
-    mask_names = ["mask_1", "mask_2"]
-    current = {"layer_A": "mask_1", "layer_B": "mask_1"}
-
-    dialog = MaskAssignmentDialog(
-        image_layer_names=image_names,
-        mask_layer_names=mask_names,
-        current_assignments=current,
-        parent=None,
-    )
-
-    assert dialog._apply_all_combo.currentText() == "mask_1"
-
+    # Selecting the placeholder must not clobber the per-layer choices.
+    dialog = open_dialog({"layer_A": "mask_1", "layer_B": "None"})
+    assert dialog._apply_all_combo.currentText() == "Select ..."
+    assert dialog.get_assignments() == {"layer_A": "mask_1", "layer_B": "None"}
     dialog.close()
 
-
-def test_mask_assignment_dialog_apply_all_updates_on_per_layer_change(
-    make_viewer_model,
-):
-    """'Set all to' updates live as per-layer mask combos are edited."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
-    image_names = ["layer_A", "layer_B"]
-    mask_names = ["mask_1", "mask_2"]
-    current = {"layer_A": "mask_1", "layer_B": "mask_1"}
-
-    dialog = MaskAssignmentDialog(
-        image_layer_names=image_names,
-        mask_layer_names=mask_names,
-        current_assignments=current,
-        parent=None,
-    )
-
-    # Starts common, so "Set all to" reflects the shared mask.
+    # Matching rows show their shared mask, live as the rows are edited.
+    dialog = open_dialog({"layer_A": "mask_1", "layer_B": "mask_1"})
     assert dialog._apply_all_combo.currentText() == "mask_1"
-
-    # Diverging one layer's mask should fall back to the placeholder.
     dialog._combos["layer_B"].setCurrentText("mask_2")
     assert dialog._apply_all_combo.currentText() == "Select ..."
-
-    # Making them match again should restore the shared value automatically.
     dialog._combos["layer_B"].setCurrentText("mask_1")
     assert dialog._apply_all_combo.currentText() == "mask_1"
+    dialog.close()
 
+    # Picking a mask in "Set all to" assigns it to every row.
+    dialog = open_dialog(None)
+    dialog._apply_all_combo.setCurrentText("mask_2")
+    assert dialog.get_assignments() == {
+        "layer_A": "mask_2",
+        "layer_B": "mask_2",
+    }
     dialog.close()
 
 
-def test_mask_assignment_dialog_apply_all_differing_masks_ignores_stale_choice(
-    make_viewer_model,
-):
-    """Differing per-layer masks always show 'Select ...', never a stale value."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
-    image_names = ["layer_A", "layer_B"]
-    mask_names = ["mask_1", "mask_2"]
-    current = {"layer_A": "mask_1", "layer_B": "mask_2"}
-
+def test_mask_assignment_dialog_auto_assign():
+    """Auto-assign matches each layer to its mask by name and leaves near
+    misses alone; without masks it is disabled and a no-op."""
     dialog = MaskAssignmentDialog(
-        image_layer_names=image_names,
-        mask_layer_names=mask_names,
-        current_assignments=current,
-        parent=None,
-    )
-
-    assert dialog._apply_all_combo.currentText() == "Select ..."
-    dialog.close()
-
-
-def test_mask_assignment_dialog_auto_assign_button_state():
-    """Test that Auto-assign button enablement depends on available masks."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
-    # No masks available
-    dialog_empty = MaskAssignmentDialog(
         image_layer_names=["layer_A", "layer_B"],
         mask_layer_names=[],
         parent=None,
     )
-    assert hasattr(dialog_empty, "auto_assign_button")
-    assert not dialog_empty.auto_assign_button.isEnabled()
-    dialog_empty.close()
-
-    # Masks available
-    dialog_with_masks = MaskAssignmentDialog(
-        image_layer_names=["layer_A", "layer_B"],
-        mask_layer_names=["mask_A", "mask_B"],
-        parent=None,
-    )
-    assert dialog_with_masks.auto_assign_button.isEnabled()
-    dialog_with_masks.close()
-
-
-def test_mask_assignment_dialog_auto_assign_action():
-    """Test clicking Auto-assign matches each layer to the best mask."""
-    from napari_phasors.plotter import MaskAssignmentDialog
+    assert not dialog.auto_assign_button.isEnabled()
+    # The guard holds even if the disabled button is bypassed.
+    dialog._on_auto_assign()
+    assert dialog.get_assignments() == {"layer_A": "None", "layer_B": "None"}
+    dialog.close()
 
     images = [
         "embryo_1.ptu Intensity [Phasor]",
         "embryo_2.ptu Intensity [Phasor]",
         "unmatched_image.ptu Intensity [Phasor]",
     ]
-    masks = ["embryo_2_segmentation", "embryo_1", "random_mask"]
-
     dialog = MaskAssignmentDialog(
         image_layer_names=images,
-        mask_layer_names=masks,
+        mask_layer_names=["embryo_2_segmentation", "embryo_1", "random_mask"],
         parent=None,
     )
-
-    # Initial state is "None" for all
+    assert dialog.auto_assign_button.isEnabled()
     for combo in dialog._combos.values():
         assert combo.currentText() == "None"
-
-    # Click auto-assign
     dialog.auto_assign_button.click()
-
     assignments = dialog.get_assignments()
     assert assignments[images[0]] == "embryo_1"
     assert assignments[images[1]] == "embryo_2_segmentation"
     # No name match: left alone rather than given a near-miss mask.
     assert assignments[images[2]] == "None"
-
     dialog.close()
 
-
-def test_mask_assignment_dialog_auto_assign_keeps_near_misses_unassigned():
-    """A layer whose only sibling mask belongs to another image stays None."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
+    # A layer whose only sibling mask belongs to another image stays None.
+    image = "2026-05-03_control.lsm Intensity [Phasor]"
     dialog = MaskAssignmentDialog(
-        image_layer_names=["2026-05-03_control.lsm Intensity [Phasor]"],
+        image_layer_names=[image],
         mask_layer_names=["2026-05-03_treated_mask"],
         parent=None,
     )
     dialog.auto_assign_button.click()
-
-    assert dialog.get_assignments() == {
-        "2026-05-03_control.lsm Intensity [Phasor]": "None"
-    }
+    assert dialog.get_assignments() == {image: "None"}
     dialog.close()
 
-
-def test_mask_assignment_dialog_auto_assign_updates_dependent_widgets():
-    """Auto-assign goes through the combo, so the row's widgets follow."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
+    # Auto-assign goes through the combo, so the row's widgets follow: the
+    # Invert checkbox is only meaningful once a mask is assigned.
+    image = "sample.tif Intensity [Phasor]"
     dialog = MaskAssignmentDialog(
-        image_layer_names=["sample.tif Intensity [Phasor]"],
+        image_layer_names=[image],
         mask_layer_names=["sample_mask"],
         parent=None,
     )
-    invert = dialog._invert_checks["sample.tif Intensity [Phasor]"]
+    invert = dialog._invert_checks[image]
     assert not invert.isEnabled()
-
     dialog.auto_assign_button.click()
-
-    assert dialog.get_assignments() == {
-        "sample.tif Intensity [Phasor]": "sample_mask"
-    }
-    # The Invert checkbox is only meaningful once a mask is assigned.
+    assert dialog.get_assignments() == {image: "sample_mask"}
     assert invert.isEnabled()
     dialog.close()
-
-
-def test_mask_assignment_dialog_auto_assign_without_masks_is_a_no_op():
-    """The guard holds even if the disabled button is bypassed."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
-    dialog = MaskAssignmentDialog(
-        image_layer_names=["layer_A"],
-        mask_layer_names=[],
-        parent=None,
-    )
-    dialog._on_auto_assign()
-
-    assert dialog.get_assignments() == {"layer_A": "None"}
-    dialog.close()
-
-
-def test_apply_mask_assignments_different_masks_per_layer(make_viewer_model):
-    """Test that _apply_mask_assignments applies distinct masks to each layer."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-
-    # Select both layers
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [layer1.name, layer2.name]
-    )
-
-    # Build matching mask shapes from each layer's G data
-    def make_mask(layer, fill_row_half):
-        G = layer.metadata["G"]
-        shape = G.shape[1:] if G.ndim == 3 else G.shape
-        mask = np.zeros(shape, dtype=int)
-        if fill_row_half:
-            mask[shape[0] // 2 :, :] = 1  # bottom half
-        else:
-            mask[: shape[0] // 2, :] = 1  # top half
-        return mask
-
-    mask_data_1 = make_mask(layer1, fill_row_half=True)
-    mask_data_2 = make_mask(layer2, fill_row_half=False)
-
-    labels_layer1 = viewer.add_labels(mask_data_1, name="mask_bottom")
-    labels_layer2 = viewer.add_labels(mask_data_2, name="mask_top")
-
-    # Apply different masks to each layer
-    assignments = {
-        layer1.name: labels_layer1.name,
-        layer2.name: labels_layer2.name,
-    }
-    plotter._apply_mask_assignments(assignments)
-
-    # Both layers should now have masks stored
-    assert 'mask' in layer1.metadata
-    assert 'mask' in layer2.metadata
-
-    # layer1 mask covers bottom half, so top half pixels should be NaN
-    g1 = layer1.metadata["G"]
-    if g1.ndim == 3:
-        g1 = g1[0]
-    assert np.isnan(g1[: g1.shape[0] // 2, :]).all()  # top half is NaN
-    assert not np.isnan(g1[g1.shape[0] // 2 :, :]).all()  # bottom half kept
-
-    # layer2 mask covers top half, so bottom half pixels should be NaN
-    g2 = layer2.metadata["G"]
-    if g2.ndim == 3:
-        g2 = g2[0]
-    assert np.isnan(g2[g2.shape[0] // 2 :, :]).all()  # bottom half is NaN
-    assert not np.isnan(g2[: g2.shape[0] // 2, :]).all()  # top half kept
-
-    # _mask_assignments should only contain non-None entries
-    assert plotter._mask_assignments[layer1.name] == labels_layer1.name
-    assert plotter._mask_assignments[layer2.name] == labels_layer2.name
-
-
-def test_apply_mask_assignments_none_removes_mask(make_viewer_model):
-    """Test that assigning 'None' removes an existing mask from a layer."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
-
-    G = layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.ones(shape, dtype=int)
-    labels_layer = viewer.add_labels(mask_data, name="full_mask")
-
-    # First apply a mask
-    plotter._apply_mask_to_phasor_data(labels_layer, layer)
-    assert 'mask' in layer.metadata
-
-    # Now assign None to remove it
-    plotter._apply_mask_assignments({layer.name: "None"})
-
-    assert 'mask' not in layer.metadata
-
-
-def test_get_mask_for_layer_multi_mode(make_viewer_model):
-    """Test get_mask_for_layer returns per-layer assignment when multiple layers selected."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-    plotter = PlotterWidget(viewer)
-
-    G = layer1.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.ones(shape, dtype=int)
-    labels_layer = viewer.add_labels(mask_data, name="my_mask")
-
-    # Select both layers so we're in multi mode
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [layer1.name, layer2.name]
-    )
-
-    # Assign mask only to layer1
-    plotter._mask_assignments = {layer1.name: labels_layer.name}
-
-    assert plotter.get_mask_for_layer(layer1.name) == labels_layer.name
-    assert plotter.get_mask_for_layer(layer2.name) == "None"
-
-
-def test_mask_summary_text_updates_with_count(make_viewer_model):
-    """Multi-layer summary reports how many layers carry a mask."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-    plotter = PlotterWidget(viewer)
-
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [layer1.name, layer2.name]
-    )
-
-    # No masks assigned yet
-    plotter._mask_assignments = {}
-    plotter._update_mask_summary_text()
-    assert plotter._mask_summary_full_text == "None"
-
-    # One mask assigned
-    G = layer1.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    labels_layer = viewer.add_labels(np.ones(shape, dtype=int), name="m")
-    plotter._mask_assignments = {layer1.name: labels_layer.name}
-    plotter._update_mask_summary_text()
-    assert plotter._mask_summary_full_text == "1 of 2 layers"
-    assert "1 of 2 selected layers masked" in (
-        plotter.mask_summary_button.toolTip()
-    )
-
-    # Both masks assigned
-    plotter._mask_assignments = {
-        layer1.name: labels_layer.name,
-        layer2.name: labels_layer.name,
-    }
-    plotter._update_mask_summary_text()
-    assert plotter._mask_summary_full_text == "2 of 2 layers"
 
 
 def _make_mask_shape(layer):
@@ -680,188 +409,106 @@ def _make_mask_shape(layer):
 # --- Feature 1: Invert Mask (single-layer mode) ---
 
 
-def test_invert_mask_checkbox_exists_and_default(make_viewer_model):
-    """Test that the invert mask checkbox exists and is unchecked."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
+def test_mask_selector_with_a_labels_layer(make_viewer_model):
+    """Choosing a Labels mask enables Invert and lists its labels, all
+    ticked and coloured; narrowing, inverting and repainting keep G/S in
+    step, and "None" resets everything."""
+    _, plotter, image_layer, labels_layer, labels_data = (
+        _setup_plotter_with_labels(make_viewer_model)
+    )
+    name = image_layer.name
+    combo = plotter.mask_labels_combobox
 
-    assert hasattr(plotter, 'mask_invert_checkbox')
-    assert isinstance(plotter.mask_invert_checkbox, QCheckBox)
-    assert not plotter.mask_invert_checkbox.isChecked()
-
-
-def test_invert_mask_checkbox_disabled_when_no_mask(
-    make_viewer_model,
-):
-    """Test that invert checkbox is disabled when mask is 'None'."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    assert not plotter.mask_invert_checkbox.isEnabled()
-
-
-def test_invert_mask_checkbox_enabled_when_mask_selected(
-    make_viewer_model,
-):
-    """Test invert checkbox enables when a mask layer is selected."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
-
-    shape = _make_mask_shape(layer)
-    mask_data = np.ones(shape, dtype=int)
-    viewer.add_labels(mask_data, name="test_mask")
-
-    plotter.mask_layer_combobox.setCurrentText("test_mask")
+    def masked():
+        g = image_layer.metadata["G"]
+        return np.isnan(g[0] if g.ndim == 3 else g)
 
     assert plotter.mask_invert_checkbox.isEnabled()
 
+    # Every label is ticked by default, stored as "no label filter".
+    assert not combo.isHidden()
+    assert combo.allItems() == ["1", "2", "3"]
+    assert combo.checkedItems() == combo.allItems()
+    assert plotter._mask_label_assignments.get(name) is None
+    combo.selectAll()
+    assert combo.lineEdit().text() == ""
+    assert combo.lineEdit().placeholderText() == "All Labels"
+    assert plotter._mask_label_assignments.get(name, "MISSING") is None
 
-def test_invert_mask_applies_inverted_logic(make_viewer_model):
-    """Test that invert param applies mask with inverted logic."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
+    # Each item is painted in its label's colour.
+    expected_bg = QColor(160, 160, 160, 160)
+    for i, label in enumerate([1, 2, 3]):
+        item = combo.model().item(i)
+        r, g, b = (int(c * 255) for c in labels_layer.get_color(label)[:3])
+        assert item.foreground().color() == QColor(r, g, b)
+        assert item.background().color() == expected_bg
 
-    shape = _make_mask_shape(layer)
-    # Mask bottom half (label=1), top half (label=0)
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[shape[0] // 2 :, :] = 1
-    labels_layer = viewer.add_labels(mask_data, name="test_mask")
+    # The row carries the combobox's select all/none buttons; with every
+    # label checked, "all" is a no-op and "none" is not.
+    assert plotter.mask_labels_select_buttons is combo.select_all_buttons
+    assert not combo._select_all_button.isEnabled()
+    assert combo._select_none_button.isEnabled()
+    combo.deselectAll()
+    assert combo.lineEdit().text() == "No labels"
+    assert combo._select_all_button.isEnabled()
+    assert not combo._select_none_button.isEnabled()
+    combo._select_all_button.click()
+    assert combo.checkedItems() == combo.allItems()
+    assert not combo._select_all_button.isEnabled()
 
-    # Normal mask: top half -> NaN, bottom half -> kept
-    plotter._apply_mask_to_phasor_data(labels_layer, layer, invert=False)
-    g = layer.metadata["G"]
-    g_2d = g[0] if g.ndim == 3 else g
-    assert np.isnan(g_2d[: shape[0] // 2, :]).all()
-    assert not np.isnan(g_2d[shape[0] // 2 :, :]).all()
+    # A newly painted label is added, keeping the ticked ones ticked.
+    labels_data = labels_data.copy()
+    labels_data[: labels_data.shape[0] // 2, :] = 4
+    labels_layer.data = labels_data
+    plotter._refresh_mask_labels_combobox(labels_layer)
+    assert combo.allItems() == ["1", "2", "3", "4"]
+    assert "1" in combo.checkedItems()
 
-    # Restore and apply inverted mask: bottom half -> NaN,
-    # top half -> kept
-    plotter._restore_original_phasor_data(layer)
-    plotter._apply_mask_to_phasor_data(labels_layer, layer, invert=True)
-    g_inv = layer.metadata["G"]
-    g_inv_2d = g_inv[0] if g_inv.ndim == 3 else g_inv
-    assert not np.isnan(g_inv_2d[: shape[0] // 2, :]).all()
-    assert np.isnan(g_inv_2d[shape[0] // 2 :, :]).all()
+    combo.setCheckedItems(["1", "3"])
+    assert combo.lineEdit().text() == "2 labels selected"
 
+    # A single label keeps only its pixels.
+    combo.setCheckedItems(["2"])
+    assert plotter._mask_label_assignments[name] == [2]
+    assert combo.checkedItems() == ["2"]
+    np.testing.assert_array_equal(masked(), labels_data != 2)
 
-def test_invert_mask_resets_on_none(make_viewer_model):
-    """Test that invert checkbox resets when mask is set to None."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
+    # A refresh with the same labels leaves the selection alone.
+    plotter._refresh_mask_labels_combobox(labels_layer)
+    assert combo.checkedItems() == ["2"]
 
-    shape = _make_mask_shape(layer)
-    mask_data = np.ones(shape, dtype=int)
-    viewer.add_labels(mask_data, name="test_mask")
-
-    # Select mask, enable invert
-    plotter.mask_layer_combobox.setCurrentText("test_mask")
+    # Inverting keeps the label subset and flips which pixels survive.
     plotter.mask_invert_checkbox.setChecked(True)
     assert plotter.mask_invert_checkbox.isChecked()
+    assert plotter._mask_invert_assignments[name] is True
+    assert plotter._mask_label_assignments[name] == [2]
+    assert combo.checkedItems() == ["2"]
+    np.testing.assert_array_equal(masked(), labels_data == 2)
 
-    # Set mask to None - invert should reset
+    # Clearing the mask resets Invert and drops the stored label subset.
+    assert image_layer.metadata["mask_labels"] == [2]
     plotter.mask_layer_combobox.setCurrentText("None")
     assert not plotter.mask_invert_checkbox.isChecked()
     assert not plotter.mask_invert_checkbox.isEnabled()
-
-
-def test_invert_mask_empty_mask_keeps_all_pixels(
-    make_viewer_model,
-):
-    """Test invert with empty mask (all zeros): all pixels kept."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
-
-    original_g = layer.metadata["G"].copy()
-    shape = _make_mask_shape(layer)
-    mask_data = np.zeros(shape, dtype=int)
-    labels_layer = viewer.add_labels(mask_data, name="empty_mask")
-
-    # Inverted empty mask should keep all pixels
-    plotter._apply_mask_to_phasor_data(labels_layer, layer, invert=True)
-    np.testing.assert_array_equal(
-        np.isnan(layer.metadata["G"]),
-        np.isnan(original_g),
-    )
+    assert "mask_labels" not in image_layer.metadata
+    assert name not in plotter._mask_label_assignments
 
 
 # --- Feature 1: Invert Mask (multi-layer mode) ---
 
 
-def test_mask_assignment_dialog_has_invert_option(
-    make_viewer_model,
-):
-    """Test MaskAssignmentDialog includes invert option."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-
-    shape = _make_mask_shape(layer1)
-    viewer.add_labels(np.ones(shape, dtype=int), name="mask1")
-
-    dialog = MaskAssignmentDialog(
-        image_layer_names=[layer1.name, layer2.name],
-        mask_layer_names=["mask1"],
-        current_assignments={},
-    )
-
-    # Dialog should support invert assignments
-    invert_assignments = dialog.get_invert_assignments()
-    assert isinstance(invert_assignments, dict)
-    for name in [layer1.name, layer2.name]:
-        assert name in invert_assignments
-        assert invert_assignments[name] is False
-
-
-def test_mask_assignment_dialog_invert_all_controls():
-    """Test 'Invert All' checkbox toggles all enabled rows and synchronizes."""
+def test_mask_assignment_dialog_invert_controls():
+    """Each row's Invert box is enabled once the row has a mask, and
+    "Invert All" toggles every enabled row and follows them."""
+    # No masks assigned: every row is off and "Invert All" is disabled.
     dialog = MaskAssignmentDialog(
         image_layer_names=["img1", "img2"],
         mask_layer_names=["mask1"],
-        current_assignments={"img1": "mask1", "img2": "mask1"},
-        current_invert_assignments={"img1": False, "img2": False},
+        current_assignments={},
     )
+    assert dialog.get_invert_assignments() == {"img1": False, "img2": False}
+    dialog.close()
 
-    assert hasattr(dialog, "invert_all_check")
-    assert dialog.invert_all_check.isEnabled()
-    assert not dialog.invert_all_check.isChecked()
-
-    # Click Invert All -> both become checked
-    dialog.invert_all_check.click()
-    assert dialog.invert_all_check.isChecked()
-    assert dialog._invert_checks["img1"].isChecked()
-    assert dialog._invert_checks["img2"].isChecked()
-    assert dialog.get_invert_assignments() == {"img1": True, "img2": True}
-
-    # Uncheck one row -> Invert All becomes unchecked
-    dialog._invert_checks["img1"].setChecked(False)
-    assert not dialog.invert_all_check.isChecked()
-    assert not dialog._invert_checks["img1"].isChecked()
-    assert dialog._invert_checks["img2"].isChecked()
-
-    # Check that row again -> Invert All becomes checked
-    dialog._invert_checks["img1"].setChecked(True)
-    assert dialog.invert_all_check.isChecked()
-
-    # Click Invert All again to uncheck -> both become unchecked
-    dialog.invert_all_check.click()
-    assert not dialog.invert_all_check.isChecked()
-    assert not dialog._invert_checks["img1"].isChecked()
-    assert not dialog._invert_checks["img2"].isChecked()
-
-
-def test_mask_assignment_dialog_invert_all_with_unassigned_rows():
-    """Test 'Invert All' handles rows with 'None' mask correctly."""
-    # When all rows have "None", Invert All should be disabled
     dialog = MaskAssignmentDialog(
         image_layer_names=["img1", "img2"],
         mask_layer_names=["mask1"],
@@ -883,9 +530,8 @@ def test_mask_assignment_dialog_invert_all_with_unassigned_rows():
     assert not dialog._invert_checks["img2"].isEnabled()
     assert dialog.get_invert_assignments() == {"img1": True, "img2": False}
 
-    # Now assign mask to img2 as well
+    # img2 is newly enabled and unchecked, so Invert All reflects that
     dialog._combos["img2"].setCurrentText("mask1")
-    # img2 is newly enabled and unchecked, so Invert All should reflect that
     assert not dialog.invert_all_check.isChecked()
 
     # Click Invert All -> both are now checked
@@ -893,293 +539,117 @@ def test_mask_assignment_dialog_invert_all_with_unassigned_rows():
     assert dialog.invert_all_check.isChecked()
     assert dialog._invert_checks["img1"].isChecked()
     assert dialog._invert_checks["img2"].isChecked()
+    dialog.close()
 
-
-def test_apply_mask_assignments_with_invert(make_viewer_model):
-    """Test per-layer invert via _apply_mask_assignments."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-    plotter = PlotterWidget(viewer)
-
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [layer1.name, layer2.name]
-    )
-
-    shape = _make_mask_shape(layer1)
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[shape[0] // 2 :, :] = 1
-    viewer.add_labels(mask_data, name="half_mask")
-
-    # Apply same mask, invert only layer2
-    assignments = {
-        layer1.name: "half_mask",
-        layer2.name: "half_mask",
-    }
-    invert_assignments = {
-        layer1.name: False,
-        layer2.name: True,
-    }
-    plotter._apply_mask_assignments(
-        assignments, invert_assignments=invert_assignments
-    )
-
-    # layer1: normal mask — top half NaN
-    g1 = layer1.metadata["G"]
-    g1_2d = g1[0] if g1.ndim == 3 else g1
-    assert np.isnan(g1_2d[: shape[0] // 2, :]).all()
-
-    # layer2: inverted mask — bottom half NaN
-    g2 = layer2.metadata["G"]
-    g2_2d = g2[0] if g2.ndim == 3 else g2
-    assert np.isnan(g2_2d[shape[0] // 2 :, :]).all()
-
-
-def test_mask_assignment_dialog_fallback_to_none(
-    make_viewer_model,
-):
-    """Test dialog sets 'None' when current assignment is invalid."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    shape = _make_mask_shape(layer)
-    viewer.add_labels(np.ones(shape, dtype=int), name="mask1")
-
-    # Pass an assignment that references a non-existent mask
+    # Rows that start assigned and not inverted.
     dialog = MaskAssignmentDialog(
-        image_layer_names=[layer.name],
+        image_layer_names=["img1", "img2"],
         mask_layer_names=["mask1"],
-        current_assignments={layer.name: "deleted_mask"},
+        current_assignments={"img1": "mask1", "img2": "mask1"},
+        current_invert_assignments={"img1": False, "img2": False},
     )
+    assert dialog.invert_all_check.isEnabled()
+    assert not dialog.invert_all_check.isChecked()
 
-    assignments = dialog.get_assignments()
-    assert assignments[layer.name] == "None"
+    dialog.invert_all_check.click()
+    assert dialog.invert_all_check.isChecked()
+    assert dialog.get_invert_assignments() == {"img1": True, "img2": True}
+
+    # Unchecking one row unchecks Invert All; re-checking it restores it.
+    dialog._invert_checks["img1"].setChecked(False)
+    assert not dialog.invert_all_check.isChecked()
+    assert dialog._invert_checks["img2"].isChecked()
+    dialog._invert_checks["img1"].setChecked(True)
+    assert dialog.invert_all_check.isChecked()
+
+    # Click Invert All again to uncheck -> both become unchecked
+    dialog.invert_all_check.click()
+    assert not dialog.invert_all_check.isChecked()
+    assert not dialog._invert_checks["img1"].isChecked()
+    assert not dialog._invert_checks["img2"].isChecked()
+
+    # The row callbacks fire while the dialog is still being built, before
+    # the checkbox exists: a no-op rather than an AttributeError.
+    saved = dialog.invert_all_check
+    del dialog.invert_all_check
+    dialog._sync_invert_all_check()
+    dialog.invert_all_check = saved
+    dialog.close()
 
 
-def test_apply_mask_shapes_layer(make_viewer_model):
-    """Test _apply_mask_to_phasor_data with a Shapes layer."""
+def test_deleting_a_mask_layer_unmasks_the_layers_using_it(make_viewer_model):
+    """Removing a mask layer clears its mask in single and multi-layer mode."""
     viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    mask = _make_spatial_mask(layer1)
+
+    # One layer selected: the mask selector falls back to "None".
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
+    single = viewer.add_labels(mask, name="single_mask")
+    plotter.mask_layer_combobox.setCurrentText(single.name)
+    assert 'mask' in layer1.metadata
+    viewer.layers.remove(single)
+    assert plotter.mask_layer_combobox.currentText() == "None"
+    assert 'mask' not in layer1.metadata
+
+    # Several layers selected: each re-applies what is left of its
+    # assignment, which for the deleted mask is nothing.
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer2.name])
+    shared = viewer.add_labels(mask, name="shared_mask")
+    plotter.mask_layer_combobox.setCurrentText(shared.name)
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    assert plotter._mask_assignments[layer2.name] == shared.name
+    viewer.layers.remove(shared)
+    assert plotter._mask_assignments == {}
+    assert 'mask' not in layer1.metadata
+    assert 'mask' not in layer2.metadata
+
+    # Regression: a mask assigned per layer through the assignment dialog
+    # is not the one the selector shows, and deleting it used to leave the
+    # layers masked.
+    per_layer = viewer.add_labels(mask, name="per_layer_mask")
+    plotter._apply_mask_assignments(
+        {layer1.name: per_layer.name, layer2.name: per_layer.name}
+    )
+    assert plotter.mask_layer_combobox.currentText() == "None"
+    assert np.isnan(layer1.metadata['G']).any()
+    viewer.layers.remove(per_layer)
+    assert plotter._mask_assignments == {}
+    for layer in (layer1, layer2):
+        assert 'mask' not in layer.metadata
+        np.testing.assert_array_equal(
+            np.isnan(layer.metadata['G']),
+            np.isnan(layer.metadata['G_original']),
+        )
+
+
+def test_restoring_a_stored_mask_recreates_its_layer(make_viewer_model):
+    """A stored mask with no matching Labels/Shapes layer gets a new one."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
-
-    shape = _make_mask_shape(layer)
-    # Create a shapes layer with a rectangle covering the image
-    rect = np.array(
-        [[0, 0], [0, shape[1]], [shape[0], shape[1]], [shape[0], 0]]
-    )
-    shapes_layer = viewer.add_shapes(
-        [rect], shape_type="polygon", name="shape_mask"
+    mask = _make_spatial_mask(layer)
+    layer.metadata['mask'] = mask
+    # A Shapes layer is rasterised for the comparison, but does not match.
+    viewer.add_shapes(
+        [np.array([[0, 0], [0, 3], [3, 3], [3, 0]])],
+        shape_type="polygon",
+        name="unrelated",
     )
 
-    plotter._apply_mask_to_phasor_data(shapes_layer, layer)
+    plotter._restore_plot_settings_from_metadata()
 
-    assert "mask" in layer.metadata
-
-
-def test_apply_mask_non_invert_empty_labels_returns(
-    make_viewer_model,
-):
-    """Test non-invert empty Labels mask early returns."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
-
-    original_g = layer.metadata["G"].copy()
-    shape = _make_mask_shape(layer)
-    empty_labels = viewer.add_labels(np.zeros(shape, dtype=int), name="empty")
-
-    # Non-invert + empty mask should early return (no changes)
-    plotter._apply_mask_to_phasor_data(empty_labels, layer, invert=False)
-    np.testing.assert_array_equal(layer.metadata["G"], original_g)
-    assert "mask" not in layer.metadata
-
-
-def test_on_mask_data_changed_no_selected_layers(
-    make_viewer_model,
-):
-    """Test _on_mask_data_changed returns early with no layers."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    shape = (5, 5)
-    labels_layer = viewer.add_labels(np.ones(shape, dtype=int), name="mask")
-
-    # No image layers selected — should return early
-    event = type("Event", (), {"source": labels_layer})()
-    plotter._on_mask_data_changed(event)
-
-
-def test_on_mask_data_changed_multi_layer_branch(
-    make_viewer_model,
-):
-    """Test _on_mask_data_changed multi-layer path."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-    plotter = PlotterWidget(viewer)
-
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [layer1.name, layer2.name]
-    )
-
-    shape = _make_mask_shape(layer1)
-    mask_data = np.ones(shape, dtype=int)
-    labels_layer = viewer.add_labels(mask_data, name="shared_mask")
-
-    # Assign mask only to layer1
-    plotter._mask_assignments = {layer1.name: "shared_mask"}
-
-    # Trigger mask data change — should only affect layer1
-    event = type("Event", (), {"source": labels_layer})()
-    plotter._on_mask_data_changed(event)
-
-    assert "mask" in layer1.metadata
-
-
-def test_on_mask_data_changed_multi_layer_no_affected(
-    make_viewer_model,
-):
-    """Test _on_mask_data_changed multi-layer with no affected."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-    plotter = PlotterWidget(viewer)
-
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [layer1.name, layer2.name]
-    )
-
-    shape = _make_mask_shape(layer1)
-    labels_layer = viewer.add_labels(
-        np.ones(shape, dtype=int), name="unassigned_mask"
-    )
-
-    # No layer has this mask assigned
-    plotter._mask_assignments = {}
-
-    event = type("Event", (), {"source": labels_layer})()
-    plotter._on_mask_data_changed(event)
-
-    # Should return early — no masks applied
-    assert "mask" not in layer1.metadata
-    assert "mask" not in layer2.metadata
-
-
-def test_open_mask_assignment_dialog_applies_invert(
-    make_viewer_model,
-):
-    """Test _open_mask_assignment_dialog passes invert state."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-    plotter = PlotterWidget(viewer)
-
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [layer1.name, layer2.name]
-    )
-
-    shape = _make_mask_shape(layer1)
-    viewer.add_labels(np.ones(shape, dtype=int), name="mask1")
-
-    # Mock dialog to simulate user accepting with invert
-    mock_dialog = MagicMock()
-    mock_dialog.exec.return_value = 1  # QDialog.Accepted
-    mock_dialog.get_assignments.return_value = {
-        layer1.name: "mask1",
-        layer2.name: "None",
-    }
-    mock_dialog.get_invert_assignments.return_value = {
-        layer1.name: True,
-        layer2.name: False,
-    }
-
-    with patch(
-        "napari_phasors.plotter.MaskAssignmentDialog",
-        return_value=mock_dialog,
-    ):
-        plotter._open_mask_assignment_dialog()
-
-    # layer1 should have inverted mask applied
-    assert plotter._mask_invert_assignments.get(layer1.name, False)
-
-
-def test_mask_labels_combobox_interaction(make_viewer_model):
-    """Test selecting labels in mask_labels_combobox correctly applies and preserves labels."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    # Add image layer with phasors
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [intensity_image_layer.name]
-    )
-
-    # Create a labels layer with multiple label IDs (e.g. 1, 2, 3)
-    G_original = intensity_image_layer.metadata["G"]
-    shape = G_original.shape[1:] if G_original.ndim == 3 else G_original.shape
-    labels_data = np.zeros(shape, dtype=int)
-    # Divide image into 3 vertical bands of labels
-    h, w = shape
-    labels_data[:, : w // 3] = 1
-    labels_data[:, w // 3 : 2 * (w // 3)] = 2
-    labels_data[:, 2 * (w // 3) :] = 3
-
-    viewer.add_labels(labels_data, name="test_labels_mask")
-
-    # Select the mask layer in the plotter combobox
-    plotter.mask_layer_combobox.setCurrentText("test_labels_mask")
-
-    # Verify that the mask labels combobox is visible and populated with labels '1', '2', '3'
-    assert not plotter.mask_labels_combobox.isHidden()
-    assert plotter.mask_labels_combobox.allItems() == ["1", "2", "3"]
-
-    # Initially no labels are checked in metadata assignment (defaults to all labels > 0, which is represented by None)
-    assert (
-        plotter._mask_label_assignments.get(intensity_image_layer.name) is None
-    )
-
-    # Check label '2'
-    plotter.mask_labels_combobox.setCheckedItems(["2"])
-
-    # Verify that the label assignment was saved
-    assert plotter._mask_label_assignments[intensity_image_layer.name] == [2]
-
-    # Verify that the checked items in the combobox were preserved (i.e. '2' is still checked)
-    assert plotter.mask_labels_combobox.checkedItems() == ["2"]
-
-    # Verify that G/S data is masked to only label '2'
-    # Pixels where label is 1 or 3 should be NaN, pixels where label is 2 should be preserved
-    g_data = intensity_image_layer.metadata["G"]
-    if g_data.ndim == 3:
-        g_data = g_data[0]
-
-    np.testing.assert_array_equal(np.isnan(g_data), (labels_data != 2))
-
-    # Toggling the invert checkbox should invert the selection and preserve the label selection '2'
-    plotter.mask_invert_checkbox.setChecked(True)
-    assert plotter._mask_invert_assignments[intensity_image_layer.name] is True
-    assert plotter._mask_label_assignments[intensity_image_layer.name] == [2]
-    assert plotter.mask_labels_combobox.checkedItems() == ["2"]
-
-    # Inverted mask with label '2' selected means pixels where label is 2 should be NaN, others (1, 3) preserved
-    g_data_inverted = intensity_image_layer.metadata["G"]
-    if g_data_inverted.ndim == 3:
-        g_data_inverted = g_data_inverted[0]
-    np.testing.assert_array_equal(
-        np.isnan(g_data_inverted), (labels_data == 2)
-    )
+    restored = f"Restored Mask: {layer.name}"
+    assert restored in viewer.layers
+    np.testing.assert_array_equal(viewer.layers[restored].data, mask)
+    assert plotter.mask_layer_combobox.currentText() == restored
 
 
 def _setup_plotter_with_labels(make_viewer_model, n_labels=3):
@@ -1210,70 +680,9 @@ def _setup_plotter_with_labels(make_viewer_model, n_labels=3):
 # ---------------------------------------------------------------------------
 
 
-def test_mask_labels_combobox_defaults_to_all_checked(make_viewer_model):
-    """mask_labels_combobox should have all labels checked by default."""
-    _, plotter, _, _, _ = _setup_plotter_with_labels(make_viewer_model)
-
-    assert not plotter.mask_labels_combobox.isHidden()
-    all_items = plotter.mask_labels_combobox.allItems()
-    checked = plotter.mask_labels_combobox.checkedItems()
-    assert all_items == ["1", "2", "3"]
-    assert checked == all_items, "All label items should be checked by default"
-
-
-def test_mask_labels_combobox_has_external_select_all_buttons(
-    make_viewer_model,
-):
-    """The mask labels row carries the combobox's select all/none buttons."""
-    _, plotter, _, _, _ = _setup_plotter_with_labels(make_viewer_model)
-
-    combo = plotter.mask_labels_combobox
-    assert plotter.mask_labels_select_buttons is combo.select_all_buttons
-
-    # All labels are checked by default: "all" is a no-op, "none" is not.
-    assert not combo._select_all_button.isEnabled()
-    assert combo._select_none_button.isEnabled()
-
-    combo.deselectAll()
-    assert combo._select_all_button.isEnabled()
-    assert not combo._select_none_button.isEnabled()
-
-    combo._select_all_button.click()
-    assert combo.checkedItems() == combo.allItems()
-    assert not combo._select_all_button.isEnabled()
-
-
 # ---------------------------------------------------------------------------
 # 2. Display text for all selection states
 # ---------------------------------------------------------------------------
-
-
-def test_mask_labels_display_all_labels_when_all_checked(make_viewer_model):
-    """When all labels are checked, combobox should show 'All Labels' placeholder."""
-    _, plotter, _, _, _ = _setup_plotter_with_labels(make_viewer_model)
-
-    combo = plotter.mask_labels_combobox
-    combo.selectAll()
-    assert combo.lineEdit().text() == ""
-    assert combo.lineEdit().placeholderText() == "All Labels"
-
-
-def test_mask_labels_display_no_labels_when_none_checked(make_viewer_model):
-    """When no labels are checked, combobox should show 'No labels'."""
-    _, plotter, _, _, _ = _setup_plotter_with_labels(make_viewer_model)
-
-    combo = plotter.mask_labels_combobox
-    combo.deselectAll()
-    assert combo.lineEdit().text() == "No labels"
-
-
-def test_mask_labels_display_count_for_partial_selection(make_viewer_model):
-    """When some (but not all) labels are checked, combobox shows 'N labels selected'."""
-    _, plotter, _, _, _ = _setup_plotter_with_labels(make_viewer_model)
-
-    combo = plotter.mask_labels_combobox
-    combo.setCheckedItems(["1", "3"])
-    assert combo.lineEdit().text() == "2 labels selected"
 
 
 # ---------------------------------------------------------------------------
@@ -1281,83 +690,58 @@ def test_mask_labels_display_count_for_partial_selection(make_viewer_model):
 # ---------------------------------------------------------------------------
 
 
-def test_mask_label_assignment_is_empty_when_all_checked(make_viewer_model):
-    """When all labels are checked the assignment stored should be None (all-labels)."""
-    _, plotter, image_layer, _, _ = _setup_plotter_with_labels(
-        make_viewer_model
-    )
-    # Ensure all are checked (default)
-    plotter.mask_labels_combobox.selectAll()
-    # The on_mask_labels_changed handler normalises all-checked → None
-    assignment = plotter._mask_label_assignments.get(
-        image_layer.name, "MISSING"
-    )
-    assert assignment is None, "All-labels selection should be stored as None"
-
-
-def test_mask_label_assignment_is_specific_when_partial(make_viewer_model):
-    """A partial label selection should be stored as the exact list of selected labels."""
-    _, plotter, image_layer, _, _ = _setup_plotter_with_labels(
-        make_viewer_model
-    )
-    plotter.mask_labels_combobox.setCheckedItems(["2"])
-    assignment = plotter._mask_label_assignments.get(image_layer.name, None)
-    assert assignment == [2]
-
-
 # ---------------------------------------------------------------------------
 # 4. _extract_phasor_arrays_from_layer: mask_labels and mask_invert
 # ---------------------------------------------------------------------------
 
 
-def test_extract_phasor_arrays_no_mask(make_viewer_model):
-    """Without a mask in metadata, arrays are returned unchanged."""
+def test_extract_phasor_arrays_honours_mask_labels_and_invert(
+    make_viewer_model,
+):
+    """The stored mask keeps pixels by label subset (None: every label,
+    []: no masking), optionally inverted; without a mask nothing changes."""
     from napari_phasors._utils import _extract_phasor_arrays_from_layer
 
     image_layer = create_image_layer_with_phasors()
     make_viewer_model().add_layer(image_layer)
 
-    mean, real, imag, harmonics = _extract_phasor_arrays_from_layer(
-        image_layer
-    )
+    mean, _, _, _ = _extract_phasor_arrays_from_layer(image_layer)
     np.testing.assert_array_equal(mean, image_layer.metadata["original_mean"])
     assert not np.any(np.isnan(mean))
 
-
-def test_extract_phasor_arrays_with_mask_all_labels(make_viewer_model):
-    """mask_labels=None treats all non-zero pixels as valid."""
-    from napari_phasors._utils import _extract_phasor_arrays_from_layer
-
-    image_layer = create_image_layer_with_phasors()
-    viewer = make_viewer_model()
-    viewer.add_layer(image_layer)
-
-    G = image_layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    shape = _make_mask_shape(image_layer)
+    third = shape[1] // 3
     mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1  # left half label 1
-    mask_data[:, shape[1] // 2 :] = 2  # right half label 2
-
+    mask_data[:, :third] = 1
+    mask_data[:, third : 2 * third] = 2
+    unmasked = np.zeros(shape, dtype=bool)
     image_layer.metadata["mask"] = mask_data
-    image_layer.metadata["mask_labels"] = None  # all labels valid
-    image_layer.metadata["mask_invert"] = False
+    for labels, invert, expected_nan in (
+        (None, False, mask_data <= 0),
+        ([], False, unmasked),
+        ([1], False, mask_data != 1),
+        ([1], True, mask_data == 1),
+        (None, True, mask_data > 0),
+        ([], True, unmasked),
+    ):
+        image_layer.metadata["mask_labels"] = labels
+        image_layer.metadata["mask_invert"] = invert
+        _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
+        np.testing.assert_array_equal(
+            np.isnan(real[0]),
+            expected_nan,
+            err_msg=f"labels={labels}, invert={invert}",
+        )
 
-    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
-    # Background (0) pixels → NaN; label pixels → valid
-    expected_nan = mask_data <= 0
-    np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
 
-
-def test_extract_phasor_arrays_with_mask_single_harmonic_layer(
-    make_viewer_model,
-):
-    """A layer with a single harmonic (no leading harmonic axis in G/S)
-    should have the mask applied directly, not per-row as if a harmonic
-    axis existed."""
+def test_masking_a_single_harmonic_layer(make_viewer_model):
+    """G/S without a leading harmonic axis are masked directly, not per row
+    as if a harmonic axis existed, both when extracted and when stored."""
     from napari_phasors._utils import _extract_phasor_arrays_from_layer
 
-    image_layer = create_image_layer_with_phasors(harmonic=1)
     viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    image_layer = create_image_layer_with_phasors(harmonic=1)
     viewer.add_layer(image_layer)
 
     G = image_layer.metadata["G"]
@@ -1365,132 +749,20 @@ def test_extract_phasor_arrays_with_mask_single_harmonic_layer(
     mask_data = np.zeros(G.shape, dtype=int)
     mask_data[:, : G.shape[1] // 2] = 1  # left half label 1
     mask_data[:, G.shape[1] // 2 :] = 2  # right half label 2
-
     image_layer.metadata["mask"] = mask_data
     image_layer.metadata["mask_labels"] = None  # all labels valid
     image_layer.metadata["mask_invert"] = False
 
-    mean, real, imag, _ = _extract_phasor_arrays_from_layer(image_layer)
+    _, real, imag, _ = _extract_phasor_arrays_from_layer(image_layer)
     assert real.shape == G.shape
     assert imag.shape == G.shape
-    expected_nan = mask_data <= 0
-    np.testing.assert_array_equal(np.isnan(real), expected_nan)
+    np.testing.assert_array_equal(np.isnan(real), mask_data <= 0)
 
-
-def test_extract_phasor_arrays_with_mask_no_labels(make_viewer_model):
-    """mask_labels=[] treats all pixels as valid (no masking applied)."""
-    from napari_phasors._utils import _extract_phasor_arrays_from_layer
-
-    image_layer = create_image_layer_with_phasors()
-    viewer = make_viewer_model()
-    viewer.add_layer(image_layer)
-
-    G = image_layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-    mask_data[:, shape[1] // 2 :] = 2
-
-    image_layer.metadata["mask"] = mask_data
-    image_layer.metadata["mask_labels"] = []  # no labels selected -> no mask
-    image_layer.metadata["mask_invert"] = False
-
-    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
-    # No pixels should be NaN (unmasked)
-    assert not np.any(np.isnan(real[0]))
-
-
-def test_extract_phasor_arrays_with_specific_mask_labels(make_viewer_model):
-    """mask_labels=[1] makes only pixels with label 1 valid; label 2 → NaN."""
-    from napari_phasors._utils import _extract_phasor_arrays_from_layer
-
-    image_layer = create_image_layer_with_phasors()
-    viewer = make_viewer_model()
-    viewer.add_layer(image_layer)
-
-    G = image_layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-    mask_data[:, shape[1] // 2 :] = 2
-
-    image_layer.metadata["mask"] = mask_data
-    image_layer.metadata["mask_labels"] = [1]
-    image_layer.metadata["mask_invert"] = False
-
-    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
-    # Only label-1 pixels are valid; label-2 and background → NaN
-    expected_nan = mask_data != 1
-    np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
-
-
-def test_extract_phasor_arrays_with_inverted_mask_labels(make_viewer_model):
-    """mask_invert=True with mask_labels=[1] makes label-1 pixels NaN."""
-    from napari_phasors._utils import _extract_phasor_arrays_from_layer
-
-    image_layer = create_image_layer_with_phasors()
-    viewer = make_viewer_model()
-    viewer.add_layer(image_layer)
-
-    G = image_layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-    mask_data[:, shape[1] // 2 :] = 2
-
-    image_layer.metadata["mask"] = mask_data
-    image_layer.metadata["mask_labels"] = [1]
-    image_layer.metadata["mask_invert"] = True
-
-    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
-    # Inverted: label-1 pixels → NaN; label-2 (and background) → valid
-    expected_nan = np.isin(mask_data, [1])
-    np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
-
-
-def test_extract_phasor_arrays_inverted_all_labels(make_viewer_model):
-    """mask_invert=True with mask_labels=None inverts the all-non-zero rule."""
-    from napari_phasors._utils import _extract_phasor_arrays_from_layer
-
-    image_layer = create_image_layer_with_phasors()
-    viewer = make_viewer_model()
-    viewer.add_layer(image_layer)
-
-    G = image_layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-
-    image_layer.metadata["mask"] = mask_data
-    image_layer.metadata["mask_labels"] = None
-    image_layer.metadata["mask_invert"] = True
-
-    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
-    # Inverted all-labels: non-zero pixels → NaN; background (0) → valid
-    expected_nan = mask_data > 0
-    np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
-
-
-def test_extract_phasor_arrays_inverted_no_labels(make_viewer_model):
-    """mask_invert=True with mask_labels=[] leaves all pixels unmasked."""
-    from napari_phasors._utils import _extract_phasor_arrays_from_layer
-
-    image_layer = create_image_layer_with_phasors()
-    viewer = make_viewer_model()
-    viewer.add_layer(image_layer)
-
-    G = image_layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-
-    image_layer.metadata["mask"] = mask_data
-    image_layer.metadata["mask_labels"] = []
-    image_layer.metadata["mask_invert"] = True
-
-    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
-    # No pixels should be NaN (unmasked)
-    assert not np.any(np.isnan(real[0]))
+    plotter._apply_mask_array_to_phasor_data(
+        _make_spatial_mask(image_layer), image_layer
+    )
+    assert np.isnan(image_layer.metadata["G"]).sum() > 0
+    assert np.isnan(image_layer.metadata["S"]).sum() > 0
 
 
 # ---------------------------------------------------------------------------
@@ -1498,290 +770,77 @@ def test_extract_phasor_arrays_inverted_no_labels(make_viewer_model):
 # ---------------------------------------------------------------------------
 
 
-def test_mask_assignment_dialog_defaults_all_checked(make_viewer_model):
-    """MaskAssignmentDialog label comboboxes default to all labels checked."""
+def test_mask_assignment_dialog_label_selection(make_viewer_model):
+    """Picking a Labels mask for a row lists its labels, all ticked and
+    coloured like the layer, and all ticked is reported as None."""
+    from napari_phasors._utils import CheckableComboBox
+
     viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_image_layer_with_phasors()
     viewer.add_layer(layer1)
     viewer.add_layer(layer2)
-
-    G = layer1.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    shape = _make_mask_shape(layer1)
     mask_data = np.zeros(shape, dtype=int)
     mask_data[:, : shape[1] // 2] = 1
     mask_data[:, shape[1] // 2 :] = 2
-    labels_layer = viewer.add_labels(mask_data, name="labels_for_dialog")
+    labels_layer = viewer.add_labels(mask_data, name="lbl")
+    expected_bg = QColor(160, 160, 160, 160)
+
+    def assert_coloured(combo, labels):
+        for i, label in enumerate(labels):
+            item = combo.model().item(i)
+            rgba = labels_layer.get_color(label)
+            r, g, b = (int(c * 255) for c in rgba[:3])
+            assert item.foreground().color() == QColor(r, g, b)
+            assert item.background().color() == expected_bg
 
     dialog = MaskAssignmentDialog(
         image_layer_names=[layer1.name, layer2.name],
-        mask_layer_names=["None", "labels_for_dialog"],
+        mask_layer_names=["None", "lbl"],
         mask_layers=[labels_layer],
         current_assignments={layer1.name: "None", layer2.name: "None"},
         current_label_assignments={},
         current_invert_assignments={},
         parent=None,
     )
-
-    # Trigger the label combobox for layer1 by selecting the labels layer
-    dialog._combos[layer1.name].setCurrentText("labels_for_dialog")
-
+    dialog._combos[layer1.name].setCurrentText("lbl")
     label_combo = dialog._label_combos.get(layer1.name)
     assert label_combo is not None
-    assert not label_combo.isHidden(), "Label combo should be visible"
-    # All label items should be checked by default
-    all_items = label_combo.allItems()
-    checked = label_combo.checkedItems()
-    assert all_items == ["1", "2"], "Expected labels 1 and 2"
-    assert checked == all_items, "All labels should be checked by default"
-
+    assert not label_combo.isHidden()
+    assert label_combo.allItems() == ["1", "2"]
+    assert label_combo.checkedItems() == ["1", "2"]
+    assert_coloured(label_combo, [1, 2])
     dialog.close()
 
-
-def test_mask_assignment_dialog_get_label_assignments_normalises_all_checked(
-    make_viewer_model,
-):
-    """get_label_assignments normalises all-checked state to None."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-
-    G = layer1.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-    mask_data[:, shape[1] // 2 :] = 2
-    labels_layer = viewer.add_labels(mask_data, name="lbl2")
-
+    # A row that starts on the mask is populated too.
     dialog = MaskAssignmentDialog(
         image_layer_names=[layer1.name],
-        mask_layer_names=["None", "lbl2"],
+        mask_layer_names=["None", "lbl"],
         mask_layers=[labels_layer],
-        current_assignments={layer1.name: "lbl2"},
+        current_assignments={layer1.name: "lbl"},
         current_label_assignments={layer1.name: None},
         current_invert_assignments={},
         parent=None,
     )
-
-    # The combo for layer1 already starts at "lbl2"; label_combo is populated
     label_combo = dialog._label_combos.get(layer1.name)
     assert label_combo is not None
-    # Make sure all items are checked (default)
     label_combo.selectAll()
-    assignments = dialog.get_label_assignments()
-    assert (
-        assignments.get(layer1.name, "MISSING") is None
-    ), "All-checked labels should normalise to None in get_label_assignments"
-
+    assert dialog.get_label_assignments().get(layer1.name, "MISSING") is None
     dialog.close()
 
-
-def test_mask_assignment_dialog_label_items_colored_by_layer(
-    make_viewer_model,
-):
-    """Label combo items get foreground color and background matching the Labels layer."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    viewer.add_layer(layer1)
-
-    G = layer1.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-    mask_data[:, shape[1] // 2 :] = 2
-    labels_layer = viewer.add_labels(mask_data, name="colored_labels")
-
-    dialog = MaskAssignmentDialog(
-        image_layer_names=[layer1.name],
-        mask_layer_names=["None", "colored_labels"],
-        mask_layers=[labels_layer],
-        current_assignments={layer1.name: "None"},
-        current_label_assignments={},
-        current_invert_assignments={},
-        parent=None,
-    )
-
-    # Trigger mask selection to populate label combo with colored items
-    dialog._combos[layer1.name].setCurrentText("colored_labels")
-
-    label_combo = dialog._label_combos[layer1.name]
-    model = label_combo.model()
-    expected_bg = QColor(160, 160, 160, 160)
-    for i, lbl in enumerate([1, 2]):
-        item = model.item(i)
-        assert item is not None, f"Item for label {lbl} is missing"
-        rgba = labels_layer.get_color(lbl)
-        assert rgba is not None, f"Labels layer has no color for label {lbl}"
-        r, g, b = (int(c * 255) for c in rgba[:3])
-        assert item.foreground().color() == QColor(
-            r, g, b
-        ), f"Label {lbl}: wrong foreground color"
-        assert (
-            item.background().color() == expected_bg
-        ), f"Label {lbl}: wrong background color"
-
-    dialog.close()
-
-
-def test_single_layer_mask_label_items_colored_by_layer(make_viewer_model):
-    """mask_labels_combobox items get label colors in single-layer mode."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    G = layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-    mask_data[:, shape[1] // 2 :] = 2
-    labels_layer = viewer.add_labels(mask_data, name="single_colored_labels")
-
-    plotter = PlotterWidget(viewer)
-    # Select the image layer so single-layer mode is active
-    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
-
-    # Selecting the labels layer triggers _on_mask_layer_changed
-    plotter.mask_layer_combobox.setCurrentText("single_colored_labels")
-
-    combo = plotter.mask_labels_combobox
-    model = combo.model()
-    expected_bg = QColor(160, 160, 160, 160)
-    for i, lbl in enumerate([1, 2]):
-        item = model.item(i)
-        assert item is not None, f"Item for label {lbl} is missing"
-        rgba = labels_layer.get_color(lbl)
-        assert rgba is not None, f"Labels layer has no color for label {lbl}"
-        r, g, b = (int(c * 255) for c in rgba[:3])
-        assert item.foreground().color() == QColor(
-            r, g, b
-        ), f"Label {lbl}: wrong foreground color in single-layer mode"
-        assert (
-            item.background().color() == expected_bg
-        ), f"Label {lbl}: wrong background color in single-layer mode"
-
-
-def test_apply_label_colors_to_combo(make_viewer_model):
-    """_apply_label_colors_to_combo sets foreground and background on items."""
-    from napari_phasors._utils import CheckableComboBox
-
-    viewer = make_viewer_model()
-    mask_data = np.array([[0, 1], [2, 3]], dtype=int)
-    labels_layer = viewer.add_labels(mask_data, name="helper_test_labels")
-
+    # The shared helper colours any checkable combobox the same way.
     combo = CheckableComboBox(
         placeholder="All Labels",
         enable_primary_layer=False,
         unit="labels",
         no_selection_text="No labels",
     )
-    unique_labels = np.unique(labels_layer.data)
-    valid_labels = [str(lbl) for lbl in unique_labels if lbl > 0]
-    combo.addItems(valid_labels)
-
-    _apply_label_colors_to_combo(combo, labels_layer, unique_labels)
-
-    expected_bg = QColor(160, 160, 160, 160)
-    for i, lbl in enumerate([1, 2, 3]):
-        item = combo.model().item(i)
-        assert item is not None
-        rgba = labels_layer.get_color(lbl)
-        if rgba is not None:
-            r, g, b = (int(c * 255) for c in rgba[:3])
-            assert item.foreground().color() == QColor(r, g, b)
-            assert item.background().color() == expected_bg
-
-
-def test_refresh_mask_labels_combobox_adds_new_label(make_viewer_model):
-    """_refresh_mask_labels_combobox adds a new label and preserves selection."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    G = layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-    labels_layer = viewer.add_labels(mask_data, name="refresh_labels")
-
-    plotter = PlotterWidget(viewer)
-    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
-    plotter.mask_layer_combobox.setCurrentText("refresh_labels")
-
-    combo = plotter.mask_labels_combobox
-    assert combo.allItems() == ["1"], "Should start with only label 1"
-    # Check only label 1 (simulates user deselecting nothing — all checked)
-    combo.selectAll()
-
-    # Add a new label to the layer data
-    new_data = mask_data.copy()
-    new_data[: shape[0] // 2, shape[1] // 2 :] = 2
-    labels_layer.data = new_data
-
-    plotter._refresh_mask_labels_combobox(labels_layer)
-
-    assert combo.allItems() == ["1", "2"], "Label 2 should be added"
-    # New label 2 should be unchecked (previously_checked only had "1")
-    checked = combo.checkedItems()
-    assert "1" in checked, "Previously checked label 1 should remain checked"
-
-
-def test_refresh_mask_labels_combobox_noop_when_unchanged(make_viewer_model):
-    """_refresh_mask_labels_combobox does nothing when label set is unchanged."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    G = layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-    mask_data[:, shape[1] // 2 :] = 2
-    labels_layer = viewer.add_labels(mask_data, name="noop_labels")
-
-    plotter = PlotterWidget(viewer)
-    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
-    plotter.mask_layer_combobox.setCurrentText("noop_labels")
-
-    combo = plotter.mask_labels_combobox
-    assert combo.allItems() == ["1", "2"]
-    combo.setCheckedItems(["1"])  # user selects only label 1
-
-    # Call refresh with the same data — should be a no-op
-    plotter._refresh_mask_labels_combobox(labels_layer)
-
-    assert combo.checkedItems() == ["1"], "Selection should be unchanged"
-
-
-def test_on_mask_data_changed_refreshes_label_combo(make_viewer_model):
-    """Paint event on Labels layer updates mask_labels_combobox items."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    G = layer.metadata["G"]
-    shape = G.shape[1:] if G.ndim == 3 else G.shape
-    mask_data = np.zeros(shape, dtype=int)
-    mask_data[:, : shape[1] // 2] = 1
-    labels_layer = viewer.add_labels(mask_data, name="paint_event_labels")
-
-    plotter = PlotterWidget(viewer)
-    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
-    plotter.mask_layer_combobox.setCurrentText("paint_event_labels")
-
-    combo = plotter.mask_labels_combobox
-    assert combo.allItems() == ["1"]
-
-    # Simulate painting a new label by modifying data and calling the handler
-    new_data = mask_data.copy()
-    new_data[: shape[0] // 2, shape[1] // 2 :] = 2
-    labels_layer.data = new_data
-
-    # Fire the paint-event handler directly
-    plotter._refresh_mask_labels_combobox(labels_layer)
-
-    assert (
-        "2" in combo.allItems()
-    ), "New label 2 should appear after data change"
+    combo.addItems(["1", "2"])
+    _apply_label_colors_to_combo(
+        combo, labels_layer, np.unique(labels_layer.data)
+    )
+    assert_coloured(combo, [1, 2])
 
 
 def _make_spatial_mask(layer, fill=1):
@@ -1793,76 +852,126 @@ def _make_spatial_mask(layer, fill=1):
     return mask
 
 
-def test_copy_mask_from_layer_copies_and_applies_mask(make_viewer_model):
-    """_copy_mask_from_layer mirrors the source mask onto the target layer."""
+def test_copying_masking_between_layers(make_viewer_model):
+    """Copying masking mirrors the source's mask, Invert flag and labels onto
+    the target, clears it for an unmasked source, recreates a layer for a
+    mask left without one, and skips masks that do not fit."""
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
-
     source_layer = create_image_layer_with_phasors()
     target_layer = create_image_layer_with_phasors()
     viewer.add_layer(source_layer)
     viewer.add_layer(target_layer)
+    combobox = plotter.image_layers_checkable_combobox
+    shape = _make_mask_shape(source_layer)
 
-    # Mask the source layer (invert + a label selection so we can assert both
-    # are carried over to the target).
-    mask = _make_spatial_mask(source_layer)
-    mask_layer = viewer.add_labels(mask, name="src_mask")
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [source_layer.name]
+    def warning_patch():
+        return patch(
+            "napari_phasors.plotter.notifications.WarningNotification"
+        )
+
+    # An empty Shapes layer is skipped when looking for a matching mask.
+    empty_shapes = viewer.add_shapes([], name="empty_shapes")
+    assert (
+        plotter._find_mask_layer_for(
+            _make_spatial_mask(target_layer), target_layer
+        )
+        is None
     )
+    viewer.layers.remove(empty_shapes)
+
+    # A stored mask whose shape differs from the target is not copied.
+    source_layer.metadata["mask"] = np.ones((3, 3), dtype=int)
+    source_layer.metadata["mask_invert"] = False
+    with warning_patch() as warn:
+        copied = plotter._copy_mask_from_layer(source_layer, target_layer)
+    assert copied is False
+    assert "mask" not in target_layer.metadata
+    warn.assert_called_once()
+
+    # A stored mask with no Labels/Shapes layer left is applied as an array
+    # and given a new layer to represent it.
+    orphan = _make_spatial_mask(source_layer, fill=2)
+    source_layer.metadata["mask"] = orphan
+    before_layers = set(viewer.layers)
+    assert plotter._copy_mask_from_layer(source_layer, target_layer) is True
+    (created,) = set(viewer.layers) - before_layers
+    assert created.name.startswith("Restored Mask:")
+    assert plotter._mask_assignments[target_layer.name] == created.name
+    np.testing.assert_array_equal(target_layer.metadata["mask"], orphan)
+    del source_layer.metadata["mask"], source_layer.metadata["mask_invert"]
+
+    # An unmasked source removes the target's mask.
+    combobox.setCheckedItems([target_layer.name])
+    original_g = target_layer.metadata["G_original"]
+    assert plotter._copy_mask_from_layer(source_layer, target_layer) is False
+    assert "mask" not in target_layer.metadata
+    assert "mask_invert" not in target_layer.metadata
+    np.testing.assert_array_almost_equal(
+        target_layer.metadata["G"], original_g
+    )
+
+    # A masked source passes its mask, Invert flag and labels on.
+    src_mask = viewer.add_labels(
+        _make_spatial_mask(source_layer), name="src_mask"
+    )
+    combobox.setCheckedItems([source_layer.name])
     plotter._apply_mask_to_phasor_data(
-        mask_layer, source_layer, invert=True, labels=[1]
+        src_mask, source_layer, invert=True, labels=[1]
     )
-
-    copied = plotter._copy_mask_from_layer(source_layer, target_layer)
-
-    assert copied is True
+    assert plotter._copy_mask_from_layer(source_layer, target_layer) is True
     np.testing.assert_array_equal(
         target_layer.metadata["mask"], source_layer.metadata["mask"]
     )
     assert target_layer.metadata["mask_invert"] is True
     assert target_layer.metadata["mask_labels"] == [1]
-    # Mask was actually applied to the target's phasor coordinates.
     assert np.isnan(target_layer.metadata["G"]).sum() > 0
-    # The per-layer assignment points at the source's mask layer.
     assert plotter._mask_assignments[target_layer.name] == "src_mask"
     assert plotter._mask_invert_assignments[target_layer.name] is True
     assert plotter._mask_label_assignments[target_layer.name] == [1]
 
-    plotter.deleteLater()
-
-
-def test_copy_mask_from_unmasked_source_clears_target_mask(make_viewer_model):
-    """Copying masking from an unmasked source removes the target's mask."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    source_layer = create_image_layer_with_phasors()
-    target_layer = create_image_layer_with_phasors()
-    viewer.add_layer(source_layer)
-    viewer.add_layer(target_layer)
-
-    # Give the target an existing mask; the source has none.
-    mask = _make_spatial_mask(target_layer)
-    mask_layer = viewer.add_labels(mask, name="tgt_mask")
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [target_layer.name]
+    # Regression: importing masking replaces the target's own mask
+    # selection, invert flag and NaN pattern with the source's.
+    plotter._apply_mask_to_phasor_data(src_mask, source_layer, invert=True)
+    source_nan = np.isnan(source_layer.metadata["G"])
+    tgt_arr = np.zeros(shape, dtype=int)
+    tgt_arr[:, : shape[1] // 2] = 1
+    tgt_mask = viewer.add_labels(tgt_arr, name="tgt_mask")
+    combobox.setCheckedItems([target_layer.name])
+    plotter._apply_mask_to_phasor_data(tgt_mask, target_layer)
+    plotter.mask_layer_combobox.setCurrentText("tgt_mask")
+    plotter._copy_metadata_from_layer(
+        source_layer.name, selected_tabs=["masking"]
     )
-    plotter._apply_mask_to_phasor_data(mask_layer, target_layer)
-    assert "mask" in target_layer.metadata
+    assert plotter._mask_assignments[target_layer.name] == "src_mask"
+    assert plotter.mask_layer_combobox.currentText() == "src_mask"
+    assert plotter._mask_invert_assignments[target_layer.name] is True
+    np.testing.assert_array_equal(
+        target_layer.metadata["mask"], source_layer.metadata["mask"]
+    )
+    np.testing.assert_array_equal(
+        np.isnan(target_layer.metadata["G"]), source_nan
+    )
 
-    original_g = target_layer.metadata["G_original"]
-    copied = plotter._copy_mask_from_layer(source_layer, target_layer)
-
+    # The matching Labels layer is pixel-bound, unlike Shapes, so it is
+    # skipped for a target of a different size.
+    other_shape = (shape[0] + 2, shape[1] + 2)
+    other = Image(
+        np.zeros(other_shape),
+        name="other",
+        metadata={
+            "G": np.zeros(other_shape),
+            "S": np.zeros(other_shape),
+            "G_original": np.zeros(other_shape),
+            "S_original": np.zeros(other_shape),
+            "original_mean": np.zeros(other_shape),
+        },
+    )
+    viewer.add_layer(other)
+    with warning_patch() as warn:
+        copied = plotter._copy_mask_from_layer(source_layer, other)
     assert copied is False
-    assert "mask" not in target_layer.metadata
-    assert "mask_invert" not in target_layer.metadata
-    # Phasor data restored to its unmasked original.
-    np.testing.assert_array_almost_equal(
-        target_layer.metadata["G"], original_g
-    )
-
-    plotter.deleteLater()
+    warn.assert_called_once()
 
 
 def test_copy_mask_from_layer_shapes_mask_different_image_sizes(
@@ -1924,117 +1033,46 @@ def test_copy_mask_from_layer_shapes_mask_different_image_sizes(
     plotter.deleteLater()
 
 
-def test_copy_mask_from_layer_shape_mismatch_skips(make_viewer_model):
-    """A mask whose shape differs from the target is not copied."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
+def test_copy_masking_to_several_layers_keeps_invert(make_viewer_model):
+    """Copying an inverted mask onto several layers keeps the invert flag.
 
-    source_layer = create_image_layer_with_phasors()
-    target_layer = create_image_layer_with_phasors()
-    viewer.add_layer(source_layer)
-    viewer.add_layer(target_layer)
-
-    # Stash a deliberately mismatched mask on the source.
-    source_layer.metadata["mask"] = np.ones((3, 3), dtype=int)
-    source_layer.metadata["mask_invert"] = False
-
-    with patch(
-        "napari_phasors.plotter.notifications.WarningNotification"
-    ) as warn:
-        copied = plotter._copy_mask_from_layer(source_layer, target_layer)
-
-    assert copied is False
-    assert "mask" not in target_layer.metadata
-    warn.assert_called_once()
-
-    plotter.deleteLater()
-
-
-def test_copy_metadata_from_layer_with_masking_tab(make_viewer_model):
-    """Selecting 'masking' in the import dialog copies the mask to targets."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    source_layer = create_image_layer_with_phasors()
-    target_layer = create_image_layer_with_phasors()
-    viewer.add_layer(source_layer)
-    viewer.add_layer(target_layer)
-
-    mask = _make_spatial_mask(source_layer)
-    mask_layer = viewer.add_labels(mask, name="src_mask")
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [source_layer.name]
-    )
-    plotter._apply_mask_to_phasor_data(mask_layer, source_layer)
-
-    # Now select the target and import with masking enabled.
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [target_layer.name]
-    )
-    plotter._copy_metadata_from_layer(
-        source_layer.name, selected_tabs=["masking"]
-    )
-
-    assert "mask" in target_layer.metadata
-    np.testing.assert_array_equal(
-        target_layer.metadata["mask"], source_layer.metadata["mask"]
-    )
-
-    plotter.deleteLater()
-
-
-def test_copy_metadata_from_layer_switches_selected_mask(make_viewer_model):
-    """Regression: copying masking replaces the target's own mask selection.
-
-    The target starts with its own mask; after importing masking from a source
-    that uses a *different* (inverted) mask, the target's selected mask layer,
-    invert flag, and NaN pattern must all match the source — not its own
-    previous mask.
+    Regression: restoring the plot settings re-applied the primary layer's
+    mask to every selected layer with the (unsynced) invert checkbox,
+    silently turning the invert off.
     """
+
+    def _layer(name):
+        raw = make_raw_flim_data(
+            time_constants=[0.1, 1, 2, 3, 4, 5, 10], shape=(10, 10)
+        )
+        layer = make_intensity_layer_with_phasors(raw, harmonic=[1, 2, 3])
+        layer.name = name
+        return layer
+
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
+    source, first, second = _layer("SRC"), _layer("T1"), _layer("T2")
+    for layer in (source, first, second):
+        viewer.add_layer(layer)
+    mask = np.zeros((10, 10), dtype=int)
+    mask[:, :5] = 1
+    viewer.add_labels(mask, name="mask")
 
-    source_layer = create_image_layer_with_phasors()
-    target_layer = create_image_layer_with_phasors()
-    viewer.add_layer(source_layer)
-    viewer.add_layer(target_layer)
+    combobox = plotter.image_layers_checkable_combobox
+    combobox.setCheckedItems(["SRC"])
+    plotter.mask_layer_combobox.setCurrentText("mask")
+    plotter.mask_invert_checkbox.setChecked(True)
+    source_nan = np.isnan(source.metadata["G"])
 
-    src_mask = viewer.add_labels(
-        _make_spatial_mask(source_layer), name="src_mask"
-    )
-    # A different mask for the target (left half rather than bottom half).
-    g = target_layer.metadata["G"]
-    shape = g.shape[1:] if g.ndim == 3 else g.shape
-    tgt_arr = np.zeros(shape, dtype=int)
-    tgt_arr[:, : shape[1] // 2] = 1
-    tgt_mask = viewer.add_labels(tgt_arr, name="tgt_mask")
+    combobox.setCheckedItems(["T1", "T2"])
+    plotter._copy_metadata_from_layer("SRC", selected_tabs=["masking"])
 
-    # Apply the inverted source mask to the source.
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [source_layer.name]
-    )
-    plotter._apply_mask_to_phasor_data(src_mask, source_layer, invert=True)
-    source_nan = np.isnan(source_layer.metadata["G"])
-
-    # Give the target its own (non-inverted) mask and select it.
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [target_layer.name]
-    )
-    plotter._apply_mask_to_phasor_data(tgt_mask, target_layer)
-    plotter.mask_layer_combobox.setCurrentText("tgt_mask")
-
-    plotter._copy_metadata_from_layer(
-        source_layer.name, selected_tabs=["masking"]
-    )
-
-    # Selection now points at the source's mask, not the target's old one.
-    assert plotter._mask_assignments[target_layer.name] == "src_mask"
-    assert plotter.mask_layer_combobox.currentText() == "src_mask"
-    assert plotter._mask_invert_assignments[target_layer.name] is True
-    # Invert was honored: the NaN pattern matches the inverted source mask.
-    np.testing.assert_array_equal(
-        np.isnan(target_layer.metadata["G"]), source_nan
-    )
+    for target in (first, second):
+        assert target.metadata["mask_invert"] is True
+        assert plotter._mask_invert_assignments[target.name] is True
+        np.testing.assert_array_equal(
+            np.isnan(target.metadata["G"]), source_nan
+        )
 
     plotter.deleteLater()
 
@@ -2042,215 +1080,129 @@ def test_copy_metadata_from_layer_switches_selected_mask(make_viewer_model):
 # -- Coverage gaps: masking toggle in the import dialog --------------------
 
 
-def test_show_import_dialog_masking_toggle_checked_by_default(
-    make_viewer_model,
-):
-    """The Masking toggle is offered and checked by default when available."""
+def test_import_dialog_and_parallel_hint(make_viewer_model):
+    """The import dialog offers Masking (checked by default) only when a mask
+    is available, and the parallel hint quantifies the memory budget only
+    while the budget is switched on."""
+    from napari_phasors import _parallel
+
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
-
+    source_settings = {"frequency": 80}
     with patch("napari_phasors.plotter.QDialog.exec", return_value=1):
-        selected = plotter._show_import_dialog(
-            source_settings={"frequency": 80},
-            mask_available=True,
+        assert "masking" in plotter._show_import_dialog(
+            source_settings=source_settings, mask_available=True
         )
-
-    assert "masking" in selected
-
-
-def test_show_import_dialog_masking_toggle_unchecked_when_not_default(
-    make_viewer_model,
-):
-    """The Masking toggle starts unchecked when excluded from default_checked."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    with patch("napari_phasors.plotter.QDialog.exec", return_value=1):
-        selected = plotter._show_import_dialog(
-            source_settings={"frequency": 80},
+        assert "masking" not in plotter._show_import_dialog(
+            source_settings=source_settings,
             mask_available=True,
             default_checked=["settings_tab"],
         )
+        assert "masking" not in plotter._show_import_dialog(
+            source_settings=source_settings, mask_available=False
+        )
 
-    assert "masking" not in selected
+    previous = _parallel.memory_budget_enabled()
+    previous_items = _parallel.parallel_items_enabled()
+    try:
+        plotter.parallel_items_checkbox.setChecked(True)
+        plotter.memory_budget_checkbox.setChecked(True)
+        plotter._update_parallel_processing_hint()
+        assert "sized to fit" in plotter.parallel_processing_hint.text()
+
+        plotter.memory_budget_checkbox.setChecked(False)
+        plotter._update_parallel_processing_hint()
+        assert "sized to fit" not in plotter.parallel_processing_hint.text()
+        assert "at once" in plotter.parallel_processing_hint.text()
+    finally:
+        _parallel.set_memory_budget_enabled(previous)
+        _parallel.set_parallel_items_enabled(previous_items)
 
 
-def test_show_import_dialog_no_masking_toggle_when_unavailable(
-    make_viewer_model,
-):
-    """No Masking toggle (and no 'masking' selection) when mask_available=False."""
+def test_reapplying_filters_after_a_mask_change(make_viewer_model):
+    """Only layers with processing of their own are re-filtered, with the
+    parameters stored for them, and a failure names the layer."""
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
 
-    with patch("napari_phasors.plotter.QDialog.exec", return_value=1):
-        selected = plotter._show_import_dialog(
-            source_settings={"frequency": 80},
-            mask_available=False,
-        )
+    # An upper bound alone, or a metric filter alone, is worth reapplying.
+    layer = create_image_layer_with_phasors()
+    layer.metadata['settings'] = {}
+    assert not plotter._has_filter_or_threshold_settings(layer)
+    layer.metadata['settings'] = {'threshold_upper': 5.0}
+    assert plotter._has_filter_or_threshold_settings(layer)
+    layer.metadata['settings'] = {}
+    set_filters(layer, [new_filter("Modulation", 0.1, 0.9)])
+    assert plotter._has_filter_or_threshold_settings(layer)
 
-    assert "masking" not in selected
+    # Wavelet, median and an unknown method each yield usable parameters.
+    layer = create_image_layer_with_phasors()
+    layer.metadata['harmonics'] = np.array([1, 2])
+    layer.metadata['settings']['filter'] = {
+        'method': 'wavelet',
+        'sigma': 3.0,
+        'levels': 2,
+    }
+    params = plotter._filter_params_from_settings(layer)
+    assert params['filter_method'] == 'wavelet'
+    assert params['sigma'] == 3.0
+    assert params['levels'] == 2
+    assert params['harmonics'] is not None
+    # Harmonics that wavelet filtering cannot handle drop the method.
+    layer.metadata['harmonics'] = np.array([1, 5])
+    params = plotter._filter_params_from_settings(layer)
+    assert params['filter_method'] is None
+    assert params['harmonics'] is None
+    layer.metadata['settings']['filter'] = {'method': 'median', 'repeat': 0}
+    assert plotter._filter_params_from_settings(layer)['filter_method'] is None
+    layer.metadata['settings']['filter'] = {'method': 'something else'}
+    assert plotter._filter_params_from_settings(layer)['filter_method'] is None
+
+    primary = plotter.image_layer_with_phasor_features_combobox
+
+    # Layers with no processing of their own are left untouched.
+    plain = create_image_layer_with_phasors()
+    plain.name = "plain"
+    viewer.add_layer(plain)
+    primary.setCurrentText("plain")
+    before = plain.metadata['G'].copy()
+    plotter._reapply_filter_and_threshold([])
+    plotter._reapply_filter_and_threshold([plain])
+    np.testing.assert_array_equal(plain.metadata['G'], before)
+
+    # A layer whose filtering raises is named in a single error message.
+    explodes = create_image_layer_with_phasors()
+    explodes.name = "explodes"
+    viewer.add_layer(explodes)
+    primary.setCurrentText("explodes")
+    explodes.metadata['settings']['threshold'] = 0.0
+    errors = []
+    with (
+        patch(
+            "napari_phasors.plotter.notifications.show_error", errors.append
+        ),
+        patch(
+            "napari_phasors.plotter.apply_filter_and_threshold_to_layers",
+            lambda pairs, **kwargs: [RuntimeError("boom") for _ in pairs],
+        ),
+    ):
+        plotter._reapply_filter_and_threshold([explodes])
+    assert errors and "explodes" in errors[0] and "boom" in errors[0]
+
+    # An imported stack reaches the arrays without the Filter tab's help.
+    imported = create_image_layer_with_phasors()
+    imported.name = "imported"
+    viewer.add_layer(imported)
+    primary.setCurrentText("imported")
+    set_filters(imported, [new_filter("Modulation", 0.0, 0.05)])
+    plotter._apply_imported_analyses([imported], ["phasor_mapping_tab"])
+    assert np.isnan(imported.metadata['G']).any()
 
 
 # -- Coverage gaps: _apply_mask_array_to_phasor_data branches ---------------
 
 
-def test_apply_mask_array_clears_stale_mask_labels(make_viewer_model):
-    """Calling with labels=None removes a previously stored mask_labels key."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    mask = _make_spatial_mask(layer)
-
-    plotter._apply_mask_array_to_phasor_data(mask, layer, labels=[1])
-    assert "mask_labels" in layer.metadata
-
-    plotter._apply_mask_array_to_phasor_data(mask, layer, labels=None)
-    assert "mask_labels" not in layer.metadata
-
-    plotter.deleteLater()
-
-
-def test_apply_mask_array_single_harmonic_branch(make_viewer_model):
-    """G/S without a leading harmonic axis take the non-expanded mask branch."""
-    from napari_phasors._synthetic_generator import (
-        make_intensity_layer_with_phasors,
-        make_raw_flim_data,
-    )
-
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    raw = make_raw_flim_data(time_constants=[0.1, 1, 2, 3, 4, 5, 10])
-    # A bare int harmonic yields G/S with the same ndim as the image data
-    # (no leading harmonic axis), exercising the "else" branch.
-    layer = make_intensity_layer_with_phasors(raw, harmonic=1)
-    viewer.add_layer(layer)
-    assert layer.metadata["G"].ndim == layer.data.ndim
-
-    mask = _make_spatial_mask(layer)
-    plotter._apply_mask_array_to_phasor_data(mask, layer)
-
-    assert np.isnan(layer.metadata["G"]).sum() > 0
-    assert np.isnan(layer.metadata["S"]).sum() > 0
-
-    plotter.deleteLater()
-
-
 # -- Coverage gaps: _copy_mask_from_layer / _find_mask_layer_for branches --
-
-
-def test_copy_mask_from_layer_matching_labels_layer_shape_mismatch(
-    make_viewer_model,
-):
-    """A matching Labels mask layer whose shape no longer fits the target is skipped.
-
-    Distinct from the 'mask layer was deleted' fallback: here the mask layer
-    that produced the source's stored mask is still in the viewer and matches
-    by value, but its own shape differs from the target's, so it cannot be
-    re-applied (the Labels case is pixel-bound, unlike Shapes).
-    """
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    source_layer = create_image_layer_with_phasors()
-    viewer.add_layer(source_layer)
-
-    mask = _make_spatial_mask(source_layer)
-    mask_layer = viewer.add_labels(mask, name="src_mask")
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [source_layer.name]
-    )
-    plotter._apply_mask_to_phasor_data(mask_layer, source_layer)
-
-    # A differently-shaped target: its data shape won't match the mask layer.
-    g = source_layer.metadata["G"]
-    shape = g.shape[1:] if g.ndim == 3 else g.shape
-    target_data = np.zeros((shape[0] + 2, shape[1] + 2))
-    target_layer = Image(
-        target_data,
-        name="target",
-        metadata={
-            "G": np.zeros((target_data.shape[0], target_data.shape[1])),
-            "S": np.zeros((target_data.shape[0], target_data.shape[1])),
-            "G_original": np.zeros(
-                (target_data.shape[0], target_data.shape[1])
-            ),
-            "S_original": np.zeros(
-                (target_data.shape[0], target_data.shape[1])
-            ),
-            "original_mean": target_data.copy(),
-        },
-    )
-    viewer.add_layer(target_layer)
-
-    with patch(
-        "napari_phasors.plotter.notifications.WarningNotification"
-    ) as warn:
-        copied = plotter._copy_mask_from_layer(source_layer, target_layer)
-
-    assert copied is False
-    warn.assert_called_once()
-
-    plotter.deleteLater()
-
-
-def test_copy_mask_from_layer_fallback_creates_mask_layer(make_viewer_model):
-    """When the source's mask layer can't be found, a Restored Mask layer is created.
-
-    Exercises the array-fallback success path: the source's stored mask has
-    no corresponding Labels/Shapes layer left in the viewer, but its shape
-    still fits the target, so the raw array is applied and a new Labels layer
-    is created to represent it.
-    """
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    source_layer = create_image_layer_with_phasors()
-    target_layer = create_image_layer_with_phasors()
-    viewer.add_layer(source_layer)
-    viewer.add_layer(target_layer)
-
-    # Stash a mask directly in metadata with no backing layer in the viewer.
-    mask = _make_spatial_mask(source_layer)
-    source_layer.metadata["mask"] = mask
-    source_layer.metadata["mask_invert"] = False
-
-    before_layers = set(viewer.layers)
-    copied = plotter._copy_mask_from_layer(source_layer, target_layer)
-    after_layers = set(viewer.layers)
-
-    assert copied is True
-    new_layers = after_layers - before_layers
-    assert len(new_layers) == 1
-    created = new_layers.pop()
-    assert created.name == "Restored Mask: TARGET" or created.name.startswith(
-        "Restored Mask:"
-    )
-    assert plotter._mask_assignments[target_layer.name] == created.name
-    np.testing.assert_array_equal(target_layer.metadata["mask"], mask)
-
-    plotter.deleteLater()
-
-
-def test_find_mask_layer_for_skips_empty_shapes_layer(make_viewer_model):
-    """An empty Shapes layer is skipped when searching for a matching mask."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    # Empty Shapes layer: must be skipped (no data to rasterize).
-    viewer.add_shapes([], name="empty_shapes")
-
-    mask = _make_spatial_mask(layer)
-    result = plotter._find_mask_layer_for(mask, layer)
-
-    assert result is None
-
-    plotter.deleteLater()
 
 
 def test_mask_labels_split_histogram_and_statistics(make_viewer_model, qtbot):
@@ -2523,159 +1475,6 @@ def test_multi_layer_masks_reapply_each_layers_own_settings(make_viewer_model):
         assert distance.max() <= radius
 
 
-def test_invert_all_sync_before_the_checkbox_exists():
-    """The row callbacks fire while the dialog is still being built."""
-    dialog = MaskAssignmentDialog(
-        image_layer_names=["img1"],
-        mask_layer_names=["mask1"],
-        current_assignments={"img1": "mask1"},
-    )
-    saved = dialog.invert_all_check
-    del dialog.invert_all_check
-    # Must be a no-op rather than an AttributeError.
-    dialog._sync_invert_all_check()
-    dialog.invert_all_check = saved
-
-
-def test_reapply_filter_and_threshold_skips_layers_with_nothing_to_redo(
-    make_viewer_model,
-):
-    """Layers with no processing of their own are left untouched."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    layer = create_image_layer_with_phasors()
-    layer.name = "plain"
-    viewer.add_layer(layer)
-    plotter.image_layer_with_phasor_features_combobox.setCurrentText("plain")
-
-    before = layer.metadata['G'].copy()
-    plotter._reapply_filter_and_threshold([])
-    plotter._reapply_filter_and_threshold([layer])
-    np.testing.assert_array_equal(layer.metadata['G'], before)
-
-
-def test_reapply_filter_and_threshold_reports_a_failing_layer(
-    make_viewer_model, monkeypatch
-):
-    """A layer whose filtering raises is named in a single error message."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    layer = create_image_layer_with_phasors()
-    layer.name = "explodes"
-    viewer.add_layer(layer)
-    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
-        "explodes"
-    )
-    layer.metadata['settings']['threshold'] = 0.0
-
-    errors = []
-    monkeypatch.setattr(
-        "napari_phasors.plotter.notifications.show_error", errors.append
-    )
-    monkeypatch.setattr(
-        "napari_phasors.plotter.apply_filter_and_threshold_to_layers",
-        lambda pairs, **kwargs: [RuntimeError("boom") for _ in pairs],
-    )
-
-    plotter._reapply_filter_and_threshold([layer])
-    assert errors and "explodes" in errors[0] and "boom" in errors[0]
-
-
-def test_has_filter_or_threshold_settings_counts_every_kind(
-    make_viewer_model,
-):
-    """An upper bound alone, or a metric filter alone, is worth reapplying."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    layer = create_image_layer_with_phasors()
-    layer.metadata['settings'] = {}
-    assert not plotter._has_filter_or_threshold_settings(layer)
-
-    layer.metadata['settings'] = {'threshold_upper': 5.0}
-    assert plotter._has_filter_or_threshold_settings(layer)
-
-    layer.metadata['settings'] = {}
-    set_filters(layer, [new_filter("Modulation", 0.1, 0.9)])
-    assert plotter._has_filter_or_threshold_settings(layer)
-
-
-def test_filter_params_from_settings_reads_each_filter_method(
-    make_viewer_model,
-):
-    """Wavelet, median and an unknown method each yield usable parameters."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    layer = create_image_layer_with_phasors()
-    layer.metadata['harmonics'] = np.array([1, 2])
-
-    layer.metadata['settings']['filter'] = {
-        'method': 'wavelet',
-        'sigma': 3.0,
-        'levels': 2,
-    }
-    params = plotter._filter_params_from_settings(layer)
-    assert params['filter_method'] == 'wavelet'
-    assert params['sigma'] == 3.0
-    assert params['levels'] == 2
-    assert params['harmonics'] is not None
-
-    # Harmonics that wavelet filtering cannot handle drop the method.
-    layer.metadata['harmonics'] = np.array([1, 5])
-    params = plotter._filter_params_from_settings(layer)
-    assert params['filter_method'] is None
-    assert params['harmonics'] is None
-
-    layer.metadata['settings']['filter'] = {'method': 'median', 'repeat': 0}
-    assert plotter._filter_params_from_settings(layer)['filter_method'] is None
-
-    layer.metadata['settings']['filter'] = {'method': 'something else'}
-    assert plotter._filter_params_from_settings(layer)['filter_method'] is None
-
-
-def test_importing_only_the_mapping_tab_still_applies_its_filters(
-    make_viewer_model,
-):
-    """An imported stack reaches the arrays without the Filter tab's help."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    layer = create_image_layer_with_phasors()
-    layer.name = "imported"
-    viewer.add_layer(layer)
-    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
-        "imported"
-    )
-
-    set_filters(layer, [new_filter("Modulation", 0.0, 0.05)])
-    plotter._apply_imported_analyses([layer], ["phasor_mapping_tab"])
-    assert np.isnan(layer.metadata['G']).any()
-
-
-def test_parallel_processing_hint_describes_the_memory_budget(
-    make_viewer_model,
-):
-    """The hint quantifies the budget only while the budget is switched on."""
-    from napari_phasors import _parallel
-
-    previous = _parallel.memory_budget_enabled()
-    previous_items = _parallel.parallel_items_enabled()
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    try:
-        plotter.parallel_items_checkbox.setChecked(True)
-        plotter.memory_budget_checkbox.setChecked(True)
-        plotter._update_parallel_processing_hint()
-        with_budget = plotter.parallel_processing_hint.text()
-        assert "sized to fit" in with_budget
-
-        plotter.memory_budget_checkbox.setChecked(False)
-        plotter._update_parallel_processing_hint()
-        assert "sized to fit" not in plotter.parallel_processing_hint.text()
-        assert "at once" in plotter.parallel_processing_hint.text()
-    finally:
-        _parallel.set_memory_budget_enabled(previous)
-        _parallel.set_parallel_items_enabled(previous_items)
-
-
 # ---------------------------------------------------------------------------
 # Mask summary button and editor popover
 # ---------------------------------------------------------------------------
@@ -2703,182 +1502,98 @@ def _plotter_with_label_mask(make_viewer_model, n_layers=1):
     return viewer, plotter, layers, mask
 
 
-def test_mask_summary_reports_no_mask(make_viewer_model):
-    """With no mask the button reads 'None' and says what it is for."""
-    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
-
-    assert plotter._mask_summary_full_text == "None"
-    assert "restrict the analysis" in plotter.mask_summary_button.toolTip()
-
-
-def test_mask_summary_names_the_mask_layer(make_viewer_model):
-    """Selecting a mask puts its name on the button."""
-    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
-
-    plotter.mask_layer_combobox.setCurrentText(mask.name)
-
-    assert plotter._mask_summary_full_text == "cells"
-    assert "Click to edit" in plotter.mask_summary_button.toolTip()
-
-
-def test_mask_summary_counts_only_a_narrowed_label_set(make_viewer_model):
-    """Labels are mentioned only when they actually narrow the mask."""
-    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
-    plotter.mask_layer_combobox.setCurrentText(mask.name)
-
-    # All labels checked is the same mask as no label filter: stay quiet.
-    plotter.mask_labels_combobox.selectAll()
-    assert plotter._mask_summary_full_text == "cells"
-
-    plotter.mask_labels_combobox.setCheckedItems(["1", "2"])
-    assert plotter._mask_summary_full_text == "cells · 2 labels"
-
-    # Singular noun for a single label.
-    plotter.mask_labels_combobox.setCheckedItems(["1"])
-    assert plotter._mask_summary_full_text == "cells · 1 label"
-
-
-def test_mask_summary_reports_inversion(make_viewer_model):
-    """Invert shows up in the summary, alongside any label narrowing."""
-    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
-    plotter.mask_layer_combobox.setCurrentText(mask.name)
-
-    plotter.mask_invert_checkbox.setChecked(True)
-    assert plotter._mask_summary_full_text == "cells · inverted"
-
-    plotter.mask_labels_combobox.setCheckedItems(["3"])
-    assert plotter._mask_summary_full_text == "cells · 1 label · inverted"
-
-
-def test_mask_editor_opens_popover_for_one_layer(make_viewer_model):
-    """One selected layer edits its own mask in the popover."""
-    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
-
-    with patch.object(plotter, '_open_mask_assignment_dialog') as dialog:
-        with patch.object(plotter, '_show_mask_editor_popover') as popover:
-            plotter.mask_summary_button.click()
-
-    dialog.assert_not_called()
-    popover.assert_called_once()
-
-
-def test_mask_editor_popover_is_sized_and_placed_under_the_button(
-    make_viewer_model,
-):
-    """The popover is at least as wide as the button and sits below it."""
-    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
-    plotter.mask_summary_button.resize(240, 24)
+def test_mask_summary_button_and_editor(make_viewer_model):
+    """The summary button names the mask, its label subset and inversion,
+    fits its text to its width, and opens the editor popover."""
+    _, plotter, layers, mask = _plotter_with_label_mask(make_viewer_model)
+    button = plotter.mask_summary_button
     popover = plotter.mask_editor_popover
 
-    # Never actually show it: a Qt.Popup takes a global input grab, which
-    # would wedge the machine running the suite if this test died mid-way.
-    with patch.object(type(popover), 'show') as show:
-        plotter._show_mask_editor_popover()
+    # With no mask the button reads 'None' and says what it is for.
+    assert plotter._mask_summary_full_text == "None"
+    assert "restrict the analysis" in button.toolTip()
 
-    show.assert_called_once()
-    assert popover.minimumWidth() >= plotter.mask_summary_button.width()
-    expected = plotter.mask_summary_button.mapToGlobal(
-        plotter.mask_summary_button.rect().bottomLeft()
-    )
-    assert popover.pos() == expected
-
-
-def test_mask_editor_opens_assignment_dialog_for_several_layers(
-    make_viewer_model,
-):
-    """Several selected layers go to the per-layer assignment dialog."""
-    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model, n_layers=2)
-
-    with patch.object(plotter, '_open_mask_assignment_dialog') as dialog:
-        with patch.object(plotter, '_show_mask_editor_popover') as popover:
-            plotter.mask_summary_button.click()
-    dialog.assert_called_once()
-    popover.assert_not_called()
-
-
-def test_mask_summary_is_elided_to_fit_the_button(make_viewer_model):
-    """A summary too wide for the button is elided, never clipped."""
-    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
-    plotter.mask_layer_combobox.setCurrentText(mask.name)
-    plotter._mask_summary_full_text = "a very long mask layer name indeed"
-
-    plotter.mask_summary_button.resize(60, 24)
-    plotter._elide_mask_summary()
-    elided = plotter.mask_summary_button.text()
-    assert elided != plotter._mask_summary_full_text
-    assert "…" in elided
-
-    # Wide enough for the whole thing: no elision.
-    plotter.mask_summary_button.resize(400, 24)
-    plotter._elide_mask_summary()
-    assert plotter.mask_summary_button.text() == (
-        plotter._mask_summary_full_text
-    )
-
-
-@pytest.mark.parametrize("event_type", [QEvent.Resize, QEvent.Show])
-def test_mask_summary_re_elides_on_resize_and_show(
-    make_viewer_model, event_type
-):
-    """Resizing or showing the button re-fits the summary to it.
-
-    Show matters because the first summary is set while the row is still
-    unlaid-out and the button has no meaningful width.
-    """
-    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
-    plotter._mask_summary_full_text = "a very long mask layer name indeed"
-
-    plotter.mask_summary_button.resize(60, 24)
-    plotter.eventFilter(plotter.mask_summary_button, QEvent(event_type))
-
-    assert "…" in plotter.mask_summary_button.text()
-
-
-def test_mask_summary_survives_a_zero_width_button(make_viewer_model):
-    """A button with no width yet falls back to the untruncated text."""
-    _, plotter, _, _ = _plotter_with_label_mask(make_viewer_model)
-    plotter._mask_summary_full_text = "cells"
-
-    plotter.mask_summary_button.resize(0, 24)
-    plotter._elide_mask_summary()
-
-    assert plotter.mask_summary_button.text() == "cells"
-
-
-def test_mask_editor_keeps_an_available_mask_when_reselecting(
-    make_viewer_model,
-):
-    """An unassigned layer keeps the mask already showing in the editor."""
-    _, plotter, layers, mask = _plotter_with_label_mask(make_viewer_model)
-    plotter.mask_layer_combobox.setCurrentText(mask.name)
-    # Drop the stored assignment but leave the editor showing "cells".
-    plotter._mask_assignments.pop(layers[0].name, None)
-
-    plotter._update_mask_ui_mode()
-
-    assert plotter.mask_layer_combobox.currentText() == mask.name
-    assert plotter._mask_summary_full_text == "cells"
-
-
-def test_mask_editor_restores_a_stored_label_subset(make_viewer_model):
-    """Re-syncing the editor restores the labels stored for that layer."""
-    _, plotter, layers, mask = _plotter_with_label_mask(make_viewer_model)
-    plotter.mask_layer_combobox.setCurrentText(mask.name)
-    plotter._mask_label_assignments[layers[0].name] = [2, 3]
-
-    plotter._update_mask_ui_mode()
-
-    assert plotter.mask_labels_combobox.checkedItems() == ["2", "3"]
-
-
-def test_mask_labels_visibility_covers_its_caption(make_viewer_model):
-    """The 'Labels' caption hides and shows with the combobox it names."""
-    _, plotter, _, mask = _plotter_with_label_mask(make_viewer_model)
-
+    # The 'Labels' caption hides and shows with the combobox it names.
     plotter._set_mask_labels_visible(True)
     assert not plotter.mask_labels_label.isHidden()
     assert not plotter.mask_labels_container.isHidden()
-
     plotter._set_mask_labels_visible(False)
     assert plotter.mask_labels_label.isHidden()
     assert plotter.mask_labels_container.isHidden()
+
+    # One selected layer edits its own mask in the popover.
+    with (
+        patch.object(plotter, '_open_mask_assignment_dialog') as dialog,
+        patch.object(plotter, '_show_mask_editor_popover') as show_popover,
+    ):
+        button.click()
+    dialog.assert_not_called()
+    show_popover.assert_called_once()
+
+    # The popover is at least as wide as the button and sits below it.
+    # Never actually show it: a Qt.Popup takes a global input grab, which
+    # would wedge the machine running the suite if this test died mid-way.
+    button.resize(240, 24)
+    with patch.object(type(popover), 'show') as show:
+        plotter._show_mask_editor_popover()
+    show.assert_called_once()
+    assert popover.minimumWidth() >= button.width()
+    assert popover.pos() == button.mapToGlobal(button.rect().bottomLeft())
+
+    # Selecting a mask puts its name on the button.
+    plotter.mask_layer_combobox.setCurrentText(mask.name)
+    assert plotter._mask_summary_full_text == "cells"
+    assert "Click to edit" in button.toolTip()
+
+    # An unassigned layer keeps the mask already showing in the editor.
+    plotter._mask_assignments.pop(layers[0].name, None)
+    plotter._update_mask_ui_mode()
+    assert plotter.mask_layer_combobox.currentText() == mask.name
+    assert plotter._mask_summary_full_text == "cells"
+
+    # Labels are mentioned only when they actually narrow the mask.
+    plotter.mask_labels_combobox.selectAll()
+    assert plotter._mask_summary_full_text == "cells"
+    plotter.mask_labels_combobox.setCheckedItems(["1", "2"])
+    assert plotter._mask_summary_full_text == "cells · 2 labels"
+    plotter.mask_labels_combobox.setCheckedItems(["1"])
+    assert plotter._mask_summary_full_text == "cells · 1 label"
+
+    # Invert shows up in the summary, alongside any label narrowing.
+    plotter.mask_labels_combobox.selectAll()
+    plotter.mask_invert_checkbox.setChecked(True)
+    assert plotter._mask_summary_full_text == "cells · inverted"
+    plotter.mask_labels_combobox.setCheckedItems(["3"])
+    assert plotter._mask_summary_full_text == "cells · 1 label · inverted"
+
+    # Re-syncing the editor restores the labels stored for that layer.
+    plotter._mask_label_assignments[layers[0].name] = [2, 3]
+    plotter._update_mask_ui_mode()
+    assert plotter.mask_labels_combobox.checkedItems() == ["2", "3"]
+
+    # A summary too wide for the button is elided, never clipped.
+    full_text = "a very long mask layer name indeed"
+    plotter._mask_summary_full_text = full_text
+    button.resize(60, 24)
+    plotter._elide_mask_summary()
+    assert button.text() != full_text
+    assert "…" in button.text()
+    button.resize(400, 24)
+    plotter._elide_mask_summary()
+    assert button.text() == full_text
+
+    # Resizing or showing the button re-fits the summary to it. Show
+    # matters because the first summary is set while the row is still
+    # unlaid-out and the button has no meaningful width.
+    for event_type in (QEvent.Resize, QEvent.Show):
+        button.resize(400, 24)
+        plotter._elide_mask_summary()
+        button.resize(60, 24)
+        plotter.eventFilter(button, QEvent(event_type))
+        assert "…" in button.text()
+
+    # A button with no width yet falls back to the untruncated text.
+    plotter._mask_summary_full_text = "cells"
+    button.resize(0, 24)
+    plotter._elide_mask_summary()
+    assert button.text() == "cells"

@@ -51,29 +51,21 @@ from ._canvas import (
     DEFAULT_MANUAL_COLORS,
     _make_selector_icon,
 )
-from ._settings_store import format_layer_list, settings_equal
 from ._utils import (
     CurrentPageStackedWidget,
     active_selection_region,
+    analysis_layer_name,
     analysis_section_stylesheet,
     colormap_to_dict,
-    create_settings_note_label,
     make_section,
     make_slider_spin_row,
-    set_settings_note,
     setup_primary_button,
+    split_analysis_layer_name,
 )
 
 #: Default outline of the cursors drawn on the phasor plot.
 DEFAULT_CURSOR_OUTLINE_WIDTH = 2.0
 DEFAULT_CURSOR_OUTLINE_ALPHA = 1.0
-
-#: Settings keys holding the cursors, one list per cursor shape.
-_CURSOR_SETTINGS_KEYS = (
-    "circular_cursors",
-    "elliptical_cursors",
-    "polar_cursors",
-)
 
 
 def _make_eye_icon(color, size=18, crossed=False):
@@ -340,10 +332,6 @@ class SelectionWidget(QWidget):
         )
 
     EYE_COLOR = "white"
-
-    def _refresh_settings_note(self):
-        """Refresh the cursor mode's note about overwritten cursors."""
-        self.cursor_selection_widget._refresh_settings_note()
 
     def _build_selection_input_widget(self):
         """Build the manual-selection controls programmatically.
@@ -859,7 +847,7 @@ class SelectionWidget(QWidget):
         # Update colormap on existing labels layers
         if self.selection_id:
             for layer in self._get_selected_layers():
-                layer_name = f"{self.selection_id}: {layer.name}"
+                layer_name = analysis_layer_name(self.selection_id, layer.name)
                 sel_layer = self._find_phasors_layer_by_name(layer_name)
                 if sel_layer is not None:
                     sel_layer.colormap = DirectLabelColormap(
@@ -1044,9 +1032,10 @@ class SelectionWidget(QWidget):
                                 and self.selection_id != "None"
                             ):
                                 viewer_layer.visible = (
-                                    viewer_layer.name.startswith(
-                                        f"{self.selection_id}: "
-                                    )
+                                    split_analysis_layer_name(
+                                        viewer_layer.name
+                                    )[1]
+                                    == self.selection_id
                                 )
                             else:
                                 viewer_layer.visible = True
@@ -1195,7 +1184,9 @@ class SelectionWidget(QWidget):
 
         selected_layers = self._get_selected_layers()
         for layer in selected_layers:
-            selection_layer_name = f"{self.selection_id}: {layer.name}"
+            selection_layer_name = analysis_layer_name(
+                self.selection_id, layer.name
+            )
             selection_layer = self._find_phasors_layer_by_name(
                 selection_layer_name
             )
@@ -1277,7 +1268,9 @@ class SelectionWidget(QWidget):
                         i
                     )
                     if sel_id != "None":
-                        selection_layer_name = f"{sel_id}: {layer.name}"
+                        selection_layer_name = analysis_layer_name(
+                            sel_id, layer.name
+                        )
                         existing_layer = self._find_phasors_layer_by_name(
                             selection_layer_name
                         )
@@ -1296,7 +1289,7 @@ class SelectionWidget(QWidget):
                     i
                 )
                 if sel_id != "None" and sel_id != selection_id:
-                    other_layer_name = f"{sel_id}: {layer.name}"
+                    other_layer_name = analysis_layer_name(sel_id, layer.name)
                     other_layer = self._find_phasors_layer_by_name(
                         other_layer_name
                     )
@@ -1306,7 +1299,9 @@ class SelectionWidget(QWidget):
         # Show current selection for all layers
         need_to_create = False
         for layer in selected_layers:
-            selection_layer_name = f"{selection_id}: {layer.name}"
+            selection_layer_name = analysis_layer_name(
+                selection_id, layer.name
+            )
             selection_layer = self._find_phasors_layer_by_name(
                 selection_layer_name
             )
@@ -1731,7 +1726,7 @@ class SelectionWidget(QWidget):
             else:
                 selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
-            layer_name = f"{self.selection_id}: {layer.name}"
+            layer_name = analysis_layer_name(self.selection_id, layer.name)
 
             # Check if layer already exists, skip if it does
             existing_layer = self._find_phasors_layer_by_name(layer_name)
@@ -1742,6 +1737,7 @@ class SelectionWidget(QWidget):
                 selection_map,
                 name=layer_name,
                 scale=layer.scale,
+                units=layer.units,
                 colormap=DirectLabelColormap(
                     color_dict=color_dict, name="manual_selection_colors"
                 ),
@@ -1764,7 +1760,9 @@ class SelectionWidget(QWidget):
         # Check if any layers need to be created
         need_creation = False
         for layer in selected_layers:
-            selection_layer_name = f"{self.selection_id}: {layer.name}"
+            selection_layer_name = analysis_layer_name(
+                self.selection_id, layer.name
+            )
             if self._find_phasors_layer_by_name(selection_layer_name) is None:
                 need_creation = True
                 break
@@ -1775,7 +1773,9 @@ class SelectionWidget(QWidget):
 
         # Update layer for each selected layer
         for layer in selected_layers:
-            selection_layer_name = f"{self.selection_id}: {layer.name}"
+            selection_layer_name = analysis_layer_name(
+                self.selection_id, layer.name
+            )
             existing_phasors_selected_layer = self._find_phasors_layer_by_name(
                 selection_layer_name
             )
@@ -1810,7 +1810,7 @@ class SelectionWidget(QWidget):
         if layer is None:
             return
 
-        layer_name = f"{selection_id}: {layer.name}"
+        layer_name = analysis_layer_name(selection_id, layer.name)
 
         if self._find_phasors_layer_by_name(layer_name):
             return
@@ -1842,6 +1842,7 @@ class SelectionWidget(QWidget):
             selection_map,
             name=layer_name,
             scale=layer.scale,
+            units=layer.units,
             colormap=DirectLabelColormap(
                 color_dict=color_dict, name="manual_selection_colors"
             ),
@@ -2588,7 +2589,7 @@ class AutomaticClusteringWidget(QWidget):
 
     def _create_or_update_labels_layer(self, image_layer, selection_map):
         """Create or update the labels layer for the cluster selection."""
-        layer_name = f"Cluster Selection: {image_layer.name}"
+        layer_name = analysis_layer_name("Cluster Selection", image_layer.name)
 
         color_dict = {None: (0, 0, 0, 0)}
         for idx, cluster in enumerate(self._clusters):
@@ -2613,6 +2614,7 @@ class AutomaticClusteringWidget(QWidget):
                 selection_map,
                 name=layer_name,
                 scale=image_layer.scale,
+                units=image_layer.units,
                 colormap=DirectLabelColormap(
                     color_dict=color_dict, name="cluster_colors"
                 ),
@@ -2781,7 +2783,7 @@ class CursorSelectionWidget(QWidget):
     parameters. Clicking a row — or dragging a cursor on the plot — selects
     it. The shape-specific parameter fields are shown or hidden dynamically
     based on the chosen shape. All cursors (regardless of shape) contribute
-    to a single combined ``Cursor Selection: <image>`` labels layer.
+    to a single combined ``<image> [Cursor Selection]`` labels layer.
 
     Parameters
     ----------
@@ -2924,10 +2926,6 @@ class CursorSelectionWidget(QWidget):
         buttons_row.addStretch()
         display_box_layout.addLayout(buttons_row)
         layout.addWidget(display_box)
-
-        # Caution shown when calculating would replace other layers' cursors.
-        self._settings_note = create_settings_note_label(self)
-        layout.addWidget(self._settings_note)
 
         # Prominent "Calculate" button — the primary action of the tab.
         self.calculate_button = QPushButton("Calculate Selection")
@@ -4113,58 +4111,6 @@ class CursorSelectionWidget(QWidget):
         refresh = getattr(self, "_refresh_calculate_button", None)
         if refresh is not None:
             refresh()
-        self._refresh_settings_note()
-
-    def _current_cursor_settings(self):
-        """Return the cursors on display as they are stored in settings."""
-        values = {key: [] for key in _CURSOR_SETTINGS_KEYS}
-        for cursor in self._current_harmonic_cursors():
-            key = {
-                "circular": "circular_cursors",
-                "elliptic": "elliptical_cursors",
-            }.get(cursor["type"], "polar_cursors")
-            values[key].append(self._cursor_metadata_params(cursor))
-        return values
-
-    def _refresh_settings_note(self):
-        """Name the selected layers whose stored cursors a run replaces.
-
-        Calculating the selection stores the cursors on display in every
-        selected layer; the note lists the non-primary ones storing others.
-        """
-        note = getattr(self, "_settings_note", None)
-        parent = self.parent_widget
-        if note is None or parent is None:
-            return
-        if not hasattr(parent, "get_primary_layer"):
-            return
-        primary = parent.get_primary_layer()
-        others = [
-            layer
-            for layer in parent.get_selected_layers()
-            if layer is not primary
-        ]
-        message = None
-        if others:
-            current = self._current_cursor_settings()
-            overwritten = []
-            for layer in others:
-                stored = (layer.metadata.get("settings") or {}).get(
-                    "selections"
-                ) or {}
-                stored_cursors = {
-                    key: stored.get(key) or [] for key in _CURSOR_SETTINGS_KEYS
-                }
-                if any(stored_cursors.values()) and not settings_equal(
-                    stored_cursors, current
-                ):
-                    overwritten.append(layer.name)
-            if overwritten:
-                message = (
-                    "Calculating the selection will overwrite the cursors "
-                    f"stored in: {format_layer_list(overwritten)}."
-                )
-        set_settings_note(note, [message])
 
     def _on_calculate_clicked(self):
         """Handle Calculate button click."""
@@ -4184,7 +4130,7 @@ class CursorSelectionWidget(QWidget):
         if not selected_layers:
             return
         for layer in selected_layers:
-            layer_name = f"Cursor Selection: {layer.name}"
+            layer_name = analysis_layer_name("Cursor Selection", layer.name)
             for viewer_layer in list(self.viewer.layers):
                 if viewer_layer.name == layer_name:
                     self.viewer.layers.remove(viewer_layer)
@@ -4312,7 +4258,6 @@ class CursorSelectionWidget(QWidget):
             selections["circular_cursors"] = circular_params
             selections["elliptical_cursors"] = elliptical_params
             selections["polar_cursors"] = polar_params
-        self._refresh_settings_note()
 
         # Only visible cursors contribute to the selection (and to the
         # label-id / color mapping); hidden cursors behave as if absent.
@@ -4384,7 +4329,7 @@ class CursorSelectionWidget(QWidget):
         self, image_layer, selection_map, cursors_list
     ):
         """Create or update the combined cursor selection labels layer."""
-        layer_name = f"Cursor Selection: {image_layer.name}"
+        layer_name = analysis_layer_name("Cursor Selection", image_layer.name)
 
         color_dict = {None: (0, 0, 0, 0)}
         for idx, cursor in enumerate(cursors_list):
@@ -4414,6 +4359,7 @@ class CursorSelectionWidget(QWidget):
                 selection_map,
                 name=layer_name,
                 scale=image_layer.scale,
+                units=image_layer.units,
                 colormap=DirectLabelColormap(
                     color_dict=color_dict, name="cursor_selection_colors"
                 ),
@@ -4484,7 +4430,6 @@ class CursorSelectionWidget(QWidget):
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
-        self._refresh_settings_note()
 
     def _connect_drag_events(self):
         """Connect matplotlib events for dragging cursors."""

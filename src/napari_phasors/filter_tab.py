@@ -26,9 +26,7 @@ from ._settings_store import ANALYSIS_SETTINGS_KEYS
 from ._utils import (
     analysis_section_stylesheet,
     apply_filter_and_threshold_to_layers,
-    create_settings_note_label,
     make_section,
-    set_settings_note,
     setup_primary_button,
     threshold_li,
     threshold_otsu,
@@ -284,10 +282,6 @@ class FilterWidget(QWidget):
         scroll_area.setWidget(scroll_content)
         layout.addWidget(scroll_area)
 
-        # Caution shown when Apply would replace other layers' settings.
-        self._settings_note = create_settings_note_label(self)
-        layout.addWidget(self._settings_note)
-
         # Apply button (not inside scroll area). Styled / wired in
         # ``_connect_signals`` as a validated primary action.
         self.apply_button = QPushButton("Apply")
@@ -520,7 +514,6 @@ class FilterWidget(QWidget):
             self._restore_from_selection()
         finally:
             self._restoring_settings = False
-        self._refresh_settings_note()
 
     def _restore_from_selection(self):
         """Fit the histogram to the selection and show the primary's settings.
@@ -1220,17 +1213,6 @@ class FilterWidget(QWidget):
             else:
                 store.discard_drafts([primary], [key], notify=False)
         store.notify()
-
-    def _refresh_settings_note(self):
-        """Warn when Apply would replace other selected layers' settings."""
-        message = None
-        if self.parent_widget is not None:
-            message = self.parent_widget.settings_overwrite_message(
-                "filter_tab",
-                values=self._collect_ui_settings(),
-                action="Applying",
-            )
-        set_settings_note(self._settings_note, [message])
 
     def on_mouse_press(self, event):
         """Handle mouse press event for threshold line dragging."""
