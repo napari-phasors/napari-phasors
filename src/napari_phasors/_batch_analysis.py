@@ -5537,6 +5537,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 data,
                 name=add_kw.get("name", os.path.basename(path)),
                 metadata=add_kw.get("metadata", {}),
+                scale=add_kw.get("scale"),
+                units=add_kw.get("units"),
             )
             extra_layers = apply_pipeline(layer, local_pipeline)
             if self._signal_export_cfg is not None:
@@ -5724,10 +5726,19 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         if load_into_viewer:
             self.viewer.add_image(
-                layer.data, name=layer.name, metadata=layer.metadata
+                layer.data,
+                name=layer.name,
+                metadata=layer.metadata,
+                scale=layer.scale,
+                units=layer.units,
             )
             for extra in extra_layers:
-                self.viewer.add_image(extra.data, name=extra.name)
+                self.viewer.add_image(
+                    extra.data,
+                    name=extra.name,
+                    scale=layer.scale,
+                    units=layer.units,
+                )
 
     def _derive_output_path(
         self, src_path, ext, suffix, preserve, subfolder=None
