@@ -3561,9 +3561,11 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         """Colour the phasor plot by *output_type* and draw the mesh overlay.
 
         Only "Phase" and "Modulation" are colourable; any other output type
-        returns without touching the plot.
+        returns without touching the plot, and so does a hidden tab.
         """
         if output_type not in {"Phase", "Modulation"}:
+            return
+        if self._coloring_paused_by_tab:
             return
         pw = self.parent_widget
         if pw is None or getattr(pw, 'plot_type', 'HISTOGRAM2D') == 'NONE':
@@ -4284,9 +4286,12 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
 
         Only the mesh is drawn: unlike Phase/Modulation, Lifetime mode does
         not recolour the phasor data itself. Without the mesh toggle or a
-        frequency the mesh and its colorbar are removed.
+        frequency the mesh and its colorbar are removed. Nothing is drawn
+        while the tab is hidden.
         """
         if output_type not in LIFETIME_OUTPUT_TYPES:
+            return
+        if self._coloring_paused_by_tab:
             return
         pw = self.parent_widget
         if pw is None or getattr(pw, 'plot_type', 'HISTOGRAM2D') == 'NONE':
