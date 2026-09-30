@@ -1316,6 +1316,7 @@ def test_collect_plot_settings(qtbot, make_viewer_model, tmp_path):
     widget.plot_center_checkbox.setChecked(True)
     widget._update_run_enabled()
     assert widget.run_button.isEnabled()
+    assert widget._run_validation() is None
 
     plot_settings = widget._collect_plot_settings()
     assert plot_settings["white_background"] is True
@@ -4943,3 +4944,20 @@ def test_batch_output_layer_classification(layer_name, tab, label):
     assert BatchAnalysisWidget._subfolder_for_layer(None, layer_name) == tab
     expected = label or layer_name[layer_name.index("[") + 1 : -1]
     assert BatchAnalysisWidget._clean_layer_name(None, layer_name) == expected
+
+
+def test_run_button_is_blocked_with_a_reason_until_configured(
+    make_viewer_model, qtbot, tmp_path
+):
+    """The run button explains what is missing instead of being disabled."""
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    reason = widget._run_validation()
+    assert reason == "Select an input folder containing supported files."
+    assert widget.run_button.toolTip() == reason
+
+    widget._input_folder = str(tmp_path)
+    widget._export_folder = None
+    widget._update_run_enabled()
+    assert widget.run_button.toolTip() == widget._run_validation()

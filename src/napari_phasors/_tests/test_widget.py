@@ -18,7 +18,7 @@ from phasorpy.io import (
     signal_from_lsm,
     signal_from_sdt,
 )
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import QPushButton, QWidget
 
 from napari_phasors import _writer
 from napari_phasors._reader import napari_get_reader
@@ -1088,9 +1088,15 @@ def test_writer_widget(make_viewer_model, qtbot, tmp_path):
     assert main_widget.export_layer_combobox.count() == 0
     # FLIMari export button is disabled while no layer is selected
     assert not main_widget.flimari_button.isEnabled()
-    # Check error messages if there are no phasor layers
+    # The pinned export button is blocked (and explains why) until a layer
+    # is selected, so clicking it does not open the export flow.
+    assert main_widget._export_validation() == (
+        "Select at least one layer to export."
+    )
     with patch("napari_phasors._widget.show_error") as mock_show_error:
         main_widget.search_button.click()
+        mock_show_error.assert_not_called()
+        main_widget._open_file_dialog()
         mock_show_error.assert_called_once_with("No layer selected")
     # Create a synthetic FLIM data and an intensity image layer with phasors
     raw_flim_data = make_raw_flim_data()
@@ -4035,3 +4041,124 @@ def test_phasor_transform_offers_h5_only_when_supported(
 
     monkeypatch.setattr(widget_module, "BRIGHTEYES_MCS_AVAILABLE", False)
     assert ".h5" not in PhasorTransform(make_viewer_model()).reader_options
+
+
+def test_import_widget_pins_a_single_run_button(make_viewer_model, qtbot):
+    """The import widget runs option widgets from a button under the scroll."""
+    from unittest.mock import MagicMock
+
+    viewer = make_viewer_model()
+    widget = PhasorTransform(viewer)
+    qtbot.addWidget(widget)
+
+    # Pinned under the scroll area, not inside it, and blocked until a file
+    # has been selected.
+    assert widget.outer_layout.indexOf(widget.run_button) >= 0
+    assert not widget.scroll_area.isAncestorOf(widget.run_button)
+    assert widget._run_validation() == "Select file(s) to be read first."
+
+    class _Options(QWidget):
+        def __init__(self, label):
+            super().__init__()
+            self.btn = QPushButton(label)
+            self.on_click = MagicMock()
+            self.btn.clicked.connect(self.on_click)
+
+    first = _Options("Phasor Transform")
+    widget.dynamic_widget_layout.addWidget(first)
+    widget._register_transform_widget(first)
+    assert first.btn.isHidden()
+    assert widget.run_button.text() == "Phasor Transform"
+    assert widget._run_validation() is None
+
+    widget.run_button.click()
+    first.on_click.assert_called_once()
+
+    # Several groups are all transformed by the one button.
+    second = _Options("Phasor Transform Group (2 file(s))")
+    widget.dynamic_widget_layout.addWidget(second)
+    widget._register_transform_widget(second)
+    assert widget.run_button.text() == "Phasor Transform All Groups (2)"
+    widget.run_button.click()
+    assert first.on_click.call_count == 2
+    second.on_click.assert_called_once()
+
+    widget._clear_dynamic_widgets()
+    assert widget._run_validation() == "Select file(s) to be read first."
+    assert widget.run_button.text() == "Phasor Transform"
+
+
+def test_writer_widget_export_closes_window_and_pins_button(
+    make_viewer_model, qtbot, tmp_path
+):
+    """Exporting closes the window; the export button is pinned below."""
+    viewer = make_viewer_model()
+    widget = WriterWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.outer_layout.indexOf(widget.search_button) >= 0
+    assert not widget.scroll_area.isAncestorOf(widget.search_button)
+    # The FLIMari entry point is the last control of the scrolling options.
+    assert widget.scroll_area.isAncestorOf(widget.flimari_open_button)
+    assert (
+        widget.main_layout.itemAt(widget.main_layout.count() - 1).widget()
+        is widget.flimari_open_button
+    )
+
+    viewer.add_layer(
+        make_intensity_layer_with_phasors(make_raw_flim_data(), harmonic=[1])
+    )
+    widget.export_layer_combobox.selectAll()
+    widget.show()
+    assert widget.isVisible()
+
+    # Cancelling the file dialog keeps the window open.
+    with patch(
+        "napari_phasors._widget.QFileDialog.getSaveFileName",
+        return_value=("", ""),
+    ):
+        widget.search_button.click()
+    assert widget.isVisible()
+
+    with patch(
+        "napari_phasors._widget.QFileDialog.getSaveFileName",
+        return_value=(str(tmp_path / "out"), "Layer data as CSV (*.csv)"),
+    ):
+        widget.search_button.click()
+    assert (tmp_path / "out.csv").exists()
+    assert not widget.isVisible()
+
+
+def test_writer_widget_flimari_dialog(make_viewer_model, qtbot):
+    """The FLIMari controls live in a dialog opened from the export window."""
+    from unittest.mock import MagicMock
+
+    viewer = make_viewer_model()
+    layer = make_intensity_layer_with_phasors(make_raw_flim_data())
+    viewer.add_layer(layer)
+    widget = WriterWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert not widget.flimari_open_button.isEnabled()
+    widget.export_layer_combobox.setCheckedItems([layer.name])
+    assert widget.flimari_open_button.isEnabled()
+    assert widget.flimari_button.isEnabled()
+
+    with patch.object(widget.flimari_dialog, "exec", MagicMock()) as mock_exec:
+        widget.flimari_open_button.click()
+        mock_exec.assert_called_once()
+    assert layer.name in widget.flimari_dialog.layers_label.text()
+
+    # A successful send closes the dialog; a failed one leaves it open.
+    with (
+        patch.object(widget, "_send_to_flimari", return_value=True),
+        patch.object(widget.flimari_dialog, "accept") as mock_accept,
+    ):
+        widget.flimari_button.click()
+        mock_accept.assert_called_once()
+    with (
+        patch.object(widget, "_send_to_flimari", return_value=False),
+        patch.object(widget.flimari_dialog, "accept") as mock_accept,
+    ):
+        widget.flimari_button.click()
+        mock_accept.assert_not_called()

@@ -93,6 +93,7 @@ from ._utils import (
     read_ome_tiff_settings,
     required_component_harmonics,
     resolve_colormap_by_name,
+    setup_primary_button,
     split_analysis_layer_name,
 )
 from ._writer import (
@@ -3903,7 +3904,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
     def _build_run_footer(self, layout):
         """Add the run button and progress footer to *layout*."""
         self.run_button = QPushButton("Run batch analysis")
-        self.run_button.clicked.connect(self.run_batch)
+        self.run_button.setMinimumHeight(34)
+        self._refresh_run_button = setup_primary_button(
+            self.run_button,
+            self._run_validation,
+            self.run_batch,
+            ready_tooltip="Run the batch analysis.",
+        )
         layout.addWidget(self.run_button)
 
         self.progress_bar = QProgressBar()
@@ -4576,10 +4583,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 return True
         return False
 
-    def _update_run_enabled(self):
-        """Enable the run button only once the batch is fully configured."""
-        has_files = self.format_combobox.count() > 0
-        has_export = bool(self._export_folder)
+    def _run_validation(self):
+        """Return why the batch cannot run yet, or ``None`` when it can."""
+        if self.format_combobox.count() == 0:
+            return "Select an input folder containing supported files."
+        if not self._export_folder:
+            return "Select an export folder."
         has_type = (
             any(
                 checkbox.isChecked()
@@ -4591,16 +4600,15 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             or self._has_extra_outputs()
         )
-        self.run_button.setEnabled(has_files and has_export and has_type)
-        if not has_files:
-            tip = "Select an input folder containing supported files."
-        elif not has_export:
-            tip = "Select an export folder."
-        elif not has_type:
-            tip = "Select an export format or enable an analysis output."
-        else:
-            tip = "Run the batch analysis."
-        self.run_button.setToolTip(tip)
+        if not has_type:
+            return "Select an export format or enable an analysis output."
+        return None
+
+    def _update_run_enabled(self):
+        """Refresh the run button's ready/blocked look and tooltip."""
+        refresh = getattr(self, "_refresh_run_button", None)
+        if refresh is not None:
+            refresh()
 
     def _apply_settings_to_ui(self, settings):
         """Populate the analysis tabs from a settings dict."""
