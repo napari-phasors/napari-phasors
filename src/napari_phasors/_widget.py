@@ -4149,7 +4149,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.main_layout.addWidget(csv_info)
 
         image_info = QLabel(
-            "• <b>Image (PNG/JPEG/TIFF):</b> Exports visual representation "
+            "• <b>Image (PNG/JPEG/TIFF/SVG):</b> Exports visual representation "
             "with applied colormap and contrast. Optional colorbar can be included"
         )
         image_info.setWordWrap(True)
@@ -4201,7 +4201,27 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             "Send the selected phasor layer(s) directly to FLIMari."
         )
         self.flimari_open_button.clicked.connect(self._open_flimari_dialog)
-        self.main_layout.addWidget(self.flimari_open_button)
+        # A secondary action: compact, left-aligned and subdued so it does
+        # not compete with the pinned Export button.
+        self.flimari_open_button.setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid rgba(128, 128, 128, 0.25);"
+            "  border-radius: 4px;"
+            "  padding: 3px 10px;"
+            "  color: rgba(128, 128, 128, 0.8);"
+            "  background: transparent;"
+            "}"
+            "QPushButton:hover {"
+            "  background: rgba(255, 255, 255, 0.18);"
+            "  border-color: rgba(200, 200, 200, 0.6);"
+            "  color: rgba(210, 210, 210, 1);"
+            "}"
+            "QPushButton:disabled {"
+            "  border-color: rgba(128, 128, 128, 0.15);"
+            "  color: rgba(128, 128, 128, 0.45);"
+            "}"
+        )
+        self.main_layout.addWidget(self.flimari_open_button, 0, Qt.AlignLeft)
 
         # Export button, pinned under the scroll area so it is always
         # reachable, like the Run button of the analysis tabs.
@@ -4244,6 +4264,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             "Layer as PNG image (*.png)",
             "Layer as JPEG image (*.jpg)",
             "Layer as TIFF image (*.tif)",
+            "Layer as SVG image (*.svg)",
         ]
         # Join filters with ';;' for the native dialog format
         filter_str = ";;".join(filters)
@@ -4526,6 +4547,8 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             ext = ".jpg"
         elif selected_filter == "Layer as TIFF image (*.tif)":
             ext = ".tif"
+        elif selected_filter == "Layer as SVG image (*.svg)":
+            ext = ".svg"
         else:
             ext = ""
 
@@ -4536,7 +4559,9 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         # Remove any existing extension to get the base name
         if full_basename.endswith('.ome.tif'):
             base_name = full_basename[:-8]
-        elif full_basename.endswith(('.tif', '.csv', '.png', '.jpg', '.jpeg')):
+        elif full_basename.endswith(
+            ('.tif', '.csv', '.png', '.jpg', '.jpeg', '.svg')
+        ):
             base_name = os.path.splitext(full_basename)[0]
         else:
             base_name = full_basename
@@ -4573,6 +4598,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                     "Layer as PNG image (*.png)",
                     "Layer as JPEG image (*.jpg)",
                     "Layer as TIFF image (*.tif)",
+                    "Layer as SVG image (*.svg)",
                 ]:
                     export_layer_as_image(
                         final_path,
@@ -4613,6 +4639,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                         "Layer as PNG image (*.png)",
                         "Layer as JPEG image (*.jpg)",
                         "Layer as TIFF image (*.tif)",
+                        "Layer as SVG image (*.svg)",
                     ]:
                         export_layer_as_image(
                             layer_file_path,

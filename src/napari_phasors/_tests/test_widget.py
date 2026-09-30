@@ -1356,6 +1356,8 @@ def test_writer_widget_file_extension_handling(
         ("test.jpg", "Layer as JPEG image (*.jpg)", "test.jpg"),
         ("test", "Layer as TIFF image (*.tif)", "test.tif"),
         ("test.ome.tif", "Layer as TIFF image (*.tif)", "test.tif"),
+        ("test", "Layer as SVG image (*.svg)", "test.svg"),
+        ("test.svg", "Layer as SVG image (*.svg)", "test.svg"),
     ]
 
     for input_name, selected_filter, expected_output in test_cases:
