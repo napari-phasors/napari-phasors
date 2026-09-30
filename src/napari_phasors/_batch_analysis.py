@@ -1082,6 +1082,8 @@ def default_group_config():
         "legend_position": "upper right",
         "white_background": False,
         "smooth_curves": True,
+        "fill_area": True,
+        "fill_opacity": 0.5,
         "log_scale": False,
         "bins": 150,
         # Per-key contour styling (filled by the Contour Layer Settings dialog).
@@ -3798,6 +3800,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         dialog.smooth_checkbox.setChecked(
             self._group_config.get("smooth_curves", True)
         )
+        dialog.fill_checkbox.setChecked(
+            self._group_config.get("fill_area", True)
+        )
+        dialog.fill_opacity_spinbox.setValue(
+            int(round(self._group_config.get("fill_opacity", 0.5) * 100))
+        )
 
         if dialog.exec() == QDialog.Accepted:
             self._group_config.update(
@@ -3817,6 +3825,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     "legend_position": dialog.get_legend_position(),
                     "white_background": dialog.white_bg_checkbox.isChecked(),
                     "smooth_curves": dialog.smooth_checkbox.isChecked(),
+                    "fill_area": dialog.fill_checkbox.isChecked(),
+                    "fill_opacity": dialog.fill_opacity_spinbox.value() / 100,
                     "log_scale": dialog.log_scale_checkbox.isChecked(),
                     "bins": dialog.bins_spinbox.value(),
                 }
@@ -8228,6 +8238,8 @@ def _new_export_histogram(config, label):
     hw = HistogramWidget()
     hw.white_background = config.get("white_background", False)
     hw._smooth_curves = config.get("smooth_curves", True)
+    hw._fill_area = config.get("fill_area", True)
+    hw._fill_alpha = config.get("fill_opacity", 0.5)
     hw._normalize = config.get("normalize", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)

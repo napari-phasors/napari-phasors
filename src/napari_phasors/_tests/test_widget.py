@@ -188,6 +188,16 @@ def test_phasor_transform_widget_multi_file_grouped_mode(
     # Four different file formats should create four collapsible groups plus a stretch at the bottom.
     assert widget.dynamic_widget_layout.count() == 5
 
+    # The window height follows the option widgets, up to the screen height.
+    # (Stubbed as a shown window: showing real windows is avoided in tests.)
+    widget.isVisible = lambda: True
+    widget.isWindow = lambda: True
+    widget.resize(widget.minimumWidth(), 300)
+    widget._fit_height_to_content()
+    screen = widget.screen().availableGeometry()
+    assert 300 < widget.height() <= screen.height()
+    assert widget.minimumWidth() <= widget.width() <= screen.width()
+
     first_group = widget.dynamic_widget_layout.itemAt(0).widget()
     assert isinstance(first_group, CollapsibleSection)
     assert first_group._toggle_button.isChecked() is True

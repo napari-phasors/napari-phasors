@@ -1,11 +1,12 @@
 """Tests for the histogram export dialog and the legend location option."""
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from matplotlib.colors import to_rgba
 from matplotlib.legend import Legend
 from PIL import Image
-from qtpy.QtWidgets import QDialog, QFileDialog
+from qtpy.QtWidgets import QDialog, QFileDialog, QLabel
 
 from napari_phasors._utils import (
     LEGEND_POSITIONS,
@@ -116,11 +117,55 @@ def test_settings_dialog_legend_location(qtbot):
     assert not dlg._legend_location_label.isEnabled()
     dlg.legend_checkbox.setChecked(True)
     assert controls_enabled()
-    # Merged mode draws no legend, so the checkbox and location are off.
+    # Merged mode with a single curve draws no legend, so the controls are off.
     dlg.mode_combo.setCurrentText("Merged")
     assert not controls_enabled()
     dlg.mode_combo.setCurrentText("Grouped")
     assert controls_enabled()
+
+    # Merged mode with several series draws one, so the controls stay live.
+    dlg = HistogramSettingsDialog(
+        display_mode="Merged",
+        show_legend=True,
+        series_labels=["Component 1", "Component 2"],
+    )
+    qtbot.addWidget(dlg)
+    assert dlg.legend_checkbox.isEnabled()
+    assert dlg.legend_placement_combo.isEnabled()
+
+    # Colour buttons are only offered for solid colours, and SD / fill follow
+    # how many layers there are.
+    dlg.show()
+    assert not dlg._series_colors_widget.isVisible()
+    short = dlg.height()
+    _select(dlg.series_style_combo, "solid")
+    assert dlg._series_colors_widget.isVisible()
+    assert dlg.height() > short  # the window grows to fit the colour rows
+    # Several components of a single layer: no SD, so fill (and opacity) apply
+    assert not dlg.sd_checkbox.isEnabled()
+    assert dlg.fill_checkbox.isEnabled()
+    assert dlg.fill_opacity_spinbox.isEnabled()
+    dlg.fill_checkbox.setChecked(False)
+    assert not dlg.fill_opacity_spinbox.isEnabled()
+    # Long names are shown whole, the window widening to fit them
+    long_name = "A very long component name " * 4
+    wide = HistogramSettingsDialog(
+        display_mode="Individual layers", layer_labels=[long_name]
+    )
+    qtbot.addWidget(wide)
+    wide.show()
+    label = wide._layer_section.findChildren(QLabel)[-1]
+    assert label.width() >= label.sizeHint().width()
+    single = HistogramSettingsDialog(layer_labels=["a"])
+    qtbot.addWidget(single)
+    assert not single.sd_checkbox.isEnabled()
+    assert single.fill_checkbox.isEnabled()
+    several = HistogramSettingsDialog(layer_labels=["a", "b"], show_sd=True)
+    qtbot.addWidget(several)
+    assert several.sd_checkbox.isEnabled()
+    assert not several.fill_checkbox.isEnabled()
+    several.sd_checkbox.setChecked(False)
+    assert several.fill_checkbox.isEnabled()
 
     # The dialog opens on the stored placement and position.
     dlg = HistogramSettingsDialog(
@@ -246,6 +291,16 @@ def test_legend_placement_on_the_plot(qtbot, monkeypatch):
     merged._render()
     assert len(merged.fig.legends) == 1
     assert _legend_texts(merged.fig.legends[0]) == ["Series A", "Series B"]
+
+    # A colormap-drawn curve shows the whole colormap in the legend
+    merged._series_style = "colormap"
+    merged._series_cmap_and_norm = lambda name: (
+        plt.get_cmap("viridis"),
+        plt.Normalize(0, 3),
+    )
+    merged._render()
+    handle = merged.fig.legends[0].legend_handles[0]
+    assert len(np.unique(handle.get_array())) > 2
 
     # Accepting the settings moves the legend, and reopening shows it.
     widget = _histogram(qtbot)
@@ -794,6 +849,8 @@ def test_export_style_is_export_only(qtbot, tmp_path, monkeypatch):
     widget._render()
 
     # Larger text takes more of the image, and the plot keeps its sizes.
+    widget._fill_area = False  # a fill would ink the same pixels
+    widget._render()
     small = tmp_path / "small.png"
     large = tmp_path / "large.png"
     for out, text_size in ((small, 6.0), (large, 16.0)):
