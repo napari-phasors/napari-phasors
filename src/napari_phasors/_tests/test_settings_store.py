@@ -136,21 +136,6 @@ def test_update_committed_patches_existing_drafts():
     assert store.get(layer, "fret") == {"colormap": "magma", "donor": 2}
 
 
-def test_overwritten_layers():
-    """Only layers storing different values count as overwritten."""
-    same = _Layer({"fret": {"donor": 2}})
-    different = _Layer({"fret": {"donor": 5}})
-    empty = _Layer()
-    store = LayerSettingsStore()
-
-    result = store.overwritten_layers(
-        [same, different, empty], ["fret"], {"fret": {"donor": 2}}
-    )
-    assert result == [different]
-    # Unknown values (nothing to compare with) count as overwritten.
-    assert store.overwritten_layers([same, empty], ["fret"], {}) == [same]
-
-
 # ---------------------------------------------------------------------------
 # Plotter integration
 # ---------------------------------------------------------------------------
@@ -182,8 +167,7 @@ def _plotter_with_layers(make_viewer_model, names, primary=None):
 def test_settings_across_two_selected_layers(make_viewer_model, qtbot):
     """Plot settings reach every selected layer; analysis edits stay drafts
     of the primary until a run, which stores them in all layers (keeping
-    each layer's own frequency and unrelated settings), and the notes name
-    the layers whose stored settings a run would replace."""
+    each layer's own frequency and unrelated settings)."""
     plotter, (a, b) = _plotter_with_layers(make_viewer_model, ["A", "B"])
     fret = plotter.fret_tab
 
@@ -192,27 +176,12 @@ def test_settings_across_two_selected_layers(make_viewer_model, qtbot):
     assert a.metadata["settings"]["number_of_bins"] == 77
     assert b.metadata["settings"]["number_of_bins"] == 77
 
-    # The selection note names the layers whose cursors a run replaces.
-    b.metadata["settings"]["selections"] = {
-        "circular_cursors": [{"center": [0.5, 0.2], "radius": 0.1}]
-    }
-    cursor = plotter.selection_tab.cursor_selection_widget
-    cursor._refresh_settings_note()
-    assert "cursors stored in: B" in cursor._settings_note.text()
-    cursor.parent_widget = None
-    try:
-        cursor._refresh_settings_note()
-    finally:
-        cursor.parent_widget = plotter
-
     # The values a run would store are the primary's, edits included.
     b.metadata["settings"]["fret"] = {"donor_lifetime": 4.0}
     plotter.stage_setting("fret", {"donor_lifetime": 2.0})
     assert plotter.pending_settings_values("fret_tab") == {
         "fret": {"donor_lifetime": 2.0}
     }
-    message = plotter.settings_overwrite_message("fret_tab")
-    assert "FRET parameters stored in: B" in message
     plotter.settings_store.discard_drafts([a])
 
     # Edits stay out of the metadata and come back with their layer.
@@ -228,18 +197,9 @@ def test_settings_across_two_selected_layers(make_viewer_model, qtbot):
     assert fret.donor_line_edit.text() == "3.3"
     assert "fret" not in a.metadata["settings"]
 
-    # The note lists layers whose stored settings a run would replace, and
-    # goes away once the run has stored the same values everywhere.
-    b.metadata["settings"]["fret"] = {"donor_lifetime": 4.0}
     b.metadata["settings"]["frequency"] = 80.0
     fret.frequency_input.setText("80")
     fret.donor_line_edit.setText("2.5")
-    fret._refresh_settings_note()
-    assert "FRET parameters stored in: B" in fret._settings_note.text()
-    assert not fret._settings_note.isHidden()
-    fret.calculate_fret_efficiency()
-    fret._refresh_settings_note()
-    assert fret._settings_note.isHidden()
 
     # A run replaces its own settings in all layers, nothing else.
     b.metadata["settings"]["filter"] = {
@@ -344,9 +304,6 @@ def test_settings_across_three_selected_layers(make_viewer_model, qtbot):
         assert tab._analysed_component_layers() == []
     finally:
         tab.parent_widget = plotter
-    tab._needs_update = True
-    tab._refresh_settings_note()
-    tab._needs_update = False
 
 
 def test_settings_helpers_with_one_layer(make_viewer_model, qtbot):
@@ -415,12 +372,10 @@ def test_settings_helpers_with_one_layer(make_viewer_model, qtbot):
     assert stored["output_type"] == mapping._get_selected_output_type()
     assert a.metadata["settings"]["lifetime"] == stored
 
-    # Refreshing the notes while closing, or without a label, is a no-op.
+    # Refreshing the notes while closing is a no-op.
     plotter._is_closing = True
     plotter._refresh_settings_notes()
     plotter._is_closing = False
-    plotter._plot_settings_note = None
-    plotter._refresh_plot_settings_note()
 
     # Nothing is pending when no layer is selected.
     plotter.image_layers_checkable_combobox.setCheckedItems([])

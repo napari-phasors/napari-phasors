@@ -1840,25 +1840,19 @@ class FretWidget(AutoUpdateMixin, QWidget):
         )
 
     def _refresh_settings_note(self):
-        """Caution about settings and frequencies a Calculate would change."""
+        """Caution about the frequencies the selected layers are analysed at."""
         note = getattr(self, '_settings_note', None)
         if note is None or not self._has_settings_store():
             return
         if self._needs_update:
             # The controls still show another layer; refreshed on restore.
             return
-        messages = [
-            self.parent_widget.settings_overwrite_message(
-                'fret_tab',
-                values={'fret': self._collect_fret_settings()},
-                merge=self._fret_merge_rule(),
-                action="Calculating",
-            )
-        ]
-        messages += self.parent_widget.frequency_note_messages(
-            self.frequency_input.text()
+        set_settings_note(
+            note,
+            self.parent_widget.frequency_note_messages(
+                self.frequency_input.text()
+            ),
         )
-        set_settings_note(note, messages)
 
     def _restore_fret_settings_from_metadata(self):
         """Restore all FRET settings from the current layer's metadata."""
