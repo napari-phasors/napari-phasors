@@ -1737,6 +1737,7 @@ class SelectionWidget(QWidget):
                 selection_map,
                 name=layer_name,
                 scale=layer.scale,
+                units=layer.units,
                 colormap=DirectLabelColormap(
                     color_dict=color_dict, name="manual_selection_colors"
                 ),
@@ -1841,6 +1842,7 @@ class SelectionWidget(QWidget):
             selection_map,
             name=layer_name,
             scale=layer.scale,
+            units=layer.units,
             colormap=DirectLabelColormap(
                 color_dict=color_dict, name="manual_selection_colors"
             ),
@@ -2612,6 +2614,7 @@ class AutomaticClusteringWidget(QWidget):
                 selection_map,
                 name=layer_name,
                 scale=image_layer.scale,
+                units=image_layer.units,
                 colormap=DirectLabelColormap(
                     color_dict=color_dict, name="cluster_colors"
                 ),
@@ -4356,6 +4359,7 @@ class CursorSelectionWidget(QWidget):
                 selection_map,
                 name=layer_name,
                 scale=image_layer.scale,
+                units=image_layer.units,
                 colormap=DirectLabelColormap(
                     color_dict=color_dict, name="cursor_selection_colors"
                 ),

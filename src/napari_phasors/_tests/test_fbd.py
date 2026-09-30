@@ -17,6 +17,7 @@ from napari_phasors._fbd import (
     _best_line_start,
     _intensity_image,
     _is_iotech,
+    _merge_split_markers,
     _nominal_dwell_time,
     find_reference_file,
     image_correlation,
@@ -127,11 +128,29 @@ class FakeFbdFile:
     def __exit__(self, *exc):
         return False
 
+    #: FLIMbox units per scan line, used to tell split markers apart.
+    scanner_line_length = 9
+    units_per_sample = 100.0
+
+    def decode(self):
+        """Return ``(bins, times, markers)`` with one marker per frame."""
+        times = np.arange(4, dtype=np.uint64) * 4500
+        return None, times, np.arange(4)
+
+    def frames(self, records, /, *, refine=True):
+        """Return the scanner shape and one marker pair per frame."""
+        self.refine_calls.append(refine)
+        markers = records[-1]
+        return (
+            self.shape[2:4],
+            np.stack([markers[:-1], markers[1:] - 1], axis=1),
+        )
+
     def asimage(
-        self, *, integrate_frames=1, square_frame=True, refine=None, **kwargs
+        self, records, frames, /, *, integrate_frames=1, square_frame=True
     ):
         """Return the payload, cropped like the real reader would."""
-        self.refine_calls.append(refine)
+        self.frame_markers = frames[1]
         data = self.data
         if integrate_frames:
             data = data.sum(axis=0, keepdims=True, dtype=np.uint16)
@@ -157,6 +176,54 @@ def fake_fbdfile(monkeypatch):
 
     monkeypatch.setattr(fbdfile, "FbdFile", factory)
     return created
+
+
+# -- split frame markers ---------------------------------------------------
+
+
+class _Scanner:
+    """Scanner timing of one scan line spanning 900 FLIMbox units."""
+
+    scanner_line_length = 9
+    units_per_sample = 100.0
+
+
+def _records(marker_times):
+    """Return decoded records with one record per unit of time."""
+    times = np.arange(max(marker_times) + 1, dtype=np.uint64)
+    return None, times, np.asarray(marker_times)
+
+
+def _frames(starts, stops):
+    """Return frame markers as :meth:`fbdfile.FbdFile.frames` reports them."""
+    return np.stack([starts, np.asarray(stops) - 1], axis=1)
+
+
+def test_merge_split_markers_moves_split_frames_to_first_marker():
+    """A frame after a doubled marker starts at the first of the two."""
+    # the marker of the second frame is recorded at 5000 and again at 5009
+    records = _records([0, 5000, 5009, 10000, 15000])
+    frames = _frames([0, 5009, 10000], [5000, 10000, 15000])
+    merged = _merge_split_markers(_Scanner(), records, frames)
+    assert merged.tolist() == [[0, 4999], [5000, 9999], [10000, 14999]]
+    assert frames[1, 0] == 5009  # input is not modified
+
+
+@pytest.mark.parametrize(
+    ("marker_times", "starts", "stops"),
+    [
+        ([0, 5000, 10000, 15000], [0, 5000, 10000], [5000, 10000, 15000]),
+        ([0, 9, 5000, 5009, 10000, 10009], [9, 5009], [5000, 10000]),
+    ],
+    ids=["no split markers", "every marker split"],
+)
+def test_merge_split_markers_keeps_consistent_files(
+    marker_times, starts, stops
+):
+    """Frames already registered with each other are left untouched."""
+    frames = _frames(starts, stops)
+    merged = _merge_split_markers(_Scanner(), _records(marker_times), frames)
+    assert np.array_equal(merged, frames)
 
 
 # -- signal_from_fbd -------------------------------------------------------
