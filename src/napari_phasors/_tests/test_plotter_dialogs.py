@@ -201,3 +201,26 @@ def test_phasor_center_settings_dialog(qtbot):
 
     dialog._on_remove_group(dialog._group_row_data[1]["container"])
     assert len(dialog._group_row_data) == 1
+
+
+def test_mask_assignment_dialog_fits_width_until_user_resizes(qtbot):
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["x" * 40],
+        mask_layer_names=["m" * 40],
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(50)
+
+    screen_width = dialog.screen().availableGeometry().width()
+    hint = dialog._form_widget.sizeHint().width()
+    assert dialog.width() > dialog.minimumWidth() or hint < 560
+    assert dialog.width() <= screen_width
+    if hint + 40 <= screen_width:
+        assert not dialog._scroll.horizontalScrollBar().isVisible()
+
+    # A manual resize disables the automatic fitting.
+    dialog._user_resized = True
+    width = dialog.width()
+    dialog._combos["x" * 40].setCurrentText("m" * 40)
+    assert dialog.width() == width
