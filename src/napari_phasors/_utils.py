@@ -3627,6 +3627,8 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     split_mask_labels_available : bool, optional
         Whether that checkbox is shown at all. It only means something when
         the analysed layers are masked with several labels.
+    fill_opacity : float, optional
+        Initial opacity (0-1) of the area under the curves.
     layer_labels : list of str, optional
         Dataset names offered per-curve colours in *Individual layers* mode.
     group_labels : list of str, optional
@@ -3677,6 +3679,7 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         bins: int = 150,
         split_mask_labels: bool = False,
         split_mask_labels_available: bool = False,
+        fill_opacity: float = 0.5,
         layer_labels: list = None,
         group_labels: list = None,
         group_assignments: dict = None,
@@ -3754,13 +3757,29 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         # --- Fill area under the curve ---
         self.fill_checkbox = QCheckBox("Fill area under the curve")
         self.fill_checkbox.setToolTip(
-            "Colour the area under the merged curve. Available when no "
-            "standard deviation band is drawn, for instance with a single "
-            "layer."
+            "Colour the area under each curve. Available when no standard "
+            "deviation band is drawn, for instance with a single layer."
         )
         self.fill_checkbox.setChecked(True)
-        self.fill_checkbox.setEnabled(False)
         layout.addWidget(self.fill_checkbox)
+
+        fill_opacity_layout = QHBoxLayout()
+        fill_opacity_layout.setContentsMargins(20, 0, 0, 0)
+        self._fill_opacity_label = QLabel("Fill opacity:")
+        fill_opacity_layout.addWidget(self._fill_opacity_label)
+        self.fill_opacity_spinbox = QSpinBox()
+        self.fill_opacity_spinbox.setRange(0, 100)
+        self.fill_opacity_spinbox.setSingleStep(5)
+        self.fill_opacity_spinbox.setSuffix(" %")
+        self.fill_opacity_spinbox.setValue(int(round(fill_opacity * 100)))
+        fill_opacity_layout.addWidget(self.fill_opacity_spinbox)
+        fill_opacity_layout.addStretch()
+        layout.addLayout(fill_opacity_layout)
+        self.fill_checkbox.toggled.connect(
+            lambda _checked: self._update_ui_for_mode(
+                self.mode_combo.currentText()
+            )
+        )
 
         # --- Normalise to maximum ---
         self.normalize_checkbox = QCheckBox("Normalize to maximum")
@@ -3824,7 +3843,8 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             lambda _index: self._fill_legend_positions()
         )
         self.legend_checkbox.toggled.connect(self._update_legend_controls)
-        self._sd_layer_count = len(layer_labels or [])
+        # SD pools source layers, not the curves derived from each of them
+        self._sd_layer_count = len(group_labels or layer_labels or [])
         self.sd_checkbox.toggled.connect(
             lambda _checked: self._update_ui_for_mode(
                 self.mode_combo.currentText()
@@ -3843,7 +3863,6 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             for idx, label in enumerate(layer_labels):
                 row = QHBoxLayout()
                 name_lbl = QLabel(label)
-                name_lbl.setMaximumWidth(200)
                 row.addWidget(name_lbl)
                 if layer_colors and label in layer_colors:
                     color = layer_colors[label]
@@ -3890,7 +3909,6 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             for idx, label in enumerate(series_labels):
                 row = QHBoxLayout()
                 name_lbl = QLabel(label)
-                name_lbl.setMaximumWidth(200)
                 row.addWidget(name_lbl)
                 if series_colors and label in series_colors:
                     color = series_colors[label]
@@ -4049,16 +4067,29 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         sd_available = not is_individual and self._sd_layer_count > 1
         self.sd_checkbox.setEnabled(sd_available)
         # The fill stands in for the SD band on a single merged curve
-        self.fill_checkbox.setEnabled(
-            mode == "Merged"
-            and not self._series_color_buttons
-            and not (sd_available and self.sd_checkbox.isChecked())
+        fill_available = not (sd_available and self.sd_checkbox.isChecked())
+        self.fill_checkbox.setEnabled(fill_available)
+        fill_opacity_enabled = (
+            fill_available and self.fill_checkbox.isChecked()
         )
+        self._fill_opacity_label.setEnabled(fill_opacity_enabled)
+        self.fill_opacity_spinbox.setEnabled(fill_opacity_enabled)
         # Merged draws a legend only when it shows several series at once
         self.legend_checkbox.setEnabled(
             is_individual or is_grouped or bool(self._series_color_buttons)
         )
         self._update_legend_controls()
+
+    def showEvent(self, event) -> None:
+        """Widen the dialog to fit the full layer names, up to the screen."""
+        super().showEvent(event)
+        screen = self.screen()
+        if screen is None:
+            return
+        limit = int(screen.availableGeometry().width() * 0.9)
+        wanted = min(max(self.sizeHint().width(), self.width()), limit)
+        if wanted > self.width():
+            self.resize(wanted, self.height())
 
     def _update_series_colors_visibility(self) -> None:
         """Show the per-series colour buttons only for solid colours."""
@@ -4897,6 +4928,7 @@ class HistogramWidget(QWidget):
         self._white_background = False
         self._smooth_curves = True
         self._fill_area = True
+        self._fill_alpha = 0.5
         self._log_scale = False
         self._export_options = None
 
@@ -5883,6 +5915,7 @@ class HistogramWidget(QWidget):
         dlg.white_bg_checkbox.setChecked(self._white_background)
         dlg.smooth_checkbox.setChecked(self._smooth_curves)
         dlg.fill_checkbox.setChecked(self._fill_area)
+        dlg.fill_opacity_spinbox.setValue(int(round(self._fill_alpha * 100)))
 
         if dlg.exec() == QDialog.Accepted:
             split_changed = (
@@ -5901,6 +5934,7 @@ class HistogramWidget(QWidget):
             self._white_background = dlg.white_bg_checkbox.isChecked()
             self._smooth_curves = dlg.smooth_checkbox.isChecked()
             self._fill_area = dlg.fill_checkbox.isChecked()
+            self._fill_alpha = dlg.fill_opacity_spinbox.value() / 100
             self._legend_placement = dlg.get_legend_placement()
             self._legend_position = dlg.get_legend_position()
             if dlg._group_row_data:
@@ -7127,7 +7161,7 @@ class HistogramWidget(QWidget):
                     np.zeros_like(mean_fine),
                     cmap,
                     norm,
-                    alpha=0.8,
+                    alpha=self._fill_alpha,
                 )
             self._draw_gradient_line(
                 x_fine, mean_fine, cmap, norm, linewidth=2
@@ -7135,6 +7169,19 @@ class HistogramWidget(QWidget):
             if not self._fill_area:
                 self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
                 self.ax.set_ylim(0, float(np.max(mean_fine)) * 1.05)
+
+    def _fill_under_curve(self, x, y, color=None, cmap=None, norm=None):
+        """Colour the area under a curve when the fill option is on."""
+        if not self._fill_area:
+            return
+        if cmap is not None:
+            self._fill_gradient(
+                x, y, np.zeros_like(y), cmap, norm, alpha=self._fill_alpha
+            )
+        else:
+            self.ax.fill_between(
+                x, 0, y, color=color, alpha=self._fill_alpha, linewidth=0
+            )
 
     def _render_merged_series(self, series: dict) -> None:
         """Draw one merged curve per series, each pooling only its own layers.
@@ -7161,8 +7208,13 @@ class HistogramWidget(QWidget):
                 if self._series_style == "colormap"
                 else None
             )
+            has_band = self._show_sd and len(members) > 1
             if series_cmap is not None:
                 cmap, norm = series_cmap
+                if not has_band:
+                    self._fill_under_curve(
+                        x_fine, mean_fine, cmap=cmap, norm=norm
+                    )
                 self._draw_gradient_line(
                     x_fine,
                     mean_fine,
@@ -7172,6 +7224,8 @@ class HistogramWidget(QWidget):
                     label=str(name),
                 )
             else:
+                if not has_band:
+                    self._fill_under_curve(x_fine, mean_fine, color=color)
                 self.ax.plot(
                     x_fine,
                     mean_fine,
@@ -7206,6 +7260,7 @@ class HistogramWidget(QWidget):
             color = self._dataset_color(label, idx)
             x_fine, y_fine = self._smooth_curve(counts)
             y_fine = y_fine * self._display_scale(y_fine)
+            self._fill_under_curve(x_fine, y_fine, color=color)
             self.ax.plot(
                 x_fine,
                 y_fine,
@@ -7238,6 +7293,8 @@ class HistogramWidget(QWidget):
             x_fine, mean_fine = self._smooth_curve(mean_counts)
             scale = self._display_scale(mean_fine)
             mean_fine = mean_fine * scale
+            if not (self._show_sd and len(members) > 1):
+                self._fill_under_curve(x_fine, mean_fine, color=color)
             self.ax.plot(
                 x_fine,
                 mean_fine,

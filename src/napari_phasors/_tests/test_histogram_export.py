@@ -5,7 +5,7 @@ import pytest
 from matplotlib.colors import to_rgba
 from matplotlib.legend import Legend
 from PIL import Image
-from qtpy.QtWidgets import QDialog, QFileDialog
+from qtpy.QtWidgets import QDialog, QFileDialog, QLabel
 
 from napari_phasors._utils import (
     LEGEND_POSITIONS,
@@ -138,8 +138,21 @@ def test_settings_dialog_legend_location(qtbot):
     assert not dlg._series_colors_widget.isVisible()
     _select(dlg.series_style_combo, "solid")
     assert dlg._series_colors_widget.isVisible()
+    # Several components of a single layer: no SD, so fill (and opacity) apply
     assert not dlg.sd_checkbox.isEnabled()
-    assert not dlg.fill_checkbox.isEnabled()
+    assert dlg.fill_checkbox.isEnabled()
+    assert dlg.fill_opacity_spinbox.isEnabled()
+    dlg.fill_checkbox.setChecked(False)
+    assert not dlg.fill_opacity_spinbox.isEnabled()
+    # Long names are shown whole, the window widening to fit them
+    long_name = "A very long component name " * 4
+    wide = HistogramSettingsDialog(
+        display_mode="Individual layers", layer_labels=[long_name]
+    )
+    qtbot.addWidget(wide)
+    wide.show()
+    label = wide._layer_section.findChildren(QLabel)[-1]
+    assert label.width() >= label.sizeHint().width()
     single = HistogramSettingsDialog(layer_labels=["a"])
     qtbot.addWidget(single)
     assert not single.sd_checkbox.isEnabled()
@@ -823,6 +836,8 @@ def test_export_style_is_export_only(qtbot, tmp_path, monkeypatch):
     widget._render()
 
     # Larger text takes more of the image, and the plot keeps its sizes.
+    widget._fill_area = False  # a fill would ink the same pixels
+    widget._render()
     small = tmp_path / "small.png"
     large = tmp_path / "large.png"
     for out, text_size in ((small, 6.0), (large, 16.0)):
