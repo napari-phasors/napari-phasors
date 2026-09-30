@@ -7475,10 +7475,14 @@ class PlotterWidget(QWidget):
 
             self.mask_layer_combobox.addItems(["None"] + mask_layer_names)
 
-            # Check if previously selected mask layer was deleted
+            # Check if a mask in use was deleted: the one the selector shows,
+            # or one assigned per layer through the assignment dialog.
             mask_layer_was_deleted = (
                 mask_layer_combobox_current_text != "None"
                 and mask_layer_combobox_current_text not in mask_layer_names
+            ) or any(
+                mask_name not in mask_layer_names
+                for mask_name in self._mask_assignments.values()
             )
 
             if mask_layer_combobox_current_text in mask_layer_names:

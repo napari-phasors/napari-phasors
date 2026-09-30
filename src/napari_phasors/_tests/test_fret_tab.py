@@ -2,6 +2,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+from napari.utils.colormaps import Colormap
 from numpy.testing import assert_array_equal
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
@@ -410,6 +411,27 @@ def test_fret_efficiency_calculation(make_viewer_model, qtbot):
     assert colormap_settings['colormap_name'] == 'plasma'
     assert colormap_settings['contrast_limits'] == [0.2, 0.8]
     assert colormap_settings['colormap_changed'] is True
+    # Regression: a built-in colormap picked after the run was stored with
+    # all its colours, while the run itself stores it by name only.
+    assert colormap_settings['colormap_colors'] is None
+
+    # A custom colormap keeps its colours, even though napari knows it by
+    # name once the layer has used it, so it can come back in another
+    # session.
+    custom = Colormap(
+        colors=[[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        name='fret test black to red',
+    )
+    widget.fret_layer.colormap = custom
+    widget._on_colormap_changed(mock_event)
+    colormap_settings = test_layer.metadata['settings']['fret'][
+        'colormap_settings'
+    ]
+    assert colormap_settings['colormap_name'] == 'fret test black to red'
+    np.testing.assert_allclose(
+        colormap_settings['colormap_colors'],
+        np.asarray(widget.fret_layer.colormap.colors),
+    )
 
     # FRET efficiency respects harmonic changes.
     parent.harmonic = 1

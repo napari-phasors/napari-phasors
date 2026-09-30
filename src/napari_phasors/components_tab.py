@@ -17,7 +17,6 @@ from matplotlib.transforms import Affine2D
 from napari.layers import Image, Labels
 from napari.utils import DirectLabelColormap
 from napari.utils.colormaps import (
-    AVAILABLE_COLORMAPS,
     Colormap,
     ensure_colormap,
 )
@@ -78,6 +77,7 @@ from ._parallel import parallel_map, parallel_rowwise
 from ._settings_store import replace_keyed_entries
 from ._timelapse import slice_datasets
 from ._utils import (
+    BUILTIN_COLORMAP_NAMES,
     AutoUpdateMixin,
     CheckableComboBox,
     HistogramWidget,
@@ -159,13 +159,6 @@ COMPONENT_COLOR_TOOLTIP = (
     "colour of the pixels it paints in a labels layer.\n"
     "Click to choose another one."
 )
-#: The colormaps napari (and matplotlib, which it falls back to) knows
-#: before any layer registers its own. A layer's colormap is registered
-#: under its name as soon as it is used, so only these names are sure to be
-#: found again in another session.
-_BUILTIN_COLORMAP_NAMES = frozenset(AVAILABLE_COLORMAPS) | frozenset(
-    plt.colormaps()
-)
 
 
 def _as_hex(color):
@@ -185,7 +178,7 @@ def _stored_colormap(colormap):
     same colours in another session; otherwise by its colours.
     """
     name = getattr(colormap, 'name', 'custom')
-    if name in _BUILTIN_COLORMAP_NAMES:
+    if name in BUILTIN_COLORMAP_NAMES:
         return name, None
     return None, np.asarray(colormap.colors).tolist()
 

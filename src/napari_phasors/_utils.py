@@ -22,6 +22,7 @@ from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image, Labels
 from napari.utils import progress as _napari_progress
+from napari.utils.colormaps import AVAILABLE_COLORMAPS
 from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
 from qtpy.QtCore import (
     QEvent,
@@ -943,6 +944,15 @@ def resolve_napari_layer_colormap(
     if custom_color is None:
         return None
     return create_napari_colormap_from_qcolor(custom_color)
+
+
+#: The colormaps napari (and matplotlib, which it falls back to) knows
+#: before any layer registers its own. A layer's colormap is registered
+#: under its name as soon as it is used, so only these names are sure to be
+#: found again in another session.
+BUILTIN_COLORMAP_NAMES = frozenset(AVAILABLE_COLORMAPS) | frozenset(
+    plt.colormaps()
+)
 
 
 def layer_colormap_to_settings(colormap, gamma=None) -> dict:

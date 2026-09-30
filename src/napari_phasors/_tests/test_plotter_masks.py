@@ -610,6 +610,24 @@ def test_deleting_a_mask_layer_unmasks_the_layers_using_it(make_viewer_model):
     assert 'mask' not in layer1.metadata
     assert 'mask' not in layer2.metadata
 
+    # Regression: a mask assigned per layer through the assignment dialog
+    # is not the one the selector shows, and deleting it used to leave the
+    # layers masked.
+    per_layer = viewer.add_labels(mask, name="per_layer_mask")
+    plotter._apply_mask_assignments(
+        {layer1.name: per_layer.name, layer2.name: per_layer.name}
+    )
+    assert plotter.mask_layer_combobox.currentText() == "None"
+    assert np.isnan(layer1.metadata['G']).any()
+    viewer.layers.remove(per_layer)
+    assert plotter._mask_assignments == {}
+    for layer in (layer1, layer2):
+        assert 'mask' not in layer.metadata
+        np.testing.assert_array_equal(
+            np.isnan(layer.metadata['G']),
+            np.isnan(layer.metadata['G_original']),
+        )
+
 
 def test_restoring_a_stored_mask_recreates_its_layer(make_viewer_model):
     """A stored mask with no matching Labels/Shapes layer gets a new one."""
