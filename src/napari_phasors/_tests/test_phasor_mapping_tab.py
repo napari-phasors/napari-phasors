@@ -1330,6 +1330,8 @@ def test_phasor_mapping_plot_overlay_and_mesh(make_viewer_model, qtbot):
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
+    # The colouring and the mesh are only drawn while the tab is active.
+    parent.tab_widget.setCurrentWidget(mapping_widget)
 
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -1389,9 +1391,19 @@ def test_phasor_mapping_plot_overlay_and_mesh(make_viewer_model, qtbot):
     assert mapping_widget._overlay_imshow is not None
     assert not histogram_img.get_visible()
 
+    # Neither is drawn again while another tab is active, e.g. when that
+    # tab's analysis adds its output layer and the layer choices refresh.
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    mapping_widget.on_layer_selection_changed()
+    assert mapping_widget._mesh_overlay_imshow is None
+    assert mapping_widget._overlay_imshow is None
+    assert histogram_img.get_visible()
+    parent.tab_widget.setCurrentWidget(mapping_widget)
+    assert mapping_widget._mesh_overlay_imshow is not None
+    assert mapping_widget._overlay_imshow is not None
+
     # Axes changes schedule one deferred mesh redraw via a timer.
     mapping_widget.apply_2d_colormap_checkbox.setChecked(False)
-    mapping_widget._coloring_paused_by_tab = False
     with patch.object(
         mapping_widget, '_apply_histogram_coloring'
     ) as mock_apply:
@@ -1407,6 +1419,24 @@ def test_phasor_mapping_plot_overlay_and_mesh(make_viewer_model, qtbot):
     # The parent plotter coordinates the actual matplotlib colorbar instance
     assert parent.mapping_colorbar is not None
     assert parent.mapping_cax is not None
+    # Both colorbars and their labels fit in the figure after a single draw,
+    # right after the colorbar was added and after a jump in figure size.
+    fig = parent.canvas_widget.figure
+    fig.set_dpi(100)
+    for size in ((7, 4), (4, 6), (9, 5)):
+        fig.set_size_inches(size)
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        density_box = parent.cax.get_tightbbox(renderer)
+        mapping_box = parent.mapping_cax.get_tightbbox(renderer)
+        for box in (density_box, mapping_box):
+            assert box.x1 <= fig.bbox.x1
+            assert box.y0 >= fig.bbox.y0
+            assert box.y1 <= fig.bbox.y1
+        # The mapping colorbar sits right of the density colorbar's labels.
+        assert (
+            parent.mapping_cax.get_window_extent(renderer).x0 > density_box.x1
+        )
     with patch.object(
         mapping_widget, '_apply_histogram_coloring'
     ) as mock_apply:
@@ -1841,7 +1871,7 @@ def test_draw_phasor_mesh_lifetime():
 
 
 def _lifetime_mesh_widget(make_viewer_model, lifetime_type):
-    """Return ``(plotter, mapping tab)`` in Lifetime mode at 80 MHz."""
+    """Return ``(plotter, active mapping tab)`` in Lifetime mode at 80 MHz."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
@@ -1849,6 +1879,7 @@ def _lifetime_mesh_widget(make_viewer_model, lifetime_type):
     viewer.add_layer(layer)
     parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
     parent.on_image_layer_changed()
+    parent.tab_widget.setCurrentWidget(mapping_widget)
     mapping_widget.output_mode_combobox.setCurrentText("Lifetime")
     mapping_widget.lifetime_type_combobox.setCurrentText(lifetime_type)
     mapping_widget.frequency_input.setText("80.0")
