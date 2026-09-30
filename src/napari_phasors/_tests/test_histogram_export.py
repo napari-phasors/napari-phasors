@@ -116,11 +116,21 @@ def test_settings_dialog_legend_location(qtbot):
     assert not dlg._legend_location_label.isEnabled()
     dlg.legend_checkbox.setChecked(True)
     assert controls_enabled()
-    # Merged mode draws no legend, so the checkbox and location are off.
+    # Merged mode with a single curve draws no legend, so the controls are off.
     dlg.mode_combo.setCurrentText("Merged")
     assert not controls_enabled()
     dlg.mode_combo.setCurrentText("Grouped")
     assert controls_enabled()
+
+    # Merged mode with several series draws one, so the controls stay live.
+    dlg = HistogramSettingsDialog(
+        display_mode="Merged",
+        show_legend=True,
+        series_labels=["Component 1", "Component 2"],
+    )
+    qtbot.addWidget(dlg)
+    assert dlg.legend_checkbox.isEnabled()
+    assert dlg.legend_placement_combo.isEnabled()
 
     # The dialog opens on the stored placement and position.
     dlg = HistogramSettingsDialog(

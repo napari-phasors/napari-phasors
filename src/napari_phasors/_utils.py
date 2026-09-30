@@ -3704,6 +3704,33 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         mode_layout.addWidget(self.mode_combo)
         layout.addLayout(mode_layout)
 
+        # --- Number of bins ---
+        bins_layout = QHBoxLayout()
+        bins_layout.addWidget(QLabel("Number of bins:"))
+        self.bins_spinbox = QSpinBox()
+        self.bins_spinbox.setRange(self.MIN_BINS, self.MAX_BINS)
+        self.bins_spinbox.setValue(
+            int(np.clip(int(bins), self.MIN_BINS, self.MAX_BINS))
+        )
+        self.bins_spinbox.setToolTip(
+            "How many bins the value range is divided into. The statistics "
+            "that depend on the bins (center of mass) follow the same choice."
+        )
+        bins_layout.addWidget(self.bins_spinbox)
+        bins_layout.addStretch()
+        layout.addLayout(bins_layout)
+
+        # --- Central tendency ---
+        ct_layout = QHBoxLayout()
+        ct_layout.addWidget(QLabel("Show statistics line:"))
+        self.central_tendency_combo = QComboBox()
+        self.central_tendency_combo.addItems(
+            list(self.CENTRAL_TENDENCY_OPTIONS)
+        )
+        self.central_tendency_combo.setCurrentText(central_tendency)
+        ct_layout.addWidget(self.central_tendency_combo)
+        layout.addLayout(ct_layout)
+
         # --- Separate mask labels ---
         self.split_labels_checkbox = QCheckBox("Separate mask labels")
         self.split_labels_checkbox.setToolTip(
@@ -3744,32 +3771,15 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.log_scale_checkbox.setChecked(log_scale)
         layout.addWidget(self.log_scale_checkbox)
 
-        # --- Number of bins ---
-        bins_layout = QHBoxLayout()
-        bins_layout.addWidget(QLabel("Number of bins:"))
-        self.bins_spinbox = QSpinBox()
-        self.bins_spinbox.setRange(self.MIN_BINS, self.MAX_BINS)
-        self.bins_spinbox.setValue(
-            int(np.clip(int(bins), self.MIN_BINS, self.MAX_BINS))
-        )
-        self.bins_spinbox.setToolTip(
-            "How many bins the value range is divided into. The statistics "
-            "that depend on the bins (center of mass) follow the same choice."
-        )
-        bins_layout.addWidget(self.bins_spinbox)
-        bins_layout.addStretch()
-        layout.addLayout(bins_layout)
+        # --- White background ---
+        self.white_bg_checkbox = QCheckBox("White background")
+        self.white_bg_checkbox.setChecked(False)
+        layout.addWidget(self.white_bg_checkbox)
 
-        # --- Central tendency ---
-        ct_layout = QHBoxLayout()
-        ct_layout.addWidget(QLabel("Show statistics line:"))
-        self.central_tendency_combo = QComboBox()
-        self.central_tendency_combo.addItems(
-            list(self.CENTRAL_TENDENCY_OPTIONS)
-        )
-        self.central_tendency_combo.setCurrentText(central_tendency)
-        ct_layout.addWidget(self.central_tendency_combo)
-        layout.addLayout(ct_layout)
+        # --- Smooth curves ---
+        self.smooth_checkbox = QCheckBox("Smooth curves")
+        self.smooth_checkbox.setChecked(True)
+        layout.addWidget(self.smooth_checkbox)
 
         # --- Show legend ---
         self.legend_checkbox = QCheckBox("Show legend")
@@ -3803,16 +3813,6 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             lambda _index: self._fill_legend_positions()
         )
         self.legend_checkbox.toggled.connect(self._update_legend_controls)
-
-        # --- White background ---
-        self.white_bg_checkbox = QCheckBox("White background")
-        self.white_bg_checkbox.setChecked(False)
-        layout.addWidget(self.white_bg_checkbox)
-
-        # --- Smooth curves ---
-        self.smooth_checkbox = QCheckBox("Smooth curves")
-        self.smooth_checkbox.setChecked(True)
-        layout.addWidget(self.smooth_checkbox)
 
         # --- Layer colours (Individual layers mode) ---
         default_tab10 = plt.cm.tab10.colors
@@ -4021,8 +4021,10 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         )
         # SD only meaningful for Merged / Grouped
         self.sd_checkbox.setEnabled(not is_individual)
-        # Legend only meaningful for Individual / Grouped
-        self.legend_checkbox.setEnabled(is_individual or is_grouped)
+        # Merged draws a legend only when it shows several series at once
+        self.legend_checkbox.setEnabled(
+            is_individual or is_grouped or bool(self._series_color_buttons)
+        )
         self._update_legend_controls()
 
     def _update_legend_controls(self, *_args) -> None:
