@@ -753,3 +753,114 @@ def test_stacked_import_applies_pixel_size_and_z_spacing(
         "micrometer",
         "micrometer",
     )
+
+
+# --- mixing layers: napari needs one set of units across the viewer ---
+
+
+def test_tiff_is_calibrated_from_its_ome_xml_image_plane(tmp_path):
+    """A TIFF read as a bare array still gets its Y/X size from OME-XML.
+
+    ImSpector labels the TCSPC histogram axis Z and stores ns per bin as
+    PhysicalSizeZ, so a Z size must never reach the layer.
+    """
+    path = str(tmp_path / "imspector.tif")
+    signal = np.random.default_rng(0).integers(1, 50, (8, 4, 4))
+    tifffile.imwrite(
+        path,
+        signal.astype(np.uint16),
+        photometric="minisblack",
+        ome=True,
+        metadata={
+            "axes": "ZYX",
+            "PhysicalSizeZ": 0.2229,
+            "PhysicalSizeY": 1.1795,
+            "PhysicalSizeX": 1.1795,
+        },
+    )
+    layers = reader_module.raw_file_reader(path)
+    assert layers[0][0].ndim == 2
+    assert layers[0][1]["scale"] == pytest.approx((1.1795, 1.1795))
+    assert layers[0][1]["units"] == ("um", "um")
+
+
+def test_plain_tiff_stays_uncalibrated(tmp_path):
+    """A TIFF with no OME-XML keeps napari's default pixel units."""
+    path = str(tmp_path / "plain.tif")
+    tifffile.imwrite(path, np.ones((8, 4, 4), dtype=np.uint16))
+    layers = reader_module.raw_file_reader(path)
+    assert "scale" not in layers[0][1]
+
+
+def test_phasor_mapping_output_inherits_units(make_viewer_model, qtbot):
+    """A derived layer carries its source's units, so napari does not warn.
+
+    Copying only the scale left the output in pixel units beside a source in
+    micrometers, which napari reports as inconsistent units.
+    """
+    from napari_phasors._tests.test_plotter import (
+        create_image_layer_with_phasors,
+    )
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    ndim = layer.data.ndim
+    layer.scale = (0.5,) * ndim
+    layer.units = ("um",) * ndim
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    tab = parent.phasor_mapping_tab
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    tab._on_image_layer_changed()
+    tab.frequency_input.setText("80.0")
+    tab._on_frequency_changed()
+    tab._on_calculate_lifetime_clicked()
+    # A second run refreshes the existing output layer in place.
+    tab._on_calculate_lifetime_clicked()
+
+    output = viewer.layers[-1]
+    assert output is not layer
+    assert tuple(str(u) for u in output.units) == ("micrometer",) * ndim
+    assert viewer.layers.extent.units is not None
+    parent.deleteLater()
+
+
+def test_batch_results_loaded_into_viewer_keep_calibration(
+    make_viewer_model, qtbot
+):
+    """Batch outputs land in the viewer with their source's scale and units."""
+    from napari.layers import Image
+
+    from napari_phasors._batch_analysis import BatchAnalysisWidget
+
+    viewer = make_viewer_model()
+    widget = BatchAnalysisWidget(viewer)
+    qtbot.addWidget(widget)
+    source = Image(
+        np.ones((4, 4), dtype=np.float32),
+        name="calibrated",
+        scale=(0.5, 0.5),
+        units=("um", "um"),
+    )
+    extra = Image(np.zeros((4, 4), dtype=np.float32), name="fraction")
+    widget._emit_file_outputs(
+        "calibrated.ptu",
+        source,
+        [extra],
+        ".ome.tif",
+        [],
+        "",
+        False,
+        True,
+    )
+
+    assert [layer.name for layer in viewer.layers] == [
+        "calibrated",
+        "fraction",
+    ]
+    for layer in viewer.layers:
+        assert tuple(layer.scale) == (0.5, 0.5)
+        assert tuple(str(u) for u in layer.units) == ("micrometer",) * 2
+    assert viewer.layers.extent.units is not None

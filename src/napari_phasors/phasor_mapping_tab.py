@@ -2874,6 +2874,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                     clipped_output,
                     name=output_layer_name,
                     scale=layer.scale,
+                    units=layer.units,
                     colormap=colormap,
                     contrast_limits=[min_lifetime, cl_max],
                     metadata={_MAPPING_OUTPUT_METADATA_KEY: output_metadata},
@@ -2882,6 +2883,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             else:
                 output_layer.data = clipped_output
                 output_layer.scale = layer.scale
+                output_layer.units = layer.units
                 output_layer.colormap = colormap
                 output_layer.contrast_limits = [
                     min_lifetime,

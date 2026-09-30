@@ -589,7 +589,7 @@ def raw_file_reader(
     filename, file_extension = _get_filename_extension(path)
     raw_data = load_raw_signal(path, filtered_reader_options)
 
-    return _phasor_layers_from_signal(
+    layers = _phasor_layers_from_signal(
         raw_data,
         filename=filename,
         file_extension=file_extension,
@@ -598,6 +598,16 @@ def raw_file_reader(
         keep_signal=keep_signal,
         reader_options=reader_options,
     )
+
+    # A TIFF reads as a bare array, so its calibration has to come from the
+    # file's OME-XML. Only the image plane applies: the first axis is the
+    # signal axis, which ImSpector even labels Z while storing ns per bin.
+    if file_extension in (".tif", ".tiff"):
+        sizes = physical_sizes_from_ome_tiff(path)
+        sizes = {axis: sizes[axis] for axis in ("Y", "X") if axis in sizes}
+        for data, add_kwargs in layers:
+            _set_scale_and_units(add_kwargs, np.ndim(data), ("Y", "X"), sizes)
+    return layers
 
 
 def _split_widget_reader_options(reader_options):
