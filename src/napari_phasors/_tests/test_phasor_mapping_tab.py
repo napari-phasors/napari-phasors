@@ -2161,6 +2161,7 @@ def _click_mapping_source(qtbot, parent, source_name):
     point = rect.center()
     point.setX(rect.left() + 5)
     qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=point)
+    combo.hidePopup()
 
 
 def test_mapping_histogram_follows_real_source_selection(

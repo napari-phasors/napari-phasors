@@ -10496,6 +10496,13 @@ class PlotterWidget(QWidget):
                     self._sync_frequency_inputs_from_metadata
                 )
 
+        # Destroying the tab widget removes its pages one by one, and each
+        # removal emits ``currentChanged``; left connected, that re-ran the
+        # tab-switch handler (and the analysis redraws behind it) on tabs
+        # that were already being deleted.
+        with contextlib.suppress(TypeError, RuntimeError, AttributeError):
+            self.tab_widget.currentChanged.disconnect(self._on_tab_changed)
+
         # Ensure child tabs run their own cleanup.
         for tab_name in (
             'calibration_tab',
