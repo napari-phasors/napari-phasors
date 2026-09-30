@@ -22,6 +22,7 @@ from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image, Labels
 from napari.utils import progress as _napari_progress
+from napari.utils.colormaps import AVAILABLE_COLORMAPS
 from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
 from qtpy.QtCore import (
     QEvent,
@@ -943,6 +944,15 @@ def resolve_napari_layer_colormap(
     if custom_color is None:
         return None
     return create_napari_colormap_from_qcolor(custom_color)
+
+
+#: The colormaps napari (and matplotlib, which it falls back to) knows
+#: before any layer registers its own. A layer's colormap is registered
+#: under its name as soon as it is used, so only these names are sure to be
+#: found again in another session.
+BUILTIN_COLORMAP_NAMES = frozenset(AVAILABLE_COLORMAPS) | frozenset(
+    plt.colormaps()
+)
 
 
 def layer_colormap_to_settings(colormap, gamma=None) -> dict:
@@ -3291,6 +3301,17 @@ class CheckableComboBox(QComboBox):
         # Only emit signals if they weren't blocked by parent
         if not signals_were_blocked:
             self._refresh_primary_and_notify()
+        else:
+            self._mark_primary_announced()
+
+    def _mark_primary_announced(self):
+        """Record a primary set while the parent blocks the signals.
+
+        The parent announces that change itself, so it must neither be
+        announced again on the next refresh nor hide the next real change
+        (unchecking the last layer would otherwise go unnoticed).
+        """
+        self._last_emitted_primary = self._primary_layer_name
 
     def _set_primary_by_name(self, name, emit=True):
         """Set the primary layer and update role data on all items."""
@@ -3298,7 +3319,9 @@ class CheckableComboBox(QComboBox):
         self._primary_layer_name = name
         self._sync_primary_role()
         self._update_display_text()
-        if emit and old != name:
+        if self.signalsBlocked():
+            self._mark_primary_announced()
+        elif emit and old != name:
             self._last_emitted_primary = name
             self.primaryLayerChanged.emit(name)
 
@@ -4887,6 +4910,9 @@ class HistogramWidget(QWidget):
         self.fig = Figure(figsize=(8, 4), constrained_layout=True)
         self.ax = self.fig.add_subplot(111)
         self._style_axes()
+        # Whether the axes hold nothing but styling, so clearing them again
+        # (as every tab does when it resets) can skip ``ax.clear()``.
+        self._axes_blank = True
 
         canvas = FigureCanvas(self.fig)
         # Let the canvas grow with the window instead of staying a fixed
@@ -6339,8 +6365,10 @@ class HistogramWidget(QWidget):
         if clear_frame_source:
             self._frame_context = None
             self._frame_source_datasets = {}
-        self._clear_figure_legends()
-        self.ax.clear()
+        if not self._axes_blank:
+            self._clear_figure_legends()
+            self.ax.clear()
+            self._axes_blank = True
         self._style_axes()
         self.fig.canvas.draw_idle()
         self._settings_button.setEnabled(False)
@@ -6692,6 +6720,7 @@ class HistogramWidget(QWidget):
         """Re-draw the histogram using the active display mode."""
         self._clear_figure_legends()
         self.ax.clear()
+        self._axes_blank = False
 
         n_datasets = len(self._counts_per_dataset)
 

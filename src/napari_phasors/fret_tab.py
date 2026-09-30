@@ -49,6 +49,7 @@ from ._parallel import parallel_map
 from ._settings_store import merge_keyed_path
 from ._timelapse import slice_datasets
 from ._utils import (
+    BUILTIN_COLORMAP_NAMES,
     AutoUpdateMixin,
     CheckableComboBox,
     CurrentPageStackedWidget,
@@ -1582,21 +1583,13 @@ class FretWidget(AutoUpdateMixin, QWidget):
             gamma=self.colormap_gamma,
         )
 
-        # Extract colormap info for metadata
-        colormap_name = getattr(new_colormap, 'name', 'custom')
-        colormap_colors = getattr(new_colormap, 'colors', None)
-
-        if colormap_colors is not None and (
-            hasattr(colormap_colors, 'tolist')
-            or isinstance(colormap_colors, np.ndarray)
-        ):
-            colormap_colors = colormap_colors.tolist()
-
         self._update_fret_setting_in_metadata(
-            'colormap_settings.colormap_name', colormap_name
+            'colormap_settings.colormap_name',
+            getattr(new_colormap, 'name', 'custom'),
         )
         self._update_fret_setting_in_metadata(
-            'colormap_settings.colormap_colors', colormap_colors
+            'colormap_settings.colormap_colors',
+            self._stored_colormap_colors(new_colormap),
         )
         self._update_fret_setting_in_metadata(
             'colormap_settings.colormap_changed', True
@@ -1675,6 +1668,18 @@ class FretWidget(AutoUpdateMixin, QWidget):
         )
         self._saved_contrast_limits = [float(v) for v in layer.contrast_limits]
         self._saved_gamma = layer.gamma
+
+    @staticmethod
+    def _stored_colormap_colors(colormap):
+        """Return the colours to store for *colormap*, or None.
+
+        A built-in colormap is restored by name; only a custom one needs its
+        colours to come back in another session. Asking napari is not enough:
+        it knows a custom colormap by name once a layer has used it.
+        """
+        if getattr(colormap, 'name', None) in BUILTIN_COLORMAP_NAMES:
+            return None
+        return np.asarray(colormap.colors).tolist()
 
     def _saved_fret_colormap(self):
         """Return the saved colormap as a layer colormap value."""
@@ -2951,19 +2956,9 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 'colormap_settings.colormap_name',
                 self.fret_layer.colormap.name,
             )
-            # A built-in colormap is restored by name; only a custom one
-            # needs its colours to come back in another session.
-            colormap = self.fret_layer.colormap
-            colors = np.asarray(colormap.colors).tolist()
-            is_builtin = (
-                layer_colormap_from_settings(
-                    {'colormap_name': colormap.name, 'colormap_colors': colors}
-                )
-                == colormap.name
-            )
             self._update_fret_setting_in_metadata(
                 'colormap_settings.colormap_colors',
-                None if is_builtin else colors,
+                self._stored_colormap_colors(self.fret_layer.colormap),
             )
             self._update_fret_setting_in_metadata(
                 'colormap_settings.contrast_limits',

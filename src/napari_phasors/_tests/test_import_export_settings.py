@@ -79,271 +79,19 @@ def create_ome_tiff_with_settings(
     return filepath, settings if include_settings else None
 
 
-def test_import_from_layer_dialog_accepted(make_viewer_model, qtbot):
-    """Test that accepting the layer selection dialog proceeds to the next step."""
+def test_import_settings_from_another_layer(make_viewer_model, qtbot):
+    """Any phasor layer, including one checked for the plot, can be the
+    source; the chosen analyses are copied, calibration and filters are
+    applied to the target's phasors."""
     viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_layer_with_custom_settings()
+    layer3 = create_image_layer_with_phasors()
     layer1.name = "layer1"
     layer2.name = "layer2"
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-
-    plotter = PlotterWidget(viewer)
-
-    # Set current layer in plotter
-    plotter.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
-
-    with (
-        patch('napari_phasors.plotter.QDialog') as mock_dialog,
-        patch('napari_phasors.plotter.QVBoxLayout'),
-        patch('napari_phasors.plotter.QLabel'),
-        patch('napari_phasors.plotter.QDialogButtonBox'),
-    ):
-
-        # Configure the mock to have the correct 'Accepted' value
-        mock_dialog.Accepted = 1
-
-        mock_dialog_instance = Mock()
-        mock_dialog_instance.exec = Mock(return_value=mock_dialog.Accepted)
-        mock_dialog.return_value = mock_dialog_instance
-
-        # Mock the second dialog (_show_import_dialog)
-        with patch.object(
-            plotter, '_show_import_dialog', return_value=[]
-        ) as mock_show_import_dialog:
-            # Mock QComboBox to return the name of the other layer
-            with patch('napari_phasors.plotter.QComboBox') as mock_combo:
-                mock_combo_instance = Mock()
-                mock_combo_instance.currentText = Mock(return_value="layer2")
-                mock_combo.return_value = mock_combo_instance
-
-                plotter._import_settings_from_layer()
-
-                # Verify the first dialog was created and executed
-                mock_dialog.assert_called_once()
-                mock_dialog_instance.exec.assert_called_once()
-
-                # Verify the layer selection combobox was populated with
-                # every phasor layer, including ones currently checked for
-                # visualization in the phasor plot.
-                mock_combo_instance.addItems.assert_called_with(
-                    ['layer1', 'layer2']
-                )
-
-                # Verify that since the first dialog was accepted,
-                # the second dialog was shown.
-                mock_show_import_dialog.assert_called_once()
-
-
-def test_import_from_layer_no_phasor_layers(make_viewer_model, qtbot):
-    """Test import when there are no layers with phasor data available."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    with (
-        patch('napari_phasors.plotter.QDialog') as mock_dialog,
-        patch('napari_phasors.plotter.QVBoxLayout'),
-        patch('napari_phasors.plotter.QLabel'),
-        patch('napari_phasors.plotter.QDialogButtonBox'),
-    ):
-
-        mock_dialog.Accepted = 1
-        mock_dialog_instance = Mock()
-        mock_dialog_instance.exec = Mock(return_value=mock_dialog.Accepted)
-        mock_dialog.return_value = mock_dialog_instance
-
-        with patch.object(
-            plotter, '_show_import_dialog'
-        ) as mock_show_import_dialog:
-            with patch('napari_phasors.plotter.QComboBox') as mock_combo:
-                mock_combo_instance = Mock()
-                # When no phasor layers are available, the combobox is empty
-                # and currentText returns an empty string.
-                mock_combo_instance.currentText = Mock(return_value="")
-                mock_combo.return_value = mock_combo_instance
-
-                plotter._import_settings_from_layer()
-
-                # Verify the first dialog was shown
-                mock_dialog.assert_called_once()
-                mock_dialog_instance.exec.assert_called_once()
-
-                # Verify the combobox was populated with an empty list
-                mock_combo_instance.addItems.assert_called_with([])
-
-                # Verify the second dialog was NOT shown
-                mock_show_import_dialog.assert_not_called()
-
-
-def test_import_from_layer_includes_currently_selected_layer(
-    make_viewer_model, qtbot
-):
-    """The source-layer dropdown must include layers currently checked in
-    the plotter's image-layer combobox, not just unchecked ones."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer1.name = "layer1"
-    viewer.add_layer(layer1)
-
-    plotter = PlotterWidget(viewer)
-    plotter.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
-    # Ensure layer1 is checked (selected for visualization) in the
-    # checkable combobox, matching the reported bug scenario.
-    plotter.image_layers_checkable_combobox.setCheckedItems(["layer1"])
-
-    with (
-        patch('napari_phasors.plotter.QDialog') as mock_dialog,
-        patch('napari_phasors.plotter.QVBoxLayout'),
-        patch('napari_phasors.plotter.QLabel'),
-        patch('napari_phasors.plotter.QDialogButtonBox'),
-    ):
-
-        mock_dialog.Accepted = 1
-        mock_dialog_instance = Mock()
-        mock_dialog_instance.exec = Mock(return_value=mock_dialog.Accepted)
-        mock_dialog.return_value = mock_dialog_instance
-
-        with patch.object(plotter, '_show_import_dialog'):
-            with patch('napari_phasors.plotter.QComboBox') as mock_combo:
-                mock_combo_instance = Mock()
-                mock_combo_instance.currentText = Mock(return_value="layer1")
-                mock_combo.return_value = mock_combo_instance
-
-                plotter._import_settings_from_layer()
-
-                # layer1 is checked for visualization but must still be
-                # offered as a source layer to copy settings from.
-                mock_combo_instance.addItems.assert_called_with(['layer1'])
-
-
-def test_import_all_settings_from_layer(make_viewer_model, qtbot):
-    """Test importing all settings from another layer."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_layer_with_custom_settings()
-    layer1.name = "layer1"
-    layer2.name = "layer2"
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-
-    plotter = PlotterWidget(viewer)
-
-    # Verify initial state
-    assert plotter.harmonic == 1
-    assert plotter.plot_type == 'HISTOGRAM2D'
-
-    # Mock the selection dialog to select all tabs
-    with patch.object(
-        plotter,
-        '_show_import_dialog',
-        return_value=[
-            'frequency',
-            'settings_tab',
-            'calibration_tab',
-            'filter_tab',
-            'phasor_mapping_tab',
-            'fret_tab',
-            'components_tab',
-        ],
-    ):
-        # Copy metadata from layer2 to layer1
-        plotter._copy_metadata_from_layer(
-            "layer2", ['frequency', 'settings_tab', 'calibration_tab']
-        )
-
-    # Verify settings were imported
-    assert layer1.metadata['settings']['frequency'] == 80.0
-    assert layer1.metadata['settings']['harmonic'] == 2
-    assert layer1.metadata['settings']['plot_type'] == 'SCATTER'
-    assert layer1.metadata['settings']['colormap'] == 'viridis'
-
-
-def test_import_partial_settings_from_layer(make_viewer_model, qtbot):
-    """Test importing only selected settings from another layer."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_layer_with_custom_settings()
-    layer1.name = "layer1"
-    layer2.name = "layer2"
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-
-    plotter = PlotterWidget(viewer)
-
-    # Import only frequency and plot settings
-    with patch.object(
-        plotter,
-        '_show_import_dialog',
-        return_value=['frequency', 'settings_tab'],
-    ):
-        plotter._copy_metadata_from_layer(
-            "layer2", ['frequency', 'settings_tab']
-        )
-
-    # Verify only selected settings were imported
-    assert layer1.metadata['settings']['frequency'] == 80.0
-    assert layer1.metadata['settings']['harmonic'] == 2
-
-
-def test_import_frequency_only(make_viewer_model, qtbot):
-    """Test importing only frequency from another layer."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_layer_with_custom_settings()
-    layer1.name = "layer1"
-    layer2.name = "layer2"
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-
-    plotter = PlotterWidget(viewer)
-
-    # Import only frequency
-    plotter._copy_metadata_from_layer("layer2", ['frequency'])
-
-    # Verify frequency was imported
-    assert layer1.metadata['settings']['frequency'] == 80.0
-
-
-def test_import_with_calibration(make_viewer_model, qtbot):
-    """Test importing calibration settings applies the phasor transform."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_layer_with_custom_settings()
-    layer1.name = "layer1"
-    layer2.name = "layer2"
-    viewer.add_layer(layer1)
-    viewer.add_layer(layer2)
-
-    plotter = PlotterWidget(viewer)
-    plotter.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
-
-    g_original_before = layer1.metadata['G_original'].copy()
-    s_original_before = layer1.metadata['S_original'].copy()
-
-    # Import calibration settings
-    plotter._copy_metadata_from_layer("layer2", ['calibration_tab'])
-
-    # Verify calibration settings were imported
-    assert layer1.metadata['settings'].get('calibrated')
-    assert layer1.metadata['settings'].get('calibration_phase') == 0.5
-    assert layer1.metadata['settings'].get('calibration_modulation') == 0.9
-    assert not np.allclose(layer1.metadata['G_original'], g_original_before)
-    assert not np.allclose(layer1.metadata['S_original'], s_original_before)
-
-
-def test_import_with_filter_applies_threshold_and_filter(
-    make_viewer_model, qtbot
-):
-    """Test importing filter settings applies them to the target layer."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer2 = create_image_layer_with_phasors()
-    layer1.name = "layer1"
-    layer2.name = "layer2"
-
+    layer3.name = "layer3"
     threshold_value = float(np.nanmax(layer1.metadata['original_mean']) * 0.9)
-    layer2.metadata['settings'] = {
+    layer3.metadata['settings'] = {
         'filter': {
             'method': 'median',
             'size': 3,
@@ -353,18 +101,80 @@ def test_import_with_filter_applies_threshold_and_filter(
         'threshold_upper': None,
         'threshold_method': 'Manual',
     }
-
     viewer.add_layer(layer1)
     viewer.add_layer(layer2)
+    viewer.add_layer(layer3)
 
     plotter = PlotterWidget(viewer)
     plotter.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
+    # layer1 is checked for visualization but must still be offered as a
+    # source layer to copy settings from.
+    plotter.image_layers_checkable_combobox.setCheckedItems(["layer1"])
+    assert plotter.harmonic == 1
+    assert plotter.plot_type == 'HISTOGRAM2D'
 
+    with (
+        patch('napari_phasors.plotter.QDialog') as mock_dialog,
+        patch('napari_phasors.plotter.QVBoxLayout'),
+        patch('napari_phasors.plotter.QLabel'),
+        patch('napari_phasors.plotter.QDialogButtonBox'),
+        patch.object(
+            plotter, '_show_import_dialog', return_value=[]
+        ) as mock_show_import_dialog,
+        patch('napari_phasors.plotter.QComboBox') as mock_combo,
+    ):
+        mock_dialog.Accepted = 1
+        mock_dialog_instance = Mock()
+        mock_dialog_instance.exec = Mock(return_value=mock_dialog.Accepted)
+        mock_dialog.return_value = mock_dialog_instance
+        mock_combo_instance = Mock()
+        mock_combo_instance.currentText = Mock(return_value="layer2")
+        mock_combo.return_value = mock_combo_instance
+
+        plotter._import_settings_from_layer()
+
+        mock_dialog.assert_called_once()
+        mock_dialog_instance.exec.assert_called_once()
+        mock_combo_instance.addItems.assert_called_with(
+            ['layer1', 'layer2', 'layer3']
+        )
+        # The first dialog was accepted, so the second one was shown.
+        mock_show_import_dialog.assert_called_once()
+
+    # Only frequency.
+    plotter._copy_metadata_from_layer("layer2", ['frequency'])
+    assert layer1.metadata['settings']['frequency'] == 80.0
+
+    # Frequency and plot settings.
+    plotter._copy_metadata_from_layer("layer2", ['frequency', 'settings_tab'])
+    assert layer1.metadata['settings']['frequency'] == 80.0
+    assert layer1.metadata['settings']['harmonic'] == 2
+
+    # Importing calibration settings applies the phasor transform.
+    g_original_before = layer1.metadata['G_original'].copy()
+    s_original_before = layer1.metadata['S_original'].copy()
+    plotter._copy_metadata_from_layer("layer2", ['calibration_tab'])
+    assert layer1.metadata['settings'].get('calibrated')
+    assert layer1.metadata['settings'].get('calibration_phase') == 0.5
+    assert layer1.metadata['settings'].get('calibration_modulation') == 0.9
+    assert not np.allclose(layer1.metadata['G_original'], g_original_before)
+    assert not np.allclose(layer1.metadata['S_original'], s_original_before)
+
+    # Everything at once.
+    plotter._copy_metadata_from_layer(
+        "layer2", ['frequency', 'settings_tab', 'calibration_tab']
+    )
+    assert layer1.metadata['settings']['frequency'] == 80.0
+    assert layer1.metadata['settings']['harmonic'] == 2
+    assert layer1.metadata['settings']['plot_type'] == 'SCATTER'
+    assert layer1.metadata['settings']['colormap'] == 'viridis'
+
+    # Importing filter settings applies them to the target layer, drawn
+    # as a density plot of the few pixels the threshold leaves.
+    plotter.plot_type = 'HISTOGRAM2D'
     g_before = layer1.metadata['G'].copy()
     data_before = layer1.data.copy()
-
-    plotter._copy_metadata_from_layer("layer2", ['filter_tab'])
-
+    plotter._copy_metadata_from_layer("layer3", ['filter_tab'])
     assert layer1.metadata['settings']['filter']['method'] == 'median'
     assert layer1.metadata['settings']['threshold'] == threshold_value
     assert np.isnan(layer1.data).any()
@@ -372,75 +182,156 @@ def test_import_with_filter_applies_threshold_and_filter(
     assert not np.allclose(layer1.data, data_before, equal_nan=True)
 
 
-def test_import_from_file_button_exists(make_viewer_model, qtbot):
-    """Test that import from file button exists."""
+def test_import_dialogs_without_layers(make_viewer_model, qtbot):
+    """The import buttons exist; the settings dialog returns nothing when
+    rejected and offers every analysis by default; and the layer dialog
+    offers no source and goes no further when there is no phasor layer."""
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
-
-    assert hasattr(plotter, 'import_from_file_button')
     assert plotter.import_from_file_button.text() == "OME-TIFF File"
 
+    with (
+        patch('napari_phasors.plotter.QDialog') as mock_dialog_class,
+        patch('napari_phasors.plotter.QVBoxLayout'),
+    ):
+        mock_dialog_instance = Mock()
+        mock_dialog_instance.exec = Mock(return_value=0)  # Rejected
+        mock_dialog_class.return_value = mock_dialog_instance
+        assert plotter._show_import_dialog() == []
+        mock_dialog_class.assert_called_once()
+        mock_dialog_instance.exec.assert_called_once()
 
-def test_import_from_file_dialog_opens(make_viewer_model, qtbot):
-    """Test that clicking import from file button opens file dialog."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer1.name = "layer1"
-    viewer.add_layer(layer1)
+    for accepted, kwargs in (
+        (1, {}),
+        (0, {"default_checked": ["settings_tab"]}),
+    ):
+        with (
+            patch('napari_phasors.plotter.QDialog') as mock_dialog,
+            patch('napari_phasors.plotter.QVBoxLayout'),
+            patch('napari_phasors.plotter.QLabel'),
+            patch('napari_phasors.plotter.QToggleSwitch') as mock_checkbox,
+            patch('napari_phasors.plotter.QDialogButtonBox'),
+        ):
+            mock_dialog_instance = Mock()
+            mock_dialog_instance.exec = Mock(return_value=accepted)
+            mock_dialog.return_value = mock_dialog_instance
+            mock_cb_instance = Mock()
+            mock_cb_instance.isChecked = Mock(return_value=True)
+            mock_checkbox.return_value = mock_cb_instance
 
-    plotter = PlotterWidget(viewer)
+            result = plotter._show_import_dialog(**kwargs)
+            assert isinstance(result, list)
+            # One toggle per analysis that can be imported.
+            assert mock_checkbox.call_count > 0
 
-    with patch(
-        'napari_phasors.plotter.QFileDialog.getOpenFileName'
-    ) as mock_dialog:
-        mock_dialog.return_value = ("", "")  # No file selected
+    with (
+        patch('napari_phasors.plotter.QDialog') as mock_dialog,
+        patch('napari_phasors.plotter.QVBoxLayout'),
+        patch('napari_phasors.plotter.QLabel'),
+        patch('napari_phasors.plotter.QDialogButtonBox'),
+        patch.object(plotter, '_show_import_dialog') as mock_show_import,
+        patch('napari_phasors.plotter.QComboBox') as mock_combo,
+    ):
+        mock_dialog.Accepted = 1
+        mock_dialog_instance = Mock()
+        mock_dialog_instance.exec = Mock(return_value=mock_dialog.Accepted)
+        mock_dialog.return_value = mock_dialog_instance
+        mock_combo_instance = Mock()
+        # With no phasor layers the combobox is empty and currentText
+        # returns an empty string.
+        mock_combo_instance.currentText = Mock(return_value="")
+        mock_combo.return_value = mock_combo_instance
 
-        plotter.import_from_file_button.click()
+        plotter._import_settings_from_layer()
 
-        # Verify dialog was opened
         mock_dialog.assert_called_once()
+        mock_dialog_instance.exec.assert_called_once()
+        mock_combo_instance.addItems.assert_called_with([])
+        mock_show_import.assert_not_called()
 
 
-def test_import_from_file_cancel(make_viewer_model, qtbot):
-    """Test canceling file import dialog."""
+def test_import_settings_from_an_ome_tiff(make_viewer_model, qtbot, tmp_path):
+    """Settings are read from an OME-TIFF chosen in a file dialog, all or
+    only the selected ones; a cancelled dialog changes nothing, and a file
+    without settings or an invalid one only warns."""
     viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer1.name = "layer1"
     viewer.add_layer(layer1)
-
     plotter = PlotterWidget(viewer)
 
-    with patch(
-        'napari_phasors.plotter.QFileDialog.getOpenFileName'
-    ) as mock_dialog:
-        mock_dialog.return_value = ("", "")  # Canceled
+    # Plot settings are initialized in the layer metadata.
+    assert 'harmonic' in layer1.metadata['settings']
+    assert 'semi_circle' in layer1.metadata['settings']
+    assert 'plot_type' in layer1.metadata['settings']
 
-        settings_before = dict(layer1.metadata.get("settings", {}))
-        # Should not crash, show an error, or modify layer settings.
+    def choose(path):
+        return patch(
+            'napari_phasors.plotter.QFileDialog.getOpenFileName',
+            return_value=(str(path), ""),
+        )
+
+    # The button opens the file dialog; cancelling it changes nothing.
+    settings_before = dict(layer1.metadata.get("settings", {}))
+    with choose("") as mock_dialog:
+        plotter.import_from_file_button.click()
+        mock_dialog.assert_called_once()
         plotter._import_settings_from_file()
-        assert dict(layer1.metadata.get("settings", {})) == settings_before
+    assert dict(layer1.metadata.get("settings", {})) == settings_before
 
+    # An invalid file only warns.
+    invalid = tmp_path / "invalid.txt"
+    invalid.write_text("not a valid OME-TIFF")
+    with (
+        choose(invalid),
+        patch(
+            'napari_phasors.plotter.notifications.WarningNotification'
+        ) as mock_warning,
+    ):
+        plotter._import_settings_from_file()
+        mock_warning.assert_called_once()
 
-def test_import_all_settings_from_ome_tiff(make_viewer_model, qtbot, tmp_path):
-    """Test importing all settings from an OME-TIFF file."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer1.name = "layer1"
-    viewer.add_layer(layer1)
+    # A file without settings or frequency warns instead of asking.
+    from phasorpy import io
+    from phasorpy.phasor import phasor_from_signal
 
-    plotter = PlotterWidget(viewer)
+    raw_flim_data = make_raw_flim_data(
+        time_constants=[1, 2, 3], shape=(32, 32)
+    )
+    no_settings = tmp_path / "no_settings.ome.tif"
+    io.phasor_to_ometiff(no_settings, *phasor_from_signal(raw_flim_data))
+    with (
+        choose(no_settings),
+        patch(
+            'napari_phasors.plotter.notifications.WarningNotification'
+        ) as mock_warning,
+        patch.object(plotter, '_show_import_dialog') as mock_show_import,
+    ):
+        plotter._import_settings_from_file()
+        mock_warning.assert_called_once()
+        mock_show_import.assert_not_called()
 
-    # Create test OME-TIFF file
     filepath, expected_settings = create_ome_tiff_with_settings(tmp_path)
 
-    # Mock file dialog to return our test file
-    with patch(
-        'napari_phasors.plotter.QFileDialog.getOpenFileName'
-    ) as mock_dialog:
-        mock_dialog.return_value = (str(filepath), "")
+    # Only the selected settings.
+    with (
+        choose(filepath),
+        patch.object(
+            plotter,
+            '_show_import_dialog',
+            return_value=['frequency', 'settings_tab'],
+        ),
+    ):
+        plotter._import_settings_from_file()
+    assert (
+        layer1.metadata['settings']['frequency']
+        == expected_settings['frequency']
+    )
 
-        # Mock selection dialog to select all
-        with patch.object(
+    # Everything.
+    with (
+        choose(filepath),
+        patch.object(
             plotter,
             '_show_import_dialog',
             return_value=[
@@ -452,253 +343,27 @@ def test_import_all_settings_from_ome_tiff(make_viewer_model, qtbot, tmp_path):
                 'fret_tab',
                 'components_tab',
             ],
-        ):
-            plotter._import_settings_from_file()
-
-    # Verify settings were imported
-    assert (
-        layer1.metadata['settings']['frequency']
-        == expected_settings['frequency']
-    )
-    assert (
-        layer1.metadata['settings']['harmonic']
-        == expected_settings['harmonic']
-    )
-    assert (
-        layer1.metadata['settings']['plot_type']
-        == expected_settings['plot_type']
-    )
-    assert (
-        layer1.metadata['settings']['colormap']
-        == expected_settings['colormap']
-    )
-
-
-def test_import_partial_settings_from_ome_tiff(
-    make_viewer_model, qtbot, tmp_path
-):
-    """Test importing only selected settings from OME-TIFF."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer1.name = "layer1"
-    viewer.add_layer(layer1)
-
-    plotter = PlotterWidget(viewer)
-
-    # Create test OME-TIFF file
-    filepath, expected_settings = create_ome_tiff_with_settings(tmp_path)
-
-    # Mock file dialog
-    with patch(
-        'napari_phasors.plotter.QFileDialog.getOpenFileName'
-    ) as mock_dialog:
-        mock_dialog.return_value = (str(filepath), "")
-
-        # Mock selection dialog to select only frequency and settings
-        with patch.object(
-            plotter,
-            '_show_import_dialog',
-            return_value=['frequency', 'settings_tab'],
-        ):
-            plotter._import_settings_from_file()
-
-    # Verify only selected settings were applied
-    assert (
-        layer1.metadata['settings']['frequency']
-        == expected_settings['frequency']
-    )
-
-
-def test_import_from_file_without_settings(make_viewer_model, qtbot, tmp_path):
-    """Test importing from OME-TIFF file without napari-phasors settings or frequency."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer1.name = "layer1"
-    viewer.add_layer(layer1)
-
-    plotter = PlotterWidget(viewer)
-
-    # Create OME-TIFF without settings AND without frequency
-    from phasorpy import io
-    from phasorpy.phasor import phasor_from_signal
-
-    time_constants = [1, 2, 3]
-    raw_flim_data = make_raw_flim_data(
-        time_constants=time_constants, shape=(32, 32)
-    )
-
-    filepath = tmp_path / "no_settings.ome.tif"
-    phasor = phasor_from_signal(raw_flim_data)
-
-    # Write OME-TIFF without frequency or settings
-    io.phasor_to_ometiff(filepath, *phasor)
-
-    # Mock file dialog
-    with patch(
-        'napari_phasors.plotter.QFileDialog.getOpenFileName'
-    ) as mock_dialog:
-        mock_dialog.return_value = (str(filepath), "")
-
-        # Should show warning notification and NOT show import dialog
-        with patch(
-            'napari_phasors.plotter.notifications.WarningNotification'
-        ) as mock_warning:
-            with patch.object(
-                plotter, '_show_import_dialog'
-            ) as mock_show_import_dialog:
-                plotter._import_settings_from_file()
-
-                # Verify warning was shown
-                mock_warning.assert_called_once()
-
-                # Verify import dialog was NOT shown
-                mock_show_import_dialog.assert_not_called()
-
-
-def test_import_from_invalid_file(make_viewer_model, qtbot, tmp_path):
-    """Test importing from invalid file."""
-    viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer1.name = "layer1"
-    viewer.add_layer(layer1)
-
-    plotter = PlotterWidget(viewer)
-
-    # Create invalid file
-    filepath = tmp_path / "invalid.txt"
-    filepath.write_text("not a valid OME-TIFF")
-
-    # Mock file dialog
-    with patch(
-        'napari_phasors.plotter.QFileDialog.getOpenFileName'
-    ) as mock_dialog:
-        mock_dialog.return_value = (str(filepath), "")
-
-        # Should show warning notification
-        with patch(
-            'napari_phasors.plotter.notifications.WarningNotification'
-        ) as mock_warning:
-            plotter._import_settings_from_file()
-
-            # Verify warning was shown
-            mock_warning.assert_called_once()
-
-
-def test_show_import_dialog_all_options(make_viewer_model, qtbot):
-    """Test import dialog shows all available options."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    with patch('napari_phasors.plotter.QDialog') as mock_dialog_class:
-        # Create a proper mock instance that can be used as a parent
-        mock_dialog_instance = Mock()
-        mock_dialog_instance.exec = Mock(return_value=0)  # Rejected
-        mock_dialog_class.return_value = mock_dialog_instance
-
-        # Mock the layout to avoid type errors
-        with patch('napari_phasors.plotter.QVBoxLayout'):
-            result = plotter._show_import_dialog()
-
-            # Should return empty list when dialog is rejected
-            assert result == []
-            # Verify dialog was created
-            mock_dialog_class.assert_called_once()
-            mock_dialog_instance.exec.assert_called_once()
-
-
-def test_show_import_dialog_default_all_checked(make_viewer_model, qtbot):
-    """Test that all checkboxes are checked by default."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    with (
-        patch('napari_phasors.plotter.QDialog') as mock_dialog,
-        patch('napari_phasors.plotter.QVBoxLayout'),
-        patch('napari_phasors.plotter.QLabel'),
-        patch('napari_phasors.plotter.QToggleSwitch') as mock_checkbox,
-        patch('napari_phasors.plotter.QDialogButtonBox'),
+        ),
     ):
-
-        mock_dialog_instance = Mock()
-        mock_dialog_instance.exec = Mock(return_value=1)  # Accepted
-        mock_dialog.return_value = mock_dialog_instance
-
-        mock_cb_instance = Mock()
-        mock_cb_instance.isChecked = Mock(return_value=True)
-        mock_checkbox.return_value = mock_cb_instance
-
-        plotter._show_import_dialog()
-
-        # Verify checkboxes were created
-        assert mock_checkbox.call_count > 0
-
-
-def test_show_import_dialog_partial_selection(make_viewer_model, qtbot):
-    """Test selecting only some options in import dialog."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-
-    # This test would require more complex mocking of the dialog interaction
-    # For now, we'll just verify the method exists and can be called
-    with (
-        patch('napari_phasors.plotter.QDialog') as mock_dialog,
-        patch('napari_phasors.plotter.QVBoxLayout'),
-        patch('napari_phasors.plotter.QLabel'),
-        patch('napari_phasors.plotter.QToggleSwitch'),
-        patch('napari_phasors.plotter.QDialogButtonBox'),
-    ):
-
-        mock_dialog_instance = Mock()
-        mock_dialog_instance.exec = Mock(return_value=0)
-        mock_dialog.return_value = mock_dialog_instance
-
-        result = plotter._show_import_dialog(default_checked=['settings_tab'])
-
-        assert isinstance(result, list)
+        plotter._import_settings_from_file()
+    for key in ('frequency', 'harmonic', 'plot_type', 'colormap'):
+        assert layer1.metadata['settings'][key] == expected_settings[key]
 
 
 # Settings Metadata tests
-def test_initialize_plot_settings_in_metadata(make_viewer_model, qtbot):
-    """Test that settings are initialized in layer metadata."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    PlotterWidget(viewer)
-
-    # Settings should be initialized
-    assert 'settings' in layer.metadata
-    assert 'harmonic' in layer.metadata['settings']
-    assert 'semi_circle' in layer.metadata['settings']
-    assert 'plot_type' in layer.metadata['settings']
-
-
-def test_restore_plot_settings_from_metadata(make_viewer_model, qtbot):
-    """Test restoring plot settings from metadata."""
+def test_plot_settings_round_trip_through_metadata(make_viewer_model, qtbot):
+    """A layer's stored plot settings are restored into the plotter, and a
+    changed setting is written back."""
     viewer = make_viewer_model()
     layer = create_layer_with_custom_settings()
     viewer.add_layer(layer)
-
     plotter = PlotterWidget(viewer)
 
-    # Verify settings were restored
     assert plotter.harmonic == 2
     assert plotter.plot_type == 'SCATTER'
     assert plotter.histogram_colormap == 'viridis'
     assert not plotter.toggle_semi_circle
     assert not plotter.white_background
 
-
-def test_update_setting_in_metadata(make_viewer_model, qtbot):
-    """Test that changing settings updates metadata."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    plotter = PlotterWidget(viewer)
-
-    # Change a setting
     plotter.harmonic = 3
-
-    # Verify metadata was updated
     assert layer.metadata['settings']['harmonic'] == 3

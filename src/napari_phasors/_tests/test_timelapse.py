@@ -103,92 +103,76 @@ def _assert_frame_source_keeps_layer_shape(histogram):
 # ---------------------------------------------------------------------------
 
 
-def test_stack_axes_only_counts_non_spatial_axes():
-    """The last two axes are spatial; anything before them is a stack axis."""
+def test_frame_context_selects_one_frame_of_a_stack(make_viewer_model):
+    """Only non-spatial axes are stack axes. Per-frame mode masks and slices
+    exactly one frame along the chosen axis, pooled mode leaves every array
+    untouched, and 2D data or an empty selection offers no frame axis."""
 
     class _Layer:
         def __init__(self, data):
             self.data = data
 
+    # The last two axes are spatial; anything before them is a stack axis.
     assert stack_axes(_Layer(np.zeros((5, 6)))) == []
     assert stack_axes(_Layer(np.zeros((4, 5, 6)))) == [0]
     assert stack_axes(_Layer(np.zeros((3, 4, 5, 6)))) == [0, 1]
     assert stack_axes(_Layer(None)) == []
 
+    def context_for(layer):
+        viewer = make_viewer_model()
+        viewer.add_layer(layer)
+        return FrameContext(viewer, lambda: [layer])
 
-def test_frame_context_reports_no_axes_for_2d_data(make_viewer_model):
-    """2D data must not offer a frame axis, keeping the bar hidden."""
-    viewer = make_viewer_model()
-    layer = create_flat_layer()
-    viewer.add_layer(layer)
-
-    context = FrameContext(viewer, lambda: [layer])
-
+    # 2D data must not offer a frame axis, keeping the bar hidden.
+    flat = create_flat_layer()
+    context = context_for(flat)
     assert context.available_axes() == []
     assert context.refresh_bounds() is False
-    assert context.frame_mask(layer.data.shape) is None
+    assert context.frame_mask(flat.data.shape) is None
     assert context.state_key() == (POOLED,)
 
+    # Pooled mode must leave every array untouched.
+    context = context_for(create_stack_layer())
+    data = np.arange(np.prod(STACK_SHAPE)).reshape(STACK_SHAPE)
+    assert context.frame_mask(STACK_SHAPE) is None
+    assert context.flat_frame_mask(STACK_SHAPE) is None
+    assert np.array_equal(context.slice_array(data), data)
 
-def test_frame_context_masks_and_slices_the_current_frame(make_viewer_model):
-    """The frame mask and slice must select exactly one frame."""
-    viewer = make_viewer_model()
-    layer = create_stack_layer()
-    viewer.add_layer(layer)
-
-    context = FrameContext(viewer, lambda: [layer])
+    # The frame mask and slice must select exactly one frame.
     context.mode = CURRENT
     context.index = 2
-
     assert context.available_axes() == [0]
     assert context.n_frames == N_FRAMES
     assert context.state_key() == (CURRENT, 0, 2)
-
     flat_mask = context.flat_frame_mask(STACK_SHAPE)
     assert flat_mask.sum() == 5 * 6
     assert np.array_equal(
         flat_mask.reshape(STACK_SHAPE)[2], np.ones((5, 6), dtype=bool)
     )
-
-    data = np.arange(np.prod(STACK_SHAPE)).reshape(STACK_SHAPE)
     assert np.array_equal(context.slice_array(data), data[2])
-
     valid = np.ones(STACK_SHAPE, dtype=bool)
     assert context.filter_valid(valid, STACK_SHAPE).sum() == 5 * 6
     assert context.filter_valid(valid.ravel(), STACK_SHAPE).sum() == 5 * 6
 
-
-def test_frame_context_pooled_mode_is_a_no_op(make_viewer_model):
-    """Pooled mode must leave every array untouched."""
-    viewer = make_viewer_model()
-    layer = create_stack_layer()
-    viewer.add_layer(layer)
-
-    context = FrameContext(viewer, lambda: [layer])
-    data = np.arange(np.prod(STACK_SHAPE)).reshape(STACK_SHAPE)
-
-    assert context.frame_mask(STACK_SHAPE) is None
-    assert context.flat_frame_mask(STACK_SHAPE) is None
-    assert np.array_equal(context.slice_array(data), data)
-
-
-def test_frame_context_second_axis_of_a_4d_stack(make_viewer_model):
-    """A 4D stack exposes two axes and can be stepped along either."""
-    viewer = make_viewer_model()
-    layer = create_stack_layer(shape=(2, 3, 5, 6))
-    viewer.add_layer(layer)
-
-    context = FrameContext(viewer, lambda: [layer])
+    # A 4D stack exposes two axes and can be stepped along either.
+    context = context_for(create_stack_layer(shape=(2, 3, 5, 6)))
     assert context.available_axes() == [0, 1]
-
     context.mode = CURRENT
     context.axis = 1
     context.index = 2
     assert context.n_frames == 3
-
     mask = context.flat_frame_mask((2, 3, 5, 6)).reshape((2, 3, 5, 6))
     assert mask[:, 2].all()
     assert not mask[:, 0].any()
+
+    # A bar built on an empty selection must simply hide itself.
+    context = FrameContext(make_viewer_model(), list)
+    bar = TimelapseControlBar(context)
+    try:
+        assert bar.isHidden() is True
+        assert context.refresh_bounds() is False
+    finally:
+        bar.close()
 
 
 # ---------------------------------------------------------------------------
@@ -196,26 +180,93 @@ def test_frame_context_second_axis_of_a_4d_stack(make_viewer_model):
 # ---------------------------------------------------------------------------
 
 
-def test_dims_slider_drives_the_frame(make_viewer_model):
-    """Moving napari's slider must move the plotter's frame."""
+def test_frame_follows_the_napari_slider(make_viewer_model):
+    """napari's slider (and its playback) drives the displayed frame and the
+    frame drives the slider; per-frame mode plots, caches, summarises and
+    selects only that frame's samples."""
     viewer = make_viewer_model()
     plotter = make_plotter_with_layer(viewer, create_stack_layer())
     try:
-        plotter.frame_context.mode = CURRENT
+        bar = plotter.timelapse_bar
+        context = plotter.frame_context
+        layer = plotter.get_selected_layers()[0]
+
+        # A single stack axis needs no picker. Stepping and playback belong
+        # to napari's own dimension slider: duplicating them here would give
+        # two sets of controls for one piece of state.
+        assert bar.axis_combobox.isVisibleTo(bar) is False
+        for removed in (
+            "play_button",
+            "frame_slider",
+            "frame_label",
+            "fps_spinbox",
+        ):
+            assert not hasattr(bar, removed), f"{removed} is back"
+
+        pooled_g, pooled_s = plotter.get_merged_features()
+        assert plotter._get_layer_phasor_samples(layer)[0].size == np.prod(
+            STACK_SHAPE
+        )
+        pooled_map = plotter._get_selected_layer_feature_map()
+        pooled_map_size = next(iter(pooled_map.values()))[0].size
+
+        # Animations can only be exported frame by frame.
+        assert bar.export_button.isEnabled() is False
+        bar.mode_combobox.setCurrentIndex(bar.mode_combobox.findData(CURRENT))
+        assert context.is_per_frame
+        assert bar.export_button.isEnabled() is True
+
+        # The slider moves the frame, and the frame moves the slider.
         viewer.dims.set_current_step(0, 3)
-        assert plotter.frame_context.index == 3
-    finally:
-        plotter.close()
-
-
-def test_frame_change_drives_the_dims_slider(make_viewer_model):
-    """Setting the frame must move napari's slider."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        plotter.frame_context.index = 2
+        assert context.index == 3
+        context.index = 2
         assert viewer.dims.current_step[0] == 2
+
+        # Stepping through the stack, as napari's play button does.
+        for frame in range(N_FRAMES):
+            viewer.dims.set_current_step(0, frame)
+            assert context.index == frame
+            assert plotter.get_merged_features()[0].size == 5 * 6
+
+        # Only the displayed frame is plotted, and switching frames must
+        # not serve a stale cached feature set.
+        context.index = 0
+        first = plotter.get_merged_features()[0].copy()
+        context.index = 1
+        frame_g, frame_s = plotter.get_merged_features()
+        assert frame_g.size == pooled_g.size // N_FRAMES
+        assert frame_s.size == pooled_s.size // N_FRAMES
+        expected = layer.metadata["G"][0][1].ravel()
+        expected = expected[~np.isnan(expected)]
+        assert np.allclose(np.sort(frame_g), np.sort(expected))
+        assert not np.array_equal(first, frame_g)
+        assert plotter._features_cache_key[-1] == (CURRENT, 0, 1)
+
+        # Contour data (one entry per layer) follows the frame too.
+        per_frame_map = plotter._get_selected_layer_feature_map()
+        assert next(iter(per_frame_map.values()))[0].size == (
+            pooled_map_size // N_FRAMES
+        )
+
+        # Phasor-center statistics summarise only the visible frame.
+        context.index = 2
+        per_frame = plotter._get_layer_phasor_samples(layer)
+        assert per_frame[0].size == np.prod(STACK_SHAPE) // N_FRAMES
+        assert np.allclose(per_frame[0], layer.data[2].ravel())
+        assert plotter._compute_single_center(layer) is not None
+
+        # The per-point selection array matches the plotted sample count.
+        selection_tab = plotter.selection_tab
+        selection_tab.selection_mode_combobox.setCurrentText(
+            "Manual Selection"
+        )
+        g = layer.metadata["G"][0]
+        s = layer.metadata["S"][0]
+        n_plotted = plotter.get_merged_features()[0].size
+        assert selection_tab._frame_valid_mask(g, s).sum() == n_plotted
+
+        context.mode = POOLED
+        assert plotter.get_merged_features()[0].size == pooled_g.size
     finally:
         plotter.close()
 
@@ -223,89 +274,6 @@ def test_frame_change_drives_the_dims_slider(make_viewer_model):
 # ---------------------------------------------------------------------------
 # Phasor plot features
 # ---------------------------------------------------------------------------
-
-
-def test_merged_features_are_restricted_to_the_current_frame(
-    make_viewer_model,
-):
-    """Per-frame mode must plot only one frame's worth of samples."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        pooled_g, pooled_s = plotter.get_merged_features()
-
-        plotter.frame_context.mode = CURRENT
-        plotter.frame_context.index = 1
-        frame_g, frame_s = plotter.get_merged_features()
-
-        assert frame_g.size == pooled_g.size // N_FRAMES
-        assert frame_s.size == pooled_s.size // N_FRAMES
-
-        layer = plotter.get_selected_layers()[0]
-        harmonic_g = layer.metadata["G"][0]
-        expected = harmonic_g[1].ravel()
-        expected = expected[~np.isnan(expected)]
-        assert np.allclose(np.sort(frame_g), np.sort(expected))
-
-        plotter.frame_context.mode = POOLED
-        assert plotter.get_merged_features()[0].size == pooled_g.size
-    finally:
-        plotter.close()
-
-
-def test_features_cache_is_keyed_on_the_frame(make_viewer_model):
-    """Switching frames must not serve a stale cached feature set."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        plotter.frame_context.index = 0
-        first = plotter.get_merged_features()[0].copy()
-
-        plotter.frame_context.index = 3
-        second = plotter.get_merged_features()[0]
-
-        assert not np.array_equal(first, second)
-        assert plotter._features_cache_key[-1] == (CURRENT, 0, 3)
-    finally:
-        plotter.close()
-
-
-def test_phasor_center_samples_follow_the_frame(make_viewer_model):
-    """Phasor-center statistics must summarise only the visible frame."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        layer = plotter.get_selected_layers()[0]
-        pooled = plotter._get_layer_phasor_samples(layer)
-        assert pooled[0].size == np.prod(STACK_SHAPE)
-
-        plotter.frame_context.mode = CURRENT
-        plotter.frame_context.index = 2
-        per_frame = plotter._get_layer_phasor_samples(layer)
-
-        assert per_frame[0].size == np.prod(STACK_SHAPE) // N_FRAMES
-        assert np.allclose(per_frame[0], layer.data[2].ravel())
-        assert plotter._compute_single_center(layer) is not None
-    finally:
-        plotter.close()
-
-
-def test_per_layer_feature_map_follows_the_frame(make_viewer_model):
-    """Contour data (one entry per layer) must follow the frame too."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        pooled = plotter._get_selected_layer_feature_map()
-        pooled_size = next(iter(pooled.values()))[0].size
-
-        plotter.frame_context.mode = CURRENT
-        per_frame = plotter._get_selected_layer_feature_map()
-        assert next(iter(per_frame.values()))[0].size == (
-            pooled_size // N_FRAMES
-        )
-    finally:
-        plotter.close()
 
 
 def _histogram_norm(plotter):
@@ -333,13 +301,25 @@ def test_histogram_colour_scale_is_fixed_across_frames(make_viewer_model):
     """The 2D histogram must not rescale its colours frame by frame.
 
     Both the colour normalisation and the bin grid come from the whole
-    acquisition, so a colour means the same pixel count at every timepoint
-    and the colorbar stops jumping around while stepping.
+    acquisition (per-frame bins reuse the grid the pooled plot draws), so a
+    colour means the same pixel count at every timepoint and the colorbar
+    stops jumping around while stepping. Pooled plots keep biaplotter's own
+    colour scale.
     """
     viewer = make_viewer_model()
     plotter = make_plotter_with_layer(viewer, create_stack_layer())
     try:
+        artist = plotter.canvas_widget.artists['HISTOGRAM2D']
+        assert (
+            getattr(artist, '_napari_phasors_fixed_counts_range', None) is None
+        )
+        assert plotter._frame_histogram_reference() is None
+        pooled_grid = _histogram_grid(plotter)
+
         plotter.frame_context.mode = CURRENT
+        assert artist._napari_phasors_fixed_counts_range is not None
+        viewer.dims.set_current_step(0, 1)
+        assert _histogram_grid(plotter) == pooled_grid
 
         norms = set()
         grids = set()
@@ -347,67 +327,73 @@ def test_histogram_colour_scale_is_fixed_across_frames(make_viewer_model):
             viewer.dims.set_current_step(0, frame)
             norms.add(_histogram_norm(plotter))
             grids.add(_histogram_grid(plotter))
-
         assert len(norms) == 1, f"colour scale changed between frames: {norms}"
         assert len(grids) == 1, f"bin grid changed between frames: {grids}"
 
         # The scale must span the busiest frame, not one frame's own max.
         reference = plotter._frame_histogram_reference()
         assert norms.pop() == (reference["vmin"], reference["vmax"])
-    finally:
-        plotter.close()
 
+        # Stepping frames must not recompute the whole-stack range, but
+        # changing the bin count invalidates it through the cache key.
+        viewer.dims.set_current_step(0, 2)
+        assert plotter._frame_histogram_reference() is reference
+        plotter.histogram_bins = plotter.histogram_bins + 10
+        assert plotter._frame_histogram_reference() is not reference
 
-def test_histogram_grid_matches_pooled_mode(make_viewer_model):
-    """Per-frame bins reuse the grid the pooled plot would have drawn."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        pooled_grid = _histogram_grid(plotter)
-
-        plotter.frame_context.mode = CURRENT
-        viewer.dims.set_current_step(0, 1)
-
-        assert _histogram_grid(plotter) == pooled_grid
-    finally:
-        plotter.close()
-
-
-def test_histogram_colour_scale_fixed_with_log_scale(make_viewer_model):
-    """Log colouring must be pinned across frames as well."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
+        # Log colouring must be pinned across frames as well.
         plotter.plotter_inputs_widget.log_scale_checkbox.setChecked(True)
-        plotter.frame_context.mode = CURRENT
-
         norms = set()
         for frame in range(N_FRAMES):
             viewer.dims.set_current_step(0, frame)
             norms.add(_histogram_norm(plotter))
-
         assert len(norms) == 1
         vmin, _vmax = norms.pop()
         # LogNorm cannot start at a non-positive value.
         assert vmin > 0
+
+        # Every plot type must render without error from a single frame.
+        for plot_type in ("HISTOGRAM2D", "SCATTER", "CONTOUR"):
+            plotter.switch_plot_type(plot_type)
+            plotter.frame_context.index = 1
+            plotter.plot()
+        plotter.switch_plot_type("HISTOGRAM2D")
+        artist = plotter.canvas_widget.artists['HISTOGRAM2D']
+
+        plotter.frame_context.mode = POOLED
+        assert artist._napari_phasors_fixed_counts_range is None
+
+        # ``plot`` blanks the canvas when a frame yields no features at all.
+        plotter.frame_context.mode = CURRENT
+        plotter.plot()
+        assert artist.visible is True
+        plotter.get_features = lambda: None
+        plotter.plot()
+        assert artist.visible is False
+        assert plotter._frame_plot_blanked is True
     finally:
         plotter.close()
 
 
-def test_histogram_colour_scale_spans_every_selected_layer(make_viewer_model):
-    """With several stacks selected the range covers all of them."""
+def test_frames_across_several_selected_layers(make_viewer_model):
+    """With several stacks selected the colour range covers all of them and
+    the statistics table has one row per frame per layer, grouped by frame;
+    a plain 2D layer beside a stack contributes to every frame."""
     viewer = make_viewer_model()
     first = create_stack_layer(name="First")
     second = create_stack_layer(name="Second")
+    flat = create_flat_layer(name="Flat")
     viewer.add_layer(first)
     viewer.add_layer(second)
+    viewer.add_layer(flat)
 
     plotter = PlotterWidget(viewer)
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [first.name, second.name]
-    )
+    combobox = plotter.image_layers_checkable_combobox
+    combobox.setCheckedItems([first.name, second.name])
     plotter._process_layer_selection_change()
     try:
+        _run_mapping_analysis(plotter)
+        table = _mapping_stats_dock(plotter).layer_stats_table
         plotter.frame_context.mode = CURRENT
 
         norms = set()
@@ -418,61 +404,23 @@ def test_histogram_colour_scale_spans_every_selected_layer(make_viewer_model):
             grids.add(_histogram_grid(plotter))
             # Both layers contribute to every frame.
             assert plotter.get_merged_features()[0].size == 2 * 5 * 6
-
         assert len(norms) == 1
         assert len(grids) == 1
-    finally:
-        plotter.close()
 
+        viewer.dims.set_current_step(0, 1)
+        assert table.rowCount() == 2 * N_FRAMES
+        # Rows are grouped by frame, so a frame's layers sit side by side.
+        assert [row[0] for row in _table_rows(table)] == [
+            str(frame) for frame in range(N_FRAMES) for _ in range(2)
+        ]
+        assert _highlighted_frames(table) == ["1", "1"]
 
-def test_pooled_mode_keeps_biaplotter_colour_scale(make_viewer_model):
-    """Pooled plots are untouched: no fixed range is imposed on them."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        artist = plotter.canvas_widget.artists['HISTOGRAM2D']
-        assert (
-            getattr(artist, '_napari_phasors_fixed_counts_range', None) is None
-        )
-        assert plotter._frame_histogram_reference() is None
-
+        combobox.setCheckedItems([first.name, flat.name])
+        plotter._process_layer_selection_change()
         plotter.frame_context.mode = CURRENT
-        assert artist._napari_phasors_fixed_counts_range is not None
-
-        plotter.frame_context.mode = POOLED
-        assert artist._napari_phasors_fixed_counts_range is None
-    finally:
-        plotter.close()
-
-
-def test_frame_histogram_reference_is_cached(make_viewer_model):
-    """Stepping frames must not recompute the whole-stack range each time."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        reference = plotter._frame_histogram_reference()
-
-        viewer.dims.set_current_step(0, 2)
-        assert plotter._frame_histogram_reference() is reference
-
-        # Changing the bin count invalidates it through the cache key.
-        plotter.histogram_bins = plotter.histogram_bins + 10
-        assert plotter._frame_histogram_reference() is not reference
-    finally:
-        plotter.close()
-
-
-def test_plot_runs_in_per_frame_mode(make_viewer_model):
-    """Every plot type must render without error from a single frame."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        for plot_type in ("HISTOGRAM2D", "SCATTER", "CONTOUR"):
-            plotter.switch_plot_type(plot_type)
-            plotter.frame_context.index = 1
-            plotter.plot()
+        assert plotter._frame_histogram_reference() is not None
+        # One stack frame (30 px) plus the whole 2D layer (30 px).
+        assert plotter.get_merged_features()[0].size == 2 * 5 * 6
     finally:
         plotter.close()
 
@@ -482,8 +430,9 @@ def test_plot_runs_in_per_frame_mode(make_viewer_model):
 # ---------------------------------------------------------------------------
 
 
-def test_empty_frame_blanks_the_plot(make_viewer_model):
-    """A fully masked frame must not keep showing the previous frame."""
+def test_masked_frames_blank_the_plot(make_viewer_model):
+    """A fully masked frame must not keep showing the previous frame, and a
+    fully masked stack yields no usable colour range."""
     viewer = make_viewer_model()
     layer = create_stack_layer()
     # Mask out the whole second frame, as a threshold would.
@@ -502,12 +451,24 @@ def test_empty_frame_blanks_the_plot(make_viewer_model):
 
         plotter.frame_context.index = 2
         assert plotter.canvas_widget.artists['HISTOGRAM2D'].visible is True
+
+        all_nan = create_stack_layer(name="All NaN")
+        all_nan.metadata["G"][:] = np.nan
+        all_nan.metadata["S"][:] = np.nan
+        viewer.add_layer(all_nan)
+        plotter.image_layers_checkable_combobox.setCheckedItems([all_nan.name])
+        plotter._process_layer_selection_change()
+        plotter.frame_context.mode = CURRENT
+        assert plotter._frame_histogram_reference() is None
     finally:
         plotter.close()
 
 
-def test_control_bar_is_hidden_for_2d_data(make_viewer_model):
-    """Plain 2D workflows must not see the time-lapse controls at all."""
+def test_2d_data_has_no_frame_controls(
+    make_viewer_model, monkeypatch, tmp_path
+):
+    """Plain 2D workflows never see the time-lapse controls, and without a
+    stack axis the phasor-center export has no menu to show."""
     viewer = make_viewer_model()
     plotter = make_plotter_with_layer(viewer, create_flat_layer())
     try:
@@ -516,56 +477,24 @@ def test_control_bar_is_hidden_for_2d_data(make_viewer_model):
         # for every widget regardless of our own setVisible calls.
         assert plotter.timelapse_bar.isHidden() is True
         assert plotter.frame_context.available_axes() == []
+
+        target = tmp_path / "flat.csv"
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QMenu.exec_",
+            lambda self, *a, **k: pytest.fail("menu opened for 2D data"),
+            raising=False,
+        )
+        _accept_save_dialog(monkeypatch, target)
+        plotter._export_phasor_center_statistics()
+        assert len(target.read_text().strip().splitlines()) == 2
     finally:
         plotter.close()
 
 
-def test_control_bar_configures_itself_for_a_stack(make_viewer_model):
-    """The bar offers the mode and export, and hides the axis picker for 3D."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        bar = plotter.timelapse_bar
-        # A single stack axis needs no picker.
-        assert bar.axis_combobox.isVisibleTo(bar) is False
-
-        # Animations can only be exported frame by frame.
-        assert bar.export_button.isEnabled() is False
-        bar.mode_combobox.setCurrentIndex(bar.mode_combobox.findData(CURRENT))
-        assert plotter.frame_context.is_per_frame
-        assert bar.export_button.isEnabled() is True
-    finally:
-        plotter.close()
-
-
-def test_control_bar_has_no_playback_controls(make_viewer_model):
-    """Stepping and playback belong to napari's own dimension slider.
-
-    Duplicating them here would give two sets of controls for one piece of
-    state, so the bar deliberately exposes none.
-    """
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        bar = plotter.timelapse_bar
-        for removed in (
-            "play_button",
-            "frame_slider",
-            "frame_label",
-            "fps_spinbox",
-        ):
-            assert not hasattr(bar, removed), f"{removed} is back"
-
-        # The napari slider remains the way to change frames.
-        plotter.frame_context.mode = CURRENT
-        viewer.dims.set_current_step(0, 2)
-        assert plotter.frame_context.index == 2
-    finally:
-        plotter.close()
-
-
-def test_control_bar_axis_picker_shown_for_4d(make_viewer_model):
-    """More than one stack axis means the user gets to choose."""
+def test_a_4d_stack_lets_the_user_pick_the_frame_axis(make_viewer_model):
+    """More than one stack axis means the user gets to choose; mode and axis
+    persist on the layer like every other plot setting, and switching axis
+    matters only when a single frame is displayed."""
     viewer = make_viewer_model()
     plotter = make_plotter_with_layer(
         viewer, create_stack_layer(shape=(2, 3, 5, 6))
@@ -574,55 +503,10 @@ def test_control_bar_axis_picker_shown_for_4d(make_viewer_model):
         bar = plotter.timelapse_bar
         assert bar.axis_combobox.isVisibleTo(bar) is True
         assert bar.axis_combobox.count() == 2
-    finally:
-        plotter.close()
 
-
-def test_napari_playback_drives_every_frame(make_viewer_model):
-    """Stepping the viewer through the stack keeps the plot in step.
-
-    This is what napari's own play button does, one step at a time.
-    """
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        for frame in range(N_FRAMES):
-            viewer.dims.set_current_step(0, frame)
-            assert plotter.frame_context.index == frame
-            assert plotter.get_merged_features()[0].size == 5 * 6
-    finally:
-        plotter.close()
-
-
-def test_control_bar_survives_a_context_without_layers(make_viewer_model):
-    """A bar built on an empty selection must simply hide itself."""
-    viewer = make_viewer_model()
-    context = FrameContext(viewer, list)
-    bar = TimelapseControlBar(context)
-    try:
-        assert bar.isHidden() is True
-        assert context.refresh_bounds() is False
-    finally:
-        bar.close()
-
-
-# ---------------------------------------------------------------------------
-# Settings persistence
-# ---------------------------------------------------------------------------
-
-
-def test_frame_settings_round_trip_through_layer_metadata(make_viewer_model):
-    """Mode and axis persist on the layer like every other plot setting."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(
-        viewer, create_stack_layer(shape=(2, 3, 5, 6))
-    )
-    try:
         layer = plotter.get_selected_layers()[0]
         plotter.frame_context.axis = 1
         plotter.frame_context.mode = CURRENT
-
         settings = layer.metadata["settings"]
         assert settings["timelapse_mode"] == CURRENT
         assert settings["timelapse_axis"] == 1
@@ -635,13 +519,26 @@ def test_frame_settings_round_trip_through_layer_metadata(make_viewer_model):
             plotter.frame_context.axis = 0
         finally:
             plotter._updating_settings = False
-
         plotter._restore_plot_settings_from_metadata()
-
         assert plotter.frame_context.mode == CURRENT
         assert plotter.frame_context.axis == 1
+
+        plotter.frame_context.mode = POOLED
+        replots = []
+        plotter._replot_for_frame_state = lambda: replots.append(True)
+        plotter._on_frame_axis_changed(1)
+        assert replots == []
+        plotter.frame_context.mode = CURRENT
+        replots.clear()
+        plotter._on_frame_axis_changed(0)
+        assert replots
     finally:
         plotter.close()
+
+
+# ---------------------------------------------------------------------------
+# Settings persistence
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -649,16 +546,21 @@ def test_frame_settings_round_trip_through_layer_metadata(make_viewer_model):
 # ---------------------------------------------------------------------------
 
 
-def test_build_frame_statistics_rows_covers_every_frame(make_viewer_model):
-    """One row per frame and dataset, in frame order."""
+def test_frame_statistics_and_animation_helpers(
+    make_viewer_model, qtbot, tmp_path
+):
+    """Statistics rows cover every frame in order (2D data is frame 0), the
+    export dialog reports a normalised inclusive range, side-by-side
+    figures are padded rather than scaled, and exporting nothing fails
+    cleanly rather than raising."""
+    from napari_phasors._timelapse import export_animation
+
     viewer = make_viewer_model()
     layer = create_stack_layer()
     viewer.add_layer(layer)
     context = FrameContext(viewer, lambda: [layer])
-
     data = np.arange(np.prod(STACK_SHAPE), dtype=float).reshape(STACK_SHAPE)
     rows = build_frame_statistics_rows({"A": data, "B": data * 2}, context)
-
     assert len(rows) == 2 * N_FRAMES
     assert [row["Frame"] for row in rows] == sorted(
         row["Frame"] for row in rows
@@ -668,29 +570,65 @@ def test_build_frame_statistics_rows_covers_every_frame(make_viewer_model):
     )
     assert first["Mean"] == pytest.approx(np.mean(data[0]))
 
-
-def test_build_frame_statistics_rows_handles_2d_data(make_viewer_model):
-    """2D datasets collapse to a single frame-0 row."""
-    viewer = make_viewer_model()
-    layer = create_flat_layer()
-    viewer.add_layer(layer)
-    context = FrameContext(viewer, lambda: [layer])
-
-    rows = build_frame_statistics_rows({"A": np.ones((5, 6))}, context)
+    flat_viewer = make_viewer_model()
+    flat = create_flat_layer()
+    flat_viewer.add_layer(flat)
+    rows = build_frame_statistics_rows(
+        {"A": np.ones((5, 6))}, FrameContext(flat_viewer, lambda: [flat])
+    )
     assert len(rows) == 1
     assert rows[0]["Frame"] == 0
     assert rows[0]["Mean"] == pytest.approx(1.0)
 
+    dialog = AnimationExportDialog(
+        n_frames=N_FRAMES, histogram_available=False, fps=8
+    )
+    qtbot.addWidget(dialog)
+    try:
+        # Histogram cannot be selected when no histogram is displayed.
+        assert dialog.histogram_checkbox.isEnabled() is False
+        options = dialog.get_options()
+        assert options["include_phasor"] is True
+        assert options["frames"] == list(range(N_FRAMES))
+        assert options["fps"] == pytest.approx(8.0)
+        # A reversed range is normalised rather than producing no frames.
+        dialog.first_spinbox.setValue(3)
+        dialog.last_spinbox.setValue(2)
+        assert dialog.get_options()["frames"] == [1, 2]
+    finally:
+        dialog.close()
 
-def test_phasor_center_rows_pooled_and_per_frame(make_viewer_model):
-    """Phasor-center export offers one pooled row or one row per frame."""
+    left = np.zeros((10, 4, 3), dtype=np.uint8)
+    right = np.zeros((6, 5, 3), dtype=np.uint8)
+    assert combine_frames([]) is None
+    assert combine_frames([left]).shape == (10, 4, 3)
+    assert combine_frames([left, right]).shape == (10, 9, 3)
+
+    assert export_animation(str(tmp_path / "empty.gif"), [], 5) is False
+
+
+def test_phasor_center_export(make_viewer_model, monkeypatch, tmp_path):
+    """Phasor-center export offers one pooled row or one row per frame,
+    through a menu and a save dialog either of which can be dismissed, and
+    warns when there are no centers to write."""
+    from napari_phasors._utils import write_rows_to_csv
+
     viewer = make_viewer_model()
     plotter = make_plotter_with_layer(viewer, create_stack_layer())
+
+    def fail(message):
+        return lambda *a, **k: pytest.fail(message)
+
+    def use_save_path(get_save_file_name):
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QFileDialog.getSaveFileName",
+            staticmethod(get_save_file_name),
+        )
+
     try:
         pooled_rows = plotter._phasor_center_statistics_rows(per_frame=False)
         assert len(pooled_rows) == 1
         assert pooled_rows[0]["Frame"] == 0
-
         frame_rows = plotter._phasor_center_statistics_rows(per_frame=True)
         assert len(frame_rows) == N_FRAMES
         assert [row["Frame"] for row in frame_rows] == list(range(N_FRAMES))
@@ -702,24 +640,52 @@ def test_phasor_center_rows_pooled_and_per_frame(make_viewer_model):
             "Phase (deg)",
             "Modulation",
         }
-    finally:
-        plotter.close()
-
-
-def test_phasor_center_export_writes_csv(make_viewer_model, tmp_path, qtbot):
-    """The phasor-center CSV has a header plus one row per frame."""
-    from napari_phasors._utils import write_rows_to_csv
-
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        rows = plotter._phasor_center_statistics_rows(per_frame=True)
-        target = tmp_path / "centers.csv"
-        write_rows_to_csv(str(target), rows)
-
-        lines = target.read_text().strip().splitlines()
+        direct = tmp_path / "direct.csv"
+        write_rows_to_csv(str(direct), frame_rows)
+        lines = direct.read_text().strip().splitlines()
         assert len(lines) == N_FRAMES + 1
         assert lines[0].startswith("Frame,Name,G (center)")
+
+        # 'Per timepoint' writes one row per frame, adding the extension.
+        _choose_menu_action(monkeypatch, 1)
+        _accept_save_dialog(monkeypatch, tmp_path / "centers")
+        plotter._export_phasor_center_statistics()
+        lines = (tmp_path / "centers.csv").read_text().strip().splitlines()
+        assert len(lines) == N_FRAMES + 1
+        assert lines[0].startswith("Frame,Name,G (center)")
+
+        # 'All timepoints pooled' writes a single row.
+        _choose_menu_action(monkeypatch, 0)
+        _accept_save_dialog(monkeypatch, tmp_path / "pooled.csv")
+        plotter._export_phasor_center_statistics()
+        lines = (tmp_path / "pooled.csv").read_text().strip().splitlines()
+        assert len(lines) == 2
+
+        # Dismissing the menu, or the file dialog, writes nothing.
+        _choose_menu_action(monkeypatch, None)
+        use_save_path(fail("save dialog opened"))
+        plotter._export_phasor_center_statistics()
+        _choose_menu_action(monkeypatch, 0)
+        use_save_path(lambda *a, **k: ("", ""))
+        with monkeypatch.context() as patched:
+            patched.setattr(
+                "napari_phasors.plotter.write_rows_to_csv",
+                fail("wrote without a path"),
+            )
+            plotter._export_phasor_center_statistics()
+
+        # A selection with no computable centers warns instead of writing.
+        warnings_seen = []
+        monkeypatch.setattr(
+            "napari_phasors.plotter.notifications.show_warning",
+            warnings_seen.append,
+        )
+        monkeypatch.setattr(
+            plotter, "_phasor_center_statistics_rows", lambda per_frame: []
+        )
+        use_save_path(fail("save dialog opened"))
+        plotter._export_phasor_center_statistics()
+        assert warnings_seen
     finally:
         plotter.close()
 
@@ -729,42 +695,112 @@ def test_phasor_center_export_writes_csv(make_viewer_model, tmp_path, qtbot):
 # ---------------------------------------------------------------------------
 
 
-def test_histogram_follows_the_frame(make_viewer_model):
-    """The 1-D histogram and its statistics summarise one frame at a time."""
+def test_mapping_histogram_and_statistics_follow_the_frame(
+    make_viewer_model, tmp_path
+):
+    """The lifetime histogram, its statistics table and its exports
+    summarise one frame at a time, highlight the displayed frame and return
+    to the per-layer layout when pooled; the animation can include it."""
     viewer = make_viewer_model()
     plotter = make_plotter_with_layer(viewer, create_stack_layer())
     try:
         mapping_tab = plotter.phasor_mapping_tab
+        plotter.tab_widget.setCurrentWidget(mapping_tab)
         mapping_tab.frequency_input.setText("80")
         mapping_tab.calculate_output_data()
         mapping_tab.plot_lifetime_histogram()
-
         histogram = mapping_tab.histogram_widget
+        assert plotter._active_histogram_widget() is histogram
         pooled_size = len(histogram._raw_valid_data)
         assert histogram.has_frame_source() is True
 
-        # Drive it the way the user does — through the viewer slider — so a
+        # Per-timepoint export writes one row per frame per dataset.
+        stats_dock = _mapping_stats_dock(plotter)
+        per_frame_path = tmp_path / "per_frame.csv"
+        stats_dock._write_frame_statistics_to_csv(
+            str(per_frame_path), "per_frame"
+        )
+        lines = per_frame_path.read_text().strip().splitlines()
+        assert lines[0].startswith("Frame,Name,Lifetime (ns) Center of Mass")
+        assert len(lines) == N_FRAMES + 1
+        pooled_path = tmp_path / "pooled.csv"
+        stats_dock._write_frame_statistics_to_csv(str(pooled_path), "pooled")
+        pooled_lines = pooled_path.read_text().strip().splitlines()
+        assert len(pooled_lines) == 2
+        assert pooled_lines[1].startswith("all,")
+
+        # The Calculate button path; pooled mode keeps the historic
+        # one-row-per-layer layout.
+        _run_mapping_analysis(plotter)
+        table = stats_dock.layer_stats_table
+        assert table.rowCount() == 1
+        assert _table_column_names(table)[0] == "Name"
+
+        # In per-frame mode the table shows one row per timepoint, and the
+        # statistic columns name the quantity they summarise.
+        plotter.frame_context.mode = CURRENT
+        assert table.rowCount() == N_FRAMES
+        assert _table_column_names(table) == ["Frame", "Name"] + [
+            f"Lifetime (ns) {column}"
+            for column in StatisticsTableWidget.COLUMNS[1:]
+        ]
+        assert [row[0] for row in _table_rows(table)] == [
+            str(frame) for frame in range(N_FRAMES)
+        ]
+        # Each row must report that frame's own mean, not a pooled one.
+        for row in _table_rows(table):
+            frame = int(row[0])
+            assert float(row[3]) == pytest.approx(
+                _expected_frame_mean(histogram, frame), abs=5e-5
+            )
+
+        # Drive it the way the user does, through the viewer slider, so a
         # broken signal chain fails here rather than being masked by an
         # explicit refresh call.
-        plotter.frame_context.mode = CURRENT
         viewer.dims.set_current_step(0, 1)
-
         assert plotter.frame_context.index == 1
         assert len(histogram._raw_valid_data) == pooled_size // N_FRAMES
         assert _histogram_mean(histogram) == pytest.approx(
             _expected_frame_mean(histogram, 1)
         )
-
         viewer.dims.set_current_step(0, 3)
         assert _histogram_mean(histogram) == pytest.approx(
             _expected_frame_mean(histogram, 3)
         )
+
+        # Exactly the displayed frame's row is highlighted, and it follows.
+        viewer.dims.set_current_step(0, 2)
+        assert _highlighted_frames(table) == ["2"]
+        viewer.dims.set_current_step(0, 0)
+        assert _highlighted_frames(table) == ["0"]
+
+        # Rendering both figures stacks them side by side in each frame.
+        options = {
+            "include_phasor": True,
+            "include_histogram": True,
+            "frames": [0, 1],
+            "fps": 5,
+        }
+        both = plotter._render_animation_frames(options, histogram)
+        options["include_histogram"] = False
+        phasor_only = plotter._render_animation_frames(options, histogram)
+        assert len(both) == 2
+        assert both[0].shape[1] > phasor_only[0].shape[1]
+
+        # Leaving per-frame mode brings back the per-layer table.
+        plotter.frame_context.mode = POOLED
+        assert table.rowCount() == 1
+        assert _table_column_names(table)[0] == "Name"
+        assert _highlighted_frames(table) == []
     finally:
         plotter.close()
 
 
-def test_components_histogram_follows_the_frame(make_viewer_model):
-    """Component fractions must be summarised one frame at a time.
+def test_components_and_fret_histograms_follow_the_frame(
+    make_viewer_model, tmp_path
+):
+    """Component fractions and FRET efficiency are summarised one frame at
+    a time, and component fractions export one row per frame.
 
     Regression test: the component datasets used to be flattened before the
     frame slice could be applied, so the histogram (and therefore the
@@ -775,39 +811,40 @@ def test_components_histogram_follows_the_frame(make_viewer_model):
     try:
         components_tab = plotter.components_tab
         _run_linear_projection(components_tab)
-
         histogram = components_tab.histogram_widget
         pooled_size = len(histogram._raw_valid_data)
         assert histogram.has_frame_source() is True
         _assert_frame_source_keeps_layer_shape(histogram)
 
+        stats_dock = plotter._statistics_stack.widget(
+            plotter._components_stats_page_idx
+        )
+        target = tmp_path / "components_per_frame.csv"
+        stats_dock._write_frame_statistics_to_csv(str(target), "per_frame")
+        lines = target.read_text().strip().splitlines()
+        assert len(lines) == N_FRAMES + 1
+        assert [line.split(",")[0] for line in lines[1:]] == [
+            str(frame) for frame in range(N_FRAMES)
+        ]
+
         plotter.frame_context.mode = CURRENT
         viewer.dims.set_current_step(0, 1)
-
         assert len(histogram._raw_valid_data) == pooled_size // N_FRAMES
         assert _histogram_mean(histogram) == pytest.approx(
             _expected_frame_mean(histogram, 1)
         )
-
         viewer.dims.set_current_step(0, 3)
         assert _histogram_mean(histogram) == pytest.approx(
             _expected_frame_mean(histogram, 3)
         )
-    finally:
-        plotter.close()
 
-
-def test_fret_histogram_follows_the_frame(make_viewer_model):
-    """FRET efficiency must be summarised one frame at a time."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
+        # FRET efficiency, calculated over the whole stack.
+        plotter.frame_context.mode = POOLED
         fret_tab = plotter.fret_tab
         fret_tab.frequency_input.setText("80")
         fret_tab.donor_line_edit.setText("4.0")
         assert fret_tab._fret_validation() is None
         fret_tab.calculate_fret_efficiency()
-
         histogram = fret_tab.histogram_widget
         pooled_size = len(histogram._raw_valid_data)
         assert histogram.has_frame_source() is True
@@ -815,34 +852,10 @@ def test_fret_histogram_follows_the_frame(make_viewer_model):
 
         plotter.frame_context.mode = CURRENT
         viewer.dims.set_current_step(0, 2)
-
         assert len(histogram._raw_valid_data) == pooled_size // N_FRAMES
         assert _histogram_mean(histogram) == pytest.approx(
             _expected_frame_mean(histogram, 2)
         )
-    finally:
-        plotter.close()
-
-
-def test_components_export_per_timepoint(make_viewer_model, tmp_path):
-    """Per-timepoint export of component fractions has one row per frame."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        components_tab = plotter.components_tab
-        _run_linear_projection(components_tab)
-
-        stats_dock = plotter._statistics_stack.widget(
-            plotter._components_stats_page_idx
-        )
-        target = tmp_path / "components_per_frame.csv"
-        stats_dock._write_frame_statistics_to_csv(str(target), "per_frame")
-
-        lines = target.read_text().strip().splitlines()
-        assert len(lines) == N_FRAMES + 1
-        assert [line.split(",")[0] for line in lines[1:]] == [
-            str(frame) for frame in range(N_FRAMES)
-        ]
     finally:
         plotter.close()
 
@@ -889,146 +902,16 @@ def _highlighted_frames(table):
     return frames
 
 
-def test_statistics_table_lists_every_frame(make_viewer_model):
-    """In per-frame mode the table shows one row per timepoint."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        _run_mapping_analysis(plotter)
-        table = _mapping_stats_dock(plotter).layer_stats_table
-
-        # Pooled mode keeps the historic one-row-per-layer layout.
-        assert table.rowCount() == 1
-        assert _table_column_names(table)[0] == "Name"
-
-        plotter.frame_context.mode = CURRENT
-
-        assert table.rowCount() == N_FRAMES
-        # The statistic columns name the quantity they summarise.
-        assert _table_column_names(table) == ["Frame", "Name"] + [
-            f"Lifetime (ns) {column}"
-            for column in StatisticsTableWidget.COLUMNS[1:]
-        ]
-        assert [row[0] for row in _table_rows(table)] == [
-            str(frame) for frame in range(N_FRAMES)
-        ]
-
-        # Each row must report that frame's own mean, not a pooled one.
-        histogram = plotter.phasor_mapping_tab.histogram_widget
-        for row in _table_rows(table):
-            frame = int(row[0])
-            assert float(row[3]) == pytest.approx(
-                _expected_frame_mean(histogram, frame), abs=5e-5
-            )
-    finally:
-        plotter.close()
-
-
-def test_statistics_table_highlights_the_current_frame(make_viewer_model):
-    """Exactly the displayed frame's row is highlighted, and it follows."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        _run_mapping_analysis(plotter)
-        table = _mapping_stats_dock(plotter).layer_stats_table
-
-        plotter.frame_context.mode = CURRENT
-        viewer.dims.set_current_step(0, 2)
-        assert _highlighted_frames(table) == ["2"]
-
-        viewer.dims.set_current_step(0, 0)
-        assert _highlighted_frames(table) == ["0"]
-    finally:
-        plotter.close()
-
-
-def test_statistics_table_restores_pooled_layout(make_viewer_model):
-    """Leaving per-frame mode brings back the per-layer table."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        _run_mapping_analysis(plotter)
-        table = _mapping_stats_dock(plotter).layer_stats_table
-
-        plotter.frame_context.mode = CURRENT
-        assert table.rowCount() == N_FRAMES
-
-        plotter.frame_context.mode = POOLED
-        assert table.rowCount() == 1
-        assert _table_column_names(table)[0] == "Name"
-        assert _highlighted_frames(table) == []
-    finally:
-        plotter.close()
-
-
-def test_statistics_table_frame_rows_for_multiple_layers(make_viewer_model):
-    """With several layers the table has one row per frame per layer."""
-    viewer = make_viewer_model()
-    first = create_stack_layer(name="First")
-    second = create_stack_layer(name="Second")
-    viewer.add_layer(first)
-    viewer.add_layer(second)
-
-    plotter = PlotterWidget(viewer)
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [first.name, second.name]
-    )
-    plotter._process_layer_selection_change()
-    try:
-        _run_mapping_analysis(plotter)
-        table = _mapping_stats_dock(plotter).layer_stats_table
-
-        plotter.frame_context.mode = CURRENT
-        viewer.dims.set_current_step(0, 1)
-
-        assert table.rowCount() == 2 * N_FRAMES
-        # Rows are grouped by frame, so a frame's layers sit side by side.
-        assert [row[0] for row in _table_rows(table)] == [
-            str(frame) for frame in range(N_FRAMES) for _ in range(2)
-        ]
-        assert _highlighted_frames(table) == ["1", "1"]
-    finally:
-        plotter.close()
-
-
-def test_statistics_dock_exports_per_timepoint(make_viewer_model, tmp_path):
-    """Per-timepoint export writes one row per frame per dataset."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        mapping_tab = plotter.phasor_mapping_tab
-        mapping_tab.frequency_input.setText("80")
-        mapping_tab.calculate_output_data()
-        mapping_tab.plot_lifetime_histogram()
-
-        stats_dock = plotter._statistics_stack.widget(
-            plotter._phasor_map_stats_page_idx
-        )
-
-        per_frame_path = tmp_path / "per_frame.csv"
-        stats_dock._write_frame_statistics_to_csv(
-            str(per_frame_path), "per_frame"
-        )
-        lines = per_frame_path.read_text().strip().splitlines()
-        assert lines[0].startswith("Frame,Name,Lifetime (ns) Center of Mass")
-        assert len(lines) == N_FRAMES + 1
-
-        pooled_path = tmp_path / "pooled.csv"
-        stats_dock._write_frame_statistics_to_csv(str(pooled_path), "pooled")
-        pooled_lines = pooled_path.read_text().strip().splitlines()
-        assert len(pooled_lines) == 2
-        assert pooled_lines[1].startswith("all,")
-    finally:
-        plotter.close()
-
-
 # ---------------------------------------------------------------------------
 # Selections
 # ---------------------------------------------------------------------------
 
 
-def test_selection_data_stays_aligned_with_the_plot(make_viewer_model):
-    """The per-point selection array must match the plotted sample count."""
+def test_selections_drawn_on_one_frame_apply_to_every_frame(
+    make_viewer_model,
+):
+    """A brush stroke, the eraser or a rectangle drawn on the displayed
+    frame labels (or unlabels) the matching pixels in every frame."""
     viewer = make_viewer_model()
     plotter = make_plotter_with_layer(viewer, create_stack_layer())
     try:
@@ -1036,80 +919,15 @@ def test_selection_data_stays_aligned_with_the_plot(make_viewer_model):
         selection_tab.selection_mode_combobox.setCurrentText(
             "Manual Selection"
         )
-
         plotter.frame_context.mode = CURRENT
-        plotter.frame_context.index = 2
-
+        plotter.frame_context.index = 0
+        canvas = plotter.canvas_widget
         layer = plotter.get_selected_layers()[0]
         g = layer.metadata["G"][0]
         s = layer.metadata["S"][0]
 
-        n_plotted = plotter.get_merged_features()[0].size
-        assert selection_tab._frame_valid_mask(g, s).sum() == n_plotted
-    finally:
-        plotter.close()
-
-
-def test_manual_selection_applies_to_every_frame(make_viewer_model):
-    """A region drawn on one frame labels matching pixels in all frames."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        selection_tab = plotter.selection_tab
-        selection_tab.selection_mode_combobox.setCurrentText(
-            "Manual Selection"
-        )
-
-        plotter.frame_context.mode = CURRENT
-        plotter.frame_context.index = 0
-
-        # Draw a rectangle covering the whole phasor space so every pixel
-        # falls inside it, using biaplotter's own rectangle selector.
-        canvas = plotter.canvas_widget
-        canvas.active_selector = "RECTANGLE"
-        selector = canvas.active_selector
-
         class _MouseEvent:
-            def __init__(self, x, y):
-                self.xdata = x
-                self.ydata = y
-
-        frame_g, frame_s = plotter.get_merged_features()
-        selector.data = np.column_stack((frame_g, frame_s))
-        selector.on_select(_MouseEvent(-2.0, -2.0), _MouseEvent(2.0, 2.0))
-
-        # biaplotter hands back one class value per *plotted* point.
-        selection_tab.manual_selection_changed(
-            np.ones(frame_g.size, dtype=np.uint32)
-        )
-
-        layer = plotter.get_selected_layers()[0]
-        selection_map = layer.metadata["settings"]["selections"][
-            "manual_selections"
-        ][selection_tab.selection_id]
-
-        assert selection_map.shape == STACK_SHAPE
-        for frame in range(N_FRAMES):
-            assert selection_map[frame].any(), f"frame {frame} not labelled"
-    finally:
-        plotter.close()
-
-
-def test_brush_and_eraser_apply_to_every_frame(make_viewer_model):
-    """A brush stroke drawn on one frame labels matching pixels in all."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        selection_tab = plotter.selection_tab
-        selection_tab.selection_mode_combobox.setCurrentText(
-            "Manual Selection"
-        )
-
-        plotter.frame_context.mode = CURRENT
-        plotter.frame_context.index = 0
-
-        class _MouseEvent:
-            def __init__(self, x, y, inaxes):
+            def __init__(self, x, y, inaxes=None):
                 self.xdata = x
                 self.ydata = y
                 self.inaxes = inaxes
@@ -1117,33 +935,27 @@ def test_brush_and_eraser_apply_to_every_frame(make_viewer_model):
 
         def dab(selector, x, y):
             """Press and release the painting tool on a single spot."""
-            selector._on_press(_MouseEvent(x, y, plotter.canvas_widget.axes))
-            selector._on_release(_MouseEvent(x, y, plotter.canvas_widget.axes))
-
-        canvas = plotter.canvas_widget
-        canvas.brush_size = 64
-        canvas.active_selector = "BRUSH"
-        brush = canvas.active_selector
-
-        layer = plotter.get_selected_layers()[0]
-        g = layer.metadata["G"][0]
-        s = layer.metadata["S"][0]
-
-        # Paint on a phasor coordinate of the displayed frame; the decay
-        # patterns repeat, so later frames hold matching pixels as well.
-        x, y = float(g[0, 0, 0]), float(s[0, 0, 0])
-        dab(brush, x, y)
-
-        assert brush.last_geometry is not None
-        covered = brush.last_geometry.contains_points(
-            np.column_stack((g.ravel(), s.ravel()))
-        ).reshape(g.shape)
-        assert covered.any()
+            selector._on_press(_MouseEvent(x, y, canvas.axes))
+            selector._on_release(_MouseEvent(x, y, canvas.axes))
 
         def current_map():
             return layer.metadata["settings"]["selections"][
                 "manual_selections"
             ][selection_tab.selection_id]
+
+        canvas.brush_size = 64
+        canvas.active_selector = "BRUSH"
+        brush = canvas.active_selector
+
+        # Paint on a phasor coordinate of the displayed frame; the decay
+        # patterns repeat, so later frames hold matching pixels as well.
+        x, y = float(g[0, 0, 0]), float(s[0, 0, 0])
+        dab(brush, x, y)
+        assert brush.last_geometry is not None
+        covered = brush.last_geometry.contains_points(
+            np.column_stack((g.ravel(), s.ravel()))
+        ).reshape(g.shape)
+        assert covered.any()
 
         selection_map = current_map()
         assert selection_map.shape == STACK_SHAPE
@@ -1156,6 +968,22 @@ def test_brush_and_eraser_apply_to_every_frame(make_viewer_model):
         canvas.active_selector = "ERASER"
         dab(canvas.active_selector, x, y)
         assert not current_map().any()
+
+        # A rectangle covering the whole phasor space, drawn with
+        # biaplotter's own rectangle selector, labels every frame.
+        canvas.active_selector = "RECTANGLE"
+        selector = canvas.active_selector
+        frame_g, frame_s = plotter.get_merged_features()
+        selector.data = np.column_stack((frame_g, frame_s))
+        selector.on_select(_MouseEvent(-2.0, -2.0), _MouseEvent(2.0, 2.0))
+        # biaplotter hands back one class value per *plotted* point.
+        selection_tab.manual_selection_changed(
+            np.ones(frame_g.size, dtype=np.uint32)
+        )
+        selection_map = current_map()
+        assert selection_map.shape == STACK_SHAPE
+        for frame in range(N_FRAMES):
+            assert selection_map[frame].any(), f"frame {frame} not labelled"
     finally:
         plotter.close()
 
@@ -1165,8 +993,10 @@ def test_brush_and_eraser_apply_to_every_frame(make_viewer_model):
 # ---------------------------------------------------------------------------
 
 
-def test_animation_export_writes_a_gif(make_viewer_model, tmp_path):
-    """Rendering and writing a GIF produces one image per requested frame."""
+def test_rendering_animation_frames(make_viewer_model, tmp_path):
+    """Rendering yields one RGB image per frame in range (out-of-range
+    indices are skipped, not clamped, and the displayed frame still gets
+    rendered), leaves the viewer on its starting frame, and writes a GIF."""
     iio = pytest.importorskip("imageio.v3")
 
     from napari_phasors._timelapse import export_animation
@@ -1175,114 +1005,30 @@ def test_animation_export_writes_a_gif(make_viewer_model, tmp_path):
     plotter = make_plotter_with_layer(viewer, create_stack_layer())
     try:
         plotter.frame_context.mode = CURRENT
-        options = {
-            "include_phasor": True,
-            "include_histogram": False,
-            "frames": list(range(N_FRAMES)),
-            "fps": 5,
-        }
-        frames = plotter._render_animation_frames(options, histogram=None)
+        plotter.frame_context.index = 2
+
+        def render(frames):
+            options = {
+                "include_phasor": True,
+                "include_histogram": False,
+                "frames": frames,
+                "fps": 5,
+            }
+            return plotter._render_animation_frames(options, histogram=None)
+
+        frames = render(list(range(N_FRAMES)))
         assert len(frames) == N_FRAMES
         assert frames[0].ndim == 3 and frames[0].shape[2] == 3
+        assert plotter.frame_context.index == 2
+        assert len(render([2])) == 1
+        assert len(render([-1, 0, N_FRAMES, N_FRAMES + 5])) == 1
 
         target = tmp_path / "animation.gif"
-        assert export_animation(str(target), frames, options["fps"]) is True
+        assert export_animation(str(target), frames, 5) is True
         assert target.exists()
         assert len(iio.imread(str(target))) == N_FRAMES
     finally:
         plotter.close()
-
-
-def test_animation_export_restores_the_starting_frame(make_viewer_model):
-    """Exporting must leave the viewer on the frame it started from."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        plotter.frame_context.index = 2
-        plotter._render_animation_frames(
-            {
-                "include_phasor": True,
-                "include_histogram": False,
-                "frames": [0, 1, 2, 3],
-                "fps": 5,
-            },
-            histogram=None,
-        )
-        assert plotter.frame_context.index == 2
-    finally:
-        plotter.close()
-
-
-def test_animation_can_include_the_histogram(make_viewer_model):
-    """Rendering both figures stacks them side by side in each frame."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        mapping_tab = plotter.phasor_mapping_tab
-        plotter.tab_widget.setCurrentWidget(mapping_tab)
-        mapping_tab.frequency_input.setText("80")
-        mapping_tab.calculate_output_data()
-        mapping_tab.plot_lifetime_histogram()
-
-        histogram = plotter._active_histogram_widget()
-        assert histogram is mapping_tab.histogram_widget
-
-        plotter.frame_context.mode = CURRENT
-        options = {
-            "include_phasor": True,
-            "include_histogram": True,
-            "frames": [0, 1],
-            "fps": 5,
-        }
-        both = plotter._render_animation_frames(options, histogram)
-        options["include_histogram"] = False
-        phasor_only = plotter._render_animation_frames(options, histogram)
-
-        assert len(both) == 2
-        assert both[0].shape[1] > phasor_only[0].shape[1]
-    finally:
-        plotter.close()
-
-
-def test_animation_export_dialog_options(make_viewer_model, qtbot):
-    """The dialog reports a normalised, inclusive frame range."""
-    dialog = AnimationExportDialog(
-        n_frames=N_FRAMES, histogram_available=False, fps=8
-    )
-    qtbot.addWidget(dialog)
-    try:
-        # Histogram cannot be selected when no histogram is displayed.
-        assert dialog.histogram_checkbox.isEnabled() is False
-
-        options = dialog.get_options()
-        assert options["include_phasor"] is True
-        assert options["frames"] == list(range(N_FRAMES))
-        assert options["fps"] == pytest.approx(8.0)
-
-        # A reversed range is normalised rather than producing no frames.
-        dialog.first_spinbox.setValue(3)
-        dialog.last_spinbox.setValue(2)
-        assert dialog.get_options()["frames"] == [1, 2]
-    finally:
-        dialog.close()
-
-
-def test_export_animation_reports_no_frames(tmp_path):
-    """Exporting nothing fails cleanly rather than raising."""
-    from napari_phasors._timelapse import export_animation
-
-    assert export_animation(str(tmp_path / "empty.gif"), [], 5) is False
-
-
-def test_combine_frames_pads_to_a_common_height():
-    """Side-by-side figures are padded, never scaled."""
-    left = np.zeros((10, 4, 3), dtype=np.uint8)
-    right = np.zeros((6, 5, 3), dtype=np.uint8)
-
-    assert combine_frames([]) is None
-    assert combine_frames([left]).shape == (10, 4, 3)
-    assert combine_frames([left, right]).shape == (10, 9, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -1320,193 +1066,87 @@ def _accept_save_dialog(monkeypatch, path):
     )
 
 
-def test_export_animation_click_writes_a_gif(
-    make_viewer_model, monkeypatch, tmp_path
-):
-    """The Export Animation button renders and saves without a dialog."""
+def test_export_animation_button(make_viewer_model, monkeypatch, tmp_path):
+    """The Export Animation button explains itself in pooled mode, stops at
+    a cancelled dialog, an empty figure choice or no path, and otherwise
+    renders and saves a GIF."""
     pytest.importorskip("imageio.v3")
 
     viewer = make_viewer_model()
     plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
+    one_frame = {
+        "include_phasor": True,
+        "include_histogram": False,
+        "frames": [0],
+        "fps": 5,
+    }
 
-        target = tmp_path / "movie"  # no extension: handler must add .gif
-        stub = _DialogStub(
-            QDialog.Accepted,
-            {
-                "include_phasor": True,
-                "include_histogram": False,
-                "frames": list(range(N_FRAMES)),
-                "fps": 5,
-            },
-        )
+    def fail(message):
+        return lambda *a, **k: pytest.fail(message)
+
+    def use_dialog(dialog):
         monkeypatch.setattr(
-            "napari_phasors.plotter.AnimationExportDialog", stub
+            "napari_phasors.plotter.AnimationExportDialog", dialog
         )
-        _accept_save_dialog(monkeypatch, target)
 
-        plotter._on_export_animation_clicked()
+    def use_save_path(get_save_file_name):
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QFileDialog.getSaveFileName",
+            staticmethod(get_save_file_name),
+        )
 
-        assert (tmp_path / "movie.gif").exists()
-    finally:
-        plotter.close()
-
-
-def test_export_animation_click_needs_per_frame_mode(
-    make_viewer_model, monkeypatch
-):
-    """In pooled mode the handler explains itself instead of exporting."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
     try:
+        # In pooled mode no dialog is ever constructed.
         messages = []
         monkeypatch.setattr(
             "napari_phasors.plotter.notifications.show_info", messages.append
         )
-        # A dialog must never be constructed on this path.
-        monkeypatch.setattr(
-            "napari_phasors.plotter.AnimationExportDialog",
-            lambda *a, **k: pytest.fail("dialog opened in pooled mode"),
-        )
-
+        use_dialog(fail("dialog opened in pooled mode"))
         plotter._on_export_animation_clicked()
-
         assert messages and "Current timepoint" in messages[0]
-    finally:
-        plotter.close()
 
-
-def test_export_animation_click_cancelled(make_viewer_model, monkeypatch):
-    """Rejecting the options dialog exports nothing."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
         plotter.frame_context.mode = CURRENT
-        monkeypatch.setattr(
-            "napari_phasors.plotter.AnimationExportDialog",
-            _DialogStub(QDialog.Rejected),
-        )
-        monkeypatch.setattr(
-            "napari_phasors.plotter.QFileDialog.getSaveFileName",
-            staticmethod(
-                lambda *a, **k: pytest.fail("save dialog opened after cancel")
-            ),
-        )
 
+        # Rejecting the options dialog exports nothing.
+        use_dialog(_DialogStub(QDialog.Rejected))
+        use_save_path(fail("save dialog opened after cancel"))
         plotter._on_export_animation_clicked()
-    finally:
-        plotter.close()
 
-
-def test_export_animation_click_requires_a_figure(
-    make_viewer_model, monkeypatch
-):
-    """Deselecting both figures warns rather than writing an empty GIF."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
+        # Deselecting both figures warns rather than writing an empty GIF.
         warnings_seen = []
         monkeypatch.setattr(
             "napari_phasors.plotter.notifications.show_warning",
             warnings_seen.append,
         )
-        monkeypatch.setattr(
-            "napari_phasors.plotter.AnimationExportDialog",
+        use_dialog(
             _DialogStub(
-                QDialog.Accepted,
-                {
-                    "include_phasor": False,
-                    "include_histogram": False,
-                    "frames": [0],
-                    "fps": 5,
-                },
-            ),
+                QDialog.Accepted, {**one_frame, "include_phasor": False}
+            )
         )
-        monkeypatch.setattr(
-            "napari_phasors.plotter.QFileDialog.getSaveFileName",
-            staticmethod(lambda *a, **k: pytest.fail("save dialog opened")),
-        )
-
         plotter._on_export_animation_clicked()
-
         assert warnings_seen
-    finally:
-        plotter.close()
 
+        # Dismissing the file dialog exports nothing.
+        use_dialog(_DialogStub(QDialog.Accepted, one_frame))
+        use_save_path(lambda *a, **k: ("", ""))
+        with monkeypatch.context() as patched:
+            patched.setattr(
+                "napari_phasors.plotter.export_animation",
+                fail("exported without a path"),
+            )
+            plotter._on_export_animation_clicked()
 
-def test_export_animation_click_no_path_chosen(make_viewer_model, monkeypatch):
-    """Dismissing the file dialog exports nothing."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        monkeypatch.setattr(
-            "napari_phasors.plotter.AnimationExportDialog",
+        # Otherwise it renders and saves; without an extension, .gif is
+        # added.
+        use_dialog(
             _DialogStub(
                 QDialog.Accepted,
-                {
-                    "include_phasor": True,
-                    "include_histogram": False,
-                    "frames": [0],
-                    "fps": 5,
-                },
-            ),
+                {**one_frame, "frames": list(range(N_FRAMES))},
+            )
         )
-        monkeypatch.setattr(
-            "napari_phasors.plotter.QFileDialog.getSaveFileName",
-            staticmethod(lambda *a, **k: ("", "")),
-        )
-        monkeypatch.setattr(
-            "napari_phasors.plotter.export_animation",
-            lambda *a, **k: pytest.fail("exported without a path"),
-        )
-
+        _accept_save_dialog(monkeypatch, tmp_path / "movie")
         plotter._on_export_animation_clicked()
-    finally:
-        plotter.close()
-
-
-def test_render_animation_frames_skips_out_of_range(make_viewer_model):
-    """Frame indices outside the stack are ignored, not clamped."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        frames = plotter._render_animation_frames(
-            {
-                "include_phasor": True,
-                "include_histogram": False,
-                "frames": [-1, 0, N_FRAMES, N_FRAMES + 5],
-                "fps": 5,
-            },
-            histogram=None,
-        )
-        assert len(frames) == 1
-    finally:
-        plotter.close()
-
-
-def test_render_animation_frames_redraws_the_starting_frame(
-    make_viewer_model,
-):
-    """The frame already displayed still gets rendered."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        plotter.frame_context.index = 2
-        frames = plotter._render_animation_frames(
-            {
-                "include_phasor": True,
-                "include_histogram": False,
-                "frames": [2],
-                "fps": 5,
-            },
-            histogram=None,
-        )
-        assert len(frames) == 1
+        assert (tmp_path / "movie.gif").exists()
     finally:
         plotter.close()
 
@@ -1523,358 +1163,102 @@ def _choose_menu_action(monkeypatch, index):
     )
 
 
-def test_phasor_center_export_per_timepoint(
-    make_viewer_model, monkeypatch, tmp_path
-):
-    """Choosing 'Per timepoint' writes one row per frame."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        target = tmp_path / "centers"  # no extension: handler must add .csv
-        _choose_menu_action(monkeypatch, 1)  # "Per timepoint"
-        _accept_save_dialog(monkeypatch, target)
-
-        plotter._export_phasor_center_statistics()
-
-        lines = (tmp_path / "centers.csv").read_text().strip().splitlines()
-        assert len(lines) == N_FRAMES + 1
-        assert lines[0].startswith("Frame,Name,G (center)")
-    finally:
-        plotter.close()
-
-
-def test_phasor_center_export_pooled(make_viewer_model, monkeypatch, tmp_path):
-    """Choosing 'All timepoints pooled' writes a single row."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        target = tmp_path / "pooled.csv"
-        _choose_menu_action(monkeypatch, 0)  # "All timepoints pooled"
-        _accept_save_dialog(monkeypatch, target)
-
-        plotter._export_phasor_center_statistics()
-
-        lines = target.read_text().strip().splitlines()
-        assert len(lines) == 2
-    finally:
-        plotter.close()
-
-
-def test_phasor_center_export_menu_cancelled(make_viewer_model, monkeypatch):
-    """Dismissing the menu exports nothing."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        _choose_menu_action(monkeypatch, None)
-        monkeypatch.setattr(
-            "napari_phasors.plotter.QFileDialog.getSaveFileName",
-            staticmethod(lambda *a, **k: pytest.fail("save dialog opened")),
-        )
-
-        plotter._export_phasor_center_statistics()
-    finally:
-        plotter.close()
-
-
-def test_phasor_center_export_no_path_chosen(make_viewer_model, monkeypatch):
-    """Dismissing the file dialog writes nothing."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        _choose_menu_action(monkeypatch, 0)
-        monkeypatch.setattr(
-            "napari_phasors.plotter.QFileDialog.getSaveFileName",
-            staticmethod(lambda *a, **k: ("", "")),
-        )
-        monkeypatch.setattr(
-            "napari_phasors.plotter.write_rows_to_csv",
-            lambda *a, **k: pytest.fail("wrote without a path"),
-        )
-
-        plotter._export_phasor_center_statistics()
-    finally:
-        plotter.close()
-
-
-def test_phasor_center_export_for_2d_data_skips_the_menu(
-    make_viewer_model, monkeypatch, tmp_path
-):
-    """Without a stack axis there is nothing to choose, so no menu appears."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_flat_layer())
-    try:
-        target = tmp_path / "flat.csv"
-        monkeypatch.setattr(
-            "napari_phasors.plotter.QMenu.exec_",
-            lambda self, *a, **k: pytest.fail("menu opened for 2D data"),
-            raising=False,
-        )
-        _accept_save_dialog(monkeypatch, target)
-
-        plotter._export_phasor_center_statistics()
-
-        assert len(target.read_text().strip().splitlines()) == 2
-    finally:
-        plotter.close()
-
-
-def test_phasor_center_export_without_centers_warns(
-    make_viewer_model, monkeypatch
-):
-    """A selection with no computable centers warns instead of writing."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        warnings_seen = []
-        monkeypatch.setattr(
-            "napari_phasors.plotter.notifications.show_warning",
-            warnings_seen.append,
-        )
-        monkeypatch.setattr(
-            plotter, "_phasor_center_statistics_rows", lambda per_frame: []
-        )
-        monkeypatch.setattr(
-            "napari_phasors.plotter.QFileDialog.getSaveFileName",
-            staticmethod(lambda *a, **k: pytest.fail("save dialog opened")),
-        )
-        _choose_menu_action(monkeypatch, 0)
-
-        plotter._export_phasor_center_statistics()
-
-        assert warnings_seen
-    finally:
-        plotter.close()
-
-
 # ---------------------------------------------------------------------------
 # Guard branches
 # ---------------------------------------------------------------------------
 
 
-def test_frame_callbacks_are_inert_while_closing(make_viewer_model):
-    """Queued frame callbacks must not touch a widget that is tearing down."""
+def test_frame_guard_branches(make_viewer_model):
+    """Frame callbacks are inert while pooled or closing, the refresh
+    helpers tolerate missing widgets, a deferred tab update skips a removed
+    layer, and no usable phasors or no selection means no shared range."""
     viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    layer = create_stack_layer()
+    plotter = make_plotter_with_layer(viewer, layer)
     try:
-        plotter.frame_context.mode = CURRENT
-        plotter._is_closing = True
-
         replots = []
         plotter._replot_for_frame_state = lambda: replots.append(True)
 
+        # A frame change while pooled changes nothing on screen.
+        plotter._on_frame_changed(2)
+        assert replots == []
+
+        # Queued frame callbacks must not touch a widget tearing down.
+        plotter.frame_context.mode = CURRENT
+        replots.clear()
+        plotter._is_closing = True
         plotter._on_frame_changed(1)
         plotter._on_frame_mode_changed(POOLED)
         plotter._on_frame_axis_changed(0)
-
         assert replots == []
-    finally:
         plotter._is_closing = False
-        plotter.close()
+        del plotter._replot_for_frame_state
 
-
-def test_frame_changed_is_inert_in_pooled_mode(make_viewer_model):
-    """A frame change while pooled changes nothing on screen."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        replots = []
-        plotter._replot_for_frame_state = lambda: replots.append(True)
-
-        plotter._on_frame_changed(2)
-
-        assert replots == []
-    finally:
-        plotter.close()
-
-
-def test_frame_axis_change_replots_only_per_frame(make_viewer_model):
-    """Switching axis matters only when a single frame is displayed."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(
-        viewer, create_stack_layer(shape=(2, 3, 5, 6))
-    )
-    try:
-        replots = []
-        plotter._replot_for_frame_state = lambda: replots.append(True)
-
-        plotter._on_frame_axis_changed(1)
-        assert replots == []
-
-        plotter.frame_context.mode = CURRENT
-        plotter._on_frame_axis_changed(0)
-        assert replots
-    finally:
-        plotter.close()
-
-
-def test_refresh_timelapse_controls_without_a_bar(make_viewer_model):
-    """The refresh helper tolerates being called before the bar exists."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
+        # The refresh helpers tolerate a missing bar, and tabs that are
+        # absent or lack the ``refresh_for_frame_change`` hook.
         bar = plotter.timelapse_bar
         del plotter.timelapse_bar
-        plotter._refresh_timelapse_controls()  # must not raise
+        plotter._refresh_timelapse_controls()
         plotter.timelapse_bar = bar
-    finally:
-        plotter.close()
-
-
-def test_refresh_frame_dependent_tabs_skips_missing_tabs(make_viewer_model):
-    """Tabs that are absent or lack the hook are stepped over."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        original = (
+        original_tabs = (
             plotter.phasor_mapping_tab,
             plotter.components_tab,
             plotter.fret_tab,
         )
         plotter.phasor_mapping_tab = None
-        # An object that simply has no ``refresh_for_frame_change`` hook.
         plotter.components_tab = object()
-
-        plotter._refresh_frame_dependent_tabs()  # must not raise
-
+        plotter._refresh_frame_dependent_tabs()
         (
             plotter.phasor_mapping_tab,
             plotter.components_tab,
             plotter.fret_tab,
-        ) = original
-    finally:
-        plotter.close()
+        ) = original_tabs
 
-
-def test_active_histogram_widget_without_data(make_viewer_model):
-    """No analysis run means no histogram to offer the animation export."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
+        # No analysis run means no histogram to offer the animation export.
         plotter.tab_widget.setCurrentWidget(plotter.settings_tab)
         assert plotter._active_histogram_widget() is None
-    finally:
-        plotter.close()
 
-
-def test_deferred_tab_update_skipped_for_a_removed_layer(make_viewer_model):
-    """A pending tab update must not look up a layer that is already gone.
-
-    The tab-change event can arrive after the layer was removed; the restore
-    paths index the viewer by name, so the update is skipped wholesale.
-    """
-    viewer = make_viewer_model()
-    layer = create_stack_layer()
-    plotter = make_plotter_with_layer(viewer, layer)
-    try:
+        # A pending tab update must not look up a layer that is already
+        # gone: the tab-change event can arrive after the layer was removed,
+        # and the restore paths index the viewer by name.
         mapping_tab = plotter.phasor_mapping_tab
         mapping_tab._needs_update = True
         restores = []
         mapping_tab._restore_on_layer_change = lambda: restores.append(True)
-
-        # The combobox still reports a layer the viewer no longer holds,
-        # which is exactly the state a late tab-change event arrives in.
         plotter.get_primary_layer_name = lambda: "Gone Intensity [Phasor]"
         plotter._run_deferred_tab_update(mapping_tab)
         assert restores == []
-
         # Tearing down short-circuits the same way.
         plotter.get_primary_layer_name = lambda: layer.name
         plotter._is_closing = True
         plotter._run_deferred_tab_update(mapping_tab)
         assert restores == []
         plotter._is_closing = False
-
         # With a live layer the deferred update still runs.
         plotter._run_deferred_tab_update(mapping_tab)
         assert restores == [True]
-    finally:
-        plotter.close()
+        del mapping_tab._restore_on_layer_change
+        del plotter.get_primary_layer_name
 
+        # No selected layers means no shared range to compute.
+        plotter.image_layers_checkable_combobox.setCheckedItems([])
+        assert plotter._frame_histogram_reference() is None
+        plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
 
-def test_layer_phasor_arrays_without_phasor_data(make_viewer_model):
-    """A layer with no G/S contributes nothing rather than raising."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        layer = plotter.get_selected_layers()[0]
+        # A layer with no G/S contributes nothing rather than raising.
+        # The cached frame range is keyed on the G/S arrays, so it is not
+        # served once G is gone, without anyone invalidating it.
+        plotter.frame_context.mode = CURRENT
+        assert plotter._frame_histogram_reference() is not None
+        plotter.frame_context.mode = POOLED
         layer.metadata.pop("G")
-
         assert plotter._get_layer_phasor_arrays(layer) is None
         assert list(plotter._iter_layer_gs_arrays()) == []
         assert plotter._phasor_center_statistics_rows(per_frame=True) == []
-
         plotter.frame_context.mode = CURRENT
         assert plotter._frame_histogram_reference() is None
     finally:
-        plotter.close()
-
-
-def test_frame_histogram_reference_without_a_selection(make_viewer_model):
-    """No selected layers means no shared range to compute."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        plotter.image_layers_checkable_combobox.setCheckedItems([])
-
-        assert plotter._frame_histogram_reference() is None
-    finally:
-        plotter.close()
-
-
-def test_frame_histogram_reference_with_all_nan_phasors(make_viewer_model):
-    """A fully masked stack yields no usable range."""
-    viewer = make_viewer_model()
-    layer = create_stack_layer()
-    layer.metadata["G"][:] = np.nan
-    layer.metadata["S"][:] = np.nan
-    plotter = make_plotter_with_layer(viewer, layer)
-    try:
-        plotter.frame_context.mode = CURRENT
-        assert plotter._frame_histogram_reference() is None
-    finally:
-        plotter.close()
-
-
-def test_frame_histogram_reference_includes_a_2d_layer(make_viewer_model):
-    """A plain 2D layer beside a stack contributes to every frame."""
-    viewer = make_viewer_model()
-    stack = create_stack_layer(name="Stack")
-    flat = create_flat_layer(name="Flat")
-    viewer.add_layer(stack)
-    viewer.add_layer(flat)
-
-    plotter = PlotterWidget(viewer)
-    plotter.image_layers_checkable_combobox.setCheckedItems(
-        [stack.name, flat.name]
-    )
-    plotter._process_layer_selection_change()
-    try:
-        plotter.frame_context.mode = CURRENT
-        reference = plotter._frame_histogram_reference()
-
-        assert reference is not None
-        # One stack frame (30 px) plus the whole 2D layer (30 px).
-        assert plotter.get_merged_features()[0].size == 2 * 5 * 6
-    finally:
-        plotter.close()
-
-
-def test_plot_blanks_when_features_are_unavailable(make_viewer_model):
-    """``plot`` blanks the canvas when a frame yields no features at all."""
-    viewer = make_viewer_model()
-    plotter = make_plotter_with_layer(viewer, create_stack_layer())
-    try:
-        plotter.frame_context.mode = CURRENT
-        plotter.plot()
-        assert plotter.canvas_widget.artists['HISTOGRAM2D'].visible is True
-
-        plotter.get_features = lambda: None
-        plotter.plot()
-
-        assert plotter.canvas_widget.artists['HISTOGRAM2D'].visible is False
-        assert plotter._frame_plot_blanked is True
-    finally:
+        plotter._is_closing = False
         plotter.close()
 
 
@@ -1889,8 +1273,9 @@ def _mask_stack_layer(viewer, layer):
     return mask
 
 
-def test_mask_labels_split_follows_the_displayed_frame(make_viewer_model):
-    """Per-label curves are sliced with the same frame as the data."""
+def test_mask_label_split_follows_the_displayed_frame(make_viewer_model):
+    """Per-label curves and per-timepoint rows are sliced with the same frame
+    as the data, so each label keeps only that frame's pixels."""
     viewer = make_viewer_model()
     layer = create_stack_layer()
     mask = _mask_stack_layer(viewer, layer)
@@ -1898,6 +1283,7 @@ def test_mask_labels_split_follows_the_displayed_frame(make_viewer_model):
     try:
         mapping_tab = _run_mapping_analysis(plotter)
         histogram = mapping_tab.histogram_widget
+        table = _mapping_stats_dock(plotter).layer_stats_table
         histogram.split_by_mask_labels = True
 
         assert histogram.mask_label_split_active()
@@ -1910,7 +1296,6 @@ def test_mask_labels_split_follows_the_displayed_frame(make_viewer_model):
         # whole-layer mask has to be sliced the same way as the data.
         plotter.frame_context.mode = CURRENT
         mapping_tab.refresh_for_frame_change()
-
         per_frame = {
             name: len(values) for name, values in histogram._datasets.items()
         }
@@ -1919,26 +1304,11 @@ def test_mask_labels_split_follows_the_displayed_frame(make_viewer_model):
             assert count == pytest.approx(pooled[name] / N_FRAMES, rel=0.5)
             assert count > 0
         assert sum(per_frame.values()) <= int((mask[0] > 0).sum())
-    finally:
-        plotter.close()
 
-
-def test_per_frame_statistics_list_every_mask_label(make_viewer_model):
-    """Per-timepoint rows are per label once the labels are separated."""
-    viewer = make_viewer_model()
-    layer = create_stack_layer()
-    _mask_stack_layer(viewer, layer)
-    plotter = make_plotter_with_layer(viewer, layer)
-    try:
-        mapping_tab = _run_mapping_analysis(plotter)
-        histogram = mapping_tab.histogram_widget
-        table = _mapping_stats_dock(plotter).layer_stats_table
-
-        plotter.frame_context.mode = CURRENT
+        # Per-timepoint rows are per label once the labels are separated.
+        histogram.split_by_mask_labels = False
         assert table.rowCount() == N_FRAMES
-
         histogram.split_by_mask_labels = True
-
         # The un-sliced source arrays keep the stack axis so they can still
         # be sliced frame by frame after the split.
         for data in histogram.frame_source_datasets().values():

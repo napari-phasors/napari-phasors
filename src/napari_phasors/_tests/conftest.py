@@ -394,8 +394,14 @@ def _cleanup_widgets_after_test(request):
     This avoids PySide6 segmentation faults and background timer leaks caused by
     unclean widget lifecycles in PySide6.
     """
-    if "make_napari_viewer" in request.fixturenames:
-        request.getfixturevalue("make_napari_viewer")
+    # Instantiate the viewer factories from here so they are torn down *after*
+    # this fixture's cleanup. ``make_viewer_model`` clears every layer on
+    # teardown; with the plugin widgets still alive and connected to
+    # ``viewer.layers.events``, each removal re-ran their layer-selection
+    # handlers (histogram redraws, combobox rebuilds) for nothing.
+    for factory in ("make_napari_viewer", "make_viewer_model"):
+        if factory in request.fixturenames:
+            request.getfixturevalue(factory)
     yield
     import contextlib
 
@@ -481,11 +487,14 @@ def _cleanup_widgets_after_test(request):
     # make_napari_viewer test after widget-heavy files). Collecting here —
     # right after the plugin widgets were closed and their deferred
     # deletions flushed, with no viewer half-built — keeps every collection
-    # small and safe.
+    # small and safe. With automatic GC enabled (PyQt) there is no backlog to
+    # defuse, and a full collection per test costs ~80 ms over a heap holding
+    # napari, so only collect when the root conftest turned GC off.
     import gc
 
-    with contextlib.suppress(Exception):
-        gc.collect()
+    if not gc.isenabled():
+        with contextlib.suppress(Exception):
+            gc.collect()
 
 
 @pytest.fixture
