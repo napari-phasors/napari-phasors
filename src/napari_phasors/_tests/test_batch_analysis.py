@@ -46,6 +46,23 @@ from napari_phasors._utils import (
 from napari_phasors._writer import write_ome_tiff
 
 
+@pytest.fixture(autouse=True)
+def _low_export_dpi(monkeypatch):
+    """Render batch exports at the lowest DPI the widget offers.
+
+    These tests check which files a run writes, not their resolution, and
+    rasterising and PNG-encoding the plots at the 300 DPI default was most
+    of this module's run time.
+    """
+    original_init = BatchAnalysisWidget.__init__
+
+    def init_with_low_dpi(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self.export_dpi_combo.setCurrentIndex(0)
+
+    monkeypatch.setattr(BatchAnalysisWidget, "__init__", init_with_low_dpi)
+
+
 def _make_phasor_layer(name="FLIM data", harmonic=None):
     raw = make_raw_flim_data(time_constants=[0.1, 1, 10])
     return make_intensity_layer_with_phasors(raw, harmonic=harmonic, name=name)
