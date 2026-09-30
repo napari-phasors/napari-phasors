@@ -516,7 +516,10 @@ def test_calibration_per_subfolder(qtbot, make_viewer_model, tmp_path):
 
 
 def test_collect_components_linear_then_fit(qtbot, make_viewer_model):
-    widget = BatchAnalysisWidget(make_viewer_model())
+    viewer = make_viewer_model()
+    reference = _make_phasor_layer(name="reference", harmonic=[1, 2])
+    viewer.add_layer(reference)
+    widget = BatchAnalysisWidget(viewer)
     qtbot.addWidget(widget)
     widget.components_group.setChecked(True)
 
@@ -526,8 +529,132 @@ def test_collect_components_linear_then_fit(qtbot, make_viewer_model):
     assert components["analysis_type"] == "linear"
     assert len(components["names"]) == 2
 
+    # Absolute concentration: its inputs show only for that method, and
+    # follow the component names and the calibrated component.
+    assert widget.concentration_box.isHidden()
+    assert [
+        widget.analysis_type_combo.itemText(i)
+        for i in range(widget.analysis_type_combo.count())
+    ] == ["Linear Projection", "Component Fit", ABSOLUTE_CONCENTRATION]
+    assert "Absolute Concentration" in widget.components_note.text()
+    widget.analysis_type_combo.setCurrentText(ABSOLUTE_CONCENTRATION)
+    assert not widget.concentration_box.isHidden()
+    assert [
+        widget.concentration_calibrated_combo.itemText(i)
+        for i in range(widget.concentration_calibrated_combo.count())
+    ] == ["Component 1", "Component 2"]
+    assert "Component 2" in widget.concentration_second_checkbox.text()
+    widget._component_rows[1]["name"].setText("Bound")
+    assert widget.concentration_calibrated_combo.itemText(1) == "Bound"
+    assert "Bound" in widget.concentration_second_checkbox.text()
+    widget.concentration_calibrated_combo.setCurrentIndex(1)
+    assert "Component 1" in widget.concentration_second_checkbox.text()
+    widget.concentration_calibrated_combo.setCurrentIndex(0)
+    assert not widget.concentration_ratio_edit.isEnabled()
+    widget.concentration_second_checkbox.setChecked(True)
+    assert widget.concentration_ratio_edit.isEnabled()
+    widget.concentration_second_checkbox.setChecked(False)
+
+    # A reference measured on a layer is read when the batch is set up.
+    _concentration_ready(widget, reference)
+    measured = phasor_reference_from_layer(reference, 1)
+    assert widget.concentration_mean_edit.isReadOnly()
+    assert widget.concentration_mean_edit.text() == f"{measured[0]:.6g}"
+    config = widget.build_pipeline([1, 2]).components
+    assert config["analysis_type"] == "concentration"
+    assert config["names"] == ["Free", "Bound"]
+    assert config["concentration"] == {
+        "calibrated_component": 0,
+        "reference": list(measured),
+        "reference_layer": reference.name,
+        "reference_concentration": 1.0,
+        "units": "mM",
+        "brightness_ratio": None,
+    }
+    widget.concentration_second_checkbox.setChecked(True)
+    widget.concentration_ratio_edit.setText("0")
+    with pytest.raises(ValueError, match="brightness ratio"):
+        widget.build_pipeline([1, 2])
+    widget.concentration_ratio_edit.setText("2.5")
+    assert (
+        widget.build_pipeline([1, 2]).components["concentration"][
+            "brightness_ratio"
+        ]
+        == 2.5
+    )
+    widget.concentration_value_edit.setText("-1")
+    with pytest.raises(ValueError, match="reference concentration"):
+        widget.build_pipeline([1, 2])
+    widget.concentration_value_edit.setText("1")
+    # The model needs the two components apart along G.
+    widget._component_rows[1]["g"].setText(str(_CONC_COMPONENTS[0][0]))
+    widget._store_component_coord(widget._component_rows[1])
+    with pytest.raises(ValueError, match="different G"):
+        widget.build_pipeline([1, 2])
+    widget._component_rows[1]["g"].setText(str(_CONC_COMPONENTS[1][0]))
+    widget._store_component_coord(widget._component_rows[1])
+    # A reference without data at the harmonic, or no longer open, is named.
+    with pytest.raises(ValueError, match="No usable phasor data"):
+        widget._collect_concentration(5)
+    widget.concentration_reference_combo.addItem("closed layer")
+    widget.concentration_reference_combo.setCurrentText("closed layer")
+    assert "No usable phasor data in closed layer" in (
+        widget.concentration_note.text()
+    )
+    with pytest.raises(ValueError, match="no longer open"):
+        widget._collect_concentration(1)
+
+    # Typed reference phasors are kept per harmonic, like the components.
+    _concentration_ready(widget)
+    with pytest.raises(ValueError, match="intensity, G and S at harmonic 1"):
+        widget.build_pipeline([1, 2])
+    widget.concentration_mean_edit.setText("-4")
+    widget.concentration_g_edit.setText("0.8")
+    widget.concentration_s_edit.setText("0.3")
+    widget._store_concentration_reference()
+    with pytest.raises(ValueError, match="intensity must be positive"):
+        widget.build_pipeline([1, 2])
+    widget.concentration_mean_edit.setText("4")
+    assert widget.build_pipeline([1, 2]).components["concentration"][
+        "reference"
+    ] == [4.0, 0.8, 0.3]
+    widget.components_harmonic_spin.setValue(2)
+    assert widget.concentration_g_edit.text() == ""
+    widget.concentration_g_edit.setText("0.6")
+    widget.concentration_s_edit.setText("0.35")
+    for row, (g, s) in zip(
+        widget._component_rows, ((0.7, 0.4), (0.1, 0.25)), strict=True
+    ):
+        row["g"].setText(str(g))
+        row["s"].setText(str(s))
+    config = widget.build_pipeline([1, 2]).components
+    assert config["harmonic"] == 2
+    assert config["concentration"]["reference"] == [4.0, 0.6, 0.35]
+    widget.components_harmonic_spin.setValue(1)
+    assert widget.concentration_g_edit.text() == "0.8"
+    assert widget._concentration_reference_coords == {
+        1: (0.8, 0.3),
+        2: (0.6, 0.35),
+    }
+
+    # A reference layer that goes leaves its measurement as typed values.
+    _concentration_ready(widget, reference)
+    measured = phasor_reference_from_layer(reference, 1)
+    viewer.layers.remove(reference)
+    assert widget.concentration_reference_combo.currentText() == (
+        MANUAL_REFERENCE
+    )
+    assert not widget.concentration_mean_edit.isReadOnly()
+    config = widget.build_pipeline([1]).components
+    assert config["concentration"]["reference"] == pytest.approx(
+        list(measured), rel=1e-5
+    )
+    assert config["concentration"]["reference_layer"] is None
+
     # Adding a third component forces the Component Fit path.
     widget._add_component_row("Third", 0.5, 0.5)
+    assert widget.analysis_type_combo.currentText() == "Component Fit"
+    assert widget.concentration_box.isHidden()
     components = widget.build_pipeline([1, 2]).components
     assert components["analysis_type"] == "fit"
     assert len(components["component_real"]) == 3
@@ -2168,7 +2295,10 @@ def test_run_batch_components_plot_with_fraction_histogram(
         str(in_root / "a.ome.tif"), _make_phasor_layer(name="a", harmonic=[1])
     )
 
-    widget = BatchAnalysisWidget(make_viewer_model())
+    viewer = make_viewer_model()
+    reference = _make_phasor_layer(name="reference", harmonic=[1, 2])
+    viewer.add_layer(reference)
+    widget = BatchAnalysisWidget(viewer)
     qtbot.addWidget(widget)
     widget._input_folder = str(in_root)
     widget._rescan()
@@ -2192,6 +2322,41 @@ def test_run_batch_components_plot_with_fraction_histogram(
 
     plots = {p.name for p in out_root.rglob("*.png")}
     assert any("_components_phasor_H1.png" in name for name in plots)
+
+    # Absolute concentration: maps, histograms with units, statistics and
+    # plots, for two files.
+    write_ome_tiff(
+        str(in_root / "b.ome.tif"), _make_phasor_layer(name="b", harmonic=[1])
+    )
+    widget._rescan()
+    _concentration_ready(widget, reference)
+    widget.concentration_second_checkbox.setChecked(True)
+    widget.concentration_ratio_edit.setText("2")
+    widget.plot_combined_checkbox.setChecked(True)
+    controls = widget.components_export_controls
+    controls["stats"].setChecked(True)
+    controls["histogram"].setCheckedItems(["PNG"])
+    widget.run_batch()
+    files = {path.name for path in out_root.rglob("*") if path.is_file()}
+    for label in ("Free", "Bound", "Total"):
+        assert f"a_{label}_concentration.png" in files
+        assert f"a_{label}_concentration_histogram.png" in files
+        assert (
+            f"components_{label}_concentration_grouped_histogram.png" in files
+        )
+    assert widget._output_axis_labels == {
+        "Free concentration": "Free concentration (mM)",
+        "Bound concentration": "Bound concentration (mM)",
+        "Total concentration": "Total concentration (mM)",
+    }
+    with open(next(out_root.rglob("components_statistics.csv"))) as handle:
+        rows = list(csv.DictReader(handle))
+    assert {row["Output"] for row in rows} == {
+        "Free concentration",
+        "Bound concentration",
+        "Total concentration",
+    }
+    assert len({row["File"] for row in rows}) == 2
 
 
 def test_combined_merged_histogram_exported(
@@ -3528,6 +3693,54 @@ def test_apply_component_fraction_no_data_returns_empty():
     multi = dict(base, harmonics=[1, 2])
     assert _apply_component_fraction(_plain_layer(), multi) == []
 
+    # Absolute concentration: one image per quantity, as the tab makes them.
+    from napari_phasors.components_tab import component_concentrations
+
+    layer = _make_phasor_layer(name="a", harmonic=[1, 2])
+    real, imag = harmonic_plane(layer, 1)
+    outputs = _apply_component_fraction(
+        layer, _concentration_config(ratio=2.0, calibrated=1, units="µM")
+    )
+    assert [image.name for image in outputs] == [
+        analysis_layer_name(concentration_analysis_label(name), layer.name)
+        for name in ("Bound", "Free", "Total")
+    ]
+    want = component_concentrations(
+        np.asarray(layer.data),
+        real,
+        imag,
+        [_CONC_COMPONENTS[1][0], _CONC_COMPONENTS[0][0]],
+        [_CONC_COMPONENTS[1][1], _CONC_COMPONENTS[0][1]],
+        (5.0, 0.8, 0.28),
+        2.0,
+        2.0,
+    )
+    for image, values in zip(outputs, want, strict=True):
+        np.testing.assert_array_equal(image.data, values)
+    assert outputs[0].metadata["axis_label"] == "Bound concentration (µM)"
+    assert outputs[0].colormap.name == "cyan"
+    assert outputs[2].colormap.name == "viridis"
+    only = _apply_component_fraction(layer, _concentration_config(units=""))
+    assert [image.name for image in only] == [
+        analysis_layer_name(concentration_analysis_label("Free"), layer.name)
+    ]
+    assert only[0].metadata["axis_label"] == "Free concentration"
+    # Through the whole pipeline too.
+    extra = apply_pipeline(
+        _make_phasor_layer(name="b", harmonic=[1]),
+        BatchPipeline(components=_concentration_config(ratio=1.0)),
+    )
+    assert len(extra) == 3
+    # A harmonic the file lacks, or a mismatched intensity, yields nothing.
+    missing = _concentration_config()
+    missing["harmonic"] = 7
+    assert _apply_component_fraction(layer, missing) == []
+    odd = Image(
+        np.ones((3, 3)),
+        metadata={"G": np.zeros((4, 4)), "S": np.zeros((4, 4))},
+    )
+    assert _apply_component_fraction(odd, _concentration_config()) == []
+
 
 def test_apply_component_fraction_fit_without_mean():
     layer = _make_phasor_layer()
@@ -3823,7 +4036,10 @@ def test_apply_component_settings_restores_linear_projection_type(
     ``draw_components_overlay`` skipped the (Linear-Projection-only) colormap
     line and fraction-histogram overlay even with their checkboxes on.
     """
-    widget = BatchAnalysisWidget(make_viewer_model())
+    viewer = make_viewer_model()
+    reference = _make_phasor_layer(name="reference", harmonic=[1, 2])
+    viewer.add_layer(reference)
+    widget = BatchAnalysisWidget(viewer)
     qtbot.addWidget(widget)
 
     settings = {
@@ -3851,6 +4067,76 @@ def test_apply_component_settings_restores_linear_projection_type(
     assert widget.analysis_type_combo.currentText() == "Linear Projection"
     config = widget.build_pipeline([1]).components
     assert config["analysis_type"] == "linear"
+
+    # Copied settings of an absolute concentration reproduce the analysis, at
+    # the harmonic it ran at.
+    def concentration_settings(reference_layer):
+        return {
+            "component_analysis": {
+                "analysis_type": ABSOLUTE_CONCENTRATION,
+                "last_analysis_harmonic": 2,
+                "components": {
+                    "0": {
+                        "name": "Free",
+                        "gs_harmonics": {
+                            "1": {"g": 0.9, "s": 0.25},
+                            "2": {"g": 0.7, "s": 0.4},
+                        },
+                    },
+                    "1": {
+                        "name": "Bound",
+                        "gs_harmonics": {
+                            "1": {"g": 0.25, "s": 0.43},
+                            "2": {"g": 0.1, "s": 0.25},
+                        },
+                    },
+                },
+                "concentration": {
+                    "calibrated_component": 1,
+                    "reference_layer": reference_layer,
+                    "reference_mean": 3.25,
+                    "reference_gs_harmonics": {
+                        "1": {"g": 0.8, "s": 0.3},
+                        "2": {"g": 0.6, "s": 0.35},
+                        "3": {"g": None, "s": None},
+                    },
+                    "reference_concentration": 250.0,
+                    "units": "µM",
+                    "second_component": True,
+                    "brightness_ratio": 3.0,
+                },
+            }
+        }
+
+    widget._apply_settings_to_ui(concentration_settings("closed layer"))
+    assert widget.components_group.isChecked()
+    assert widget.analysis_type_combo.currentText() == ABSOLUTE_CONCENTRATION
+    assert not widget.concentration_box.isHidden()
+    assert widget.components_harmonic_spin.value() == 2
+    assert widget.concentration_calibrated_combo.currentIndex() == 1
+    assert widget.concentration_reference_combo.currentText() == (
+        MANUAL_REFERENCE
+    )
+    assert widget.concentration_mean_edit.text() == "3.25"
+    assert widget.concentration_g_edit.text() == "0.6"
+    assert widget.concentration_value_edit.text() == "250"
+    assert widget.concentration_units_combo.currentText() == "µM"
+    assert widget.concentration_second_checkbox.isChecked()
+    assert widget.concentration_ratio_edit.text() == "3"
+    config = widget.build_pipeline([1, 2]).components
+    assert config["harmonic"] == 2
+    assert config["concentration"]["reference"] == [3.25, 0.6, 0.35]
+    assert config["concentration"]["calibrated_component"] == 1
+    # A reference layer that is open here is measured again.
+    widget._apply_settings_to_ui(concentration_settings(reference.name))
+    assert widget.concentration_reference_combo.currentText() == (
+        reference.name
+    )
+    assert widget.concentration_mean_edit.isReadOnly()
+    config = widget.build_pipeline([1, 2]).components
+    assert config["concentration"]["reference"] == list(
+        phasor_reference_from_layer(reference, 2)
+    )
 
 
 def test_pipeline_step_annotates_error_with_step_name():
@@ -3891,6 +4177,22 @@ def test_draw_components_overlay_plain_line_and_polygon():
         settings={"show_dots": False, "show_labels": False},
     )
     assert ax.patches
+    plt.close(fig)
+
+    # Absolute concentration draws the components, not the reference.
+    from types import SimpleNamespace
+
+    from napari_phasors._batch_analysis import _add_phasor_overlay
+
+    config = _concentration_config(ratio=2.0)
+    config["line_style"] = {"show_colormap_line": True}
+    config["label_style"] = {"show_labels": True}
+    plt, fig, ax = _agg_axes()
+    _add_phasor_overlay(
+        SimpleNamespace(ax=ax), {"kind": "components", "components": config}
+    )
+    assert not any(line.get_marker() == "*" for line in ax.lines)
+    assert not any("Reference" in text.get_text() for text in ax.texts)
     plt.close(fig)
 
 
@@ -4934,21 +5236,19 @@ def test_export_histogram_honours_log_scale_and_bins(qtbot, tmp_path):
     assert path.exists()
 
 
-# -- Absolute concentration -------------------------------------------------
+# -- Absolute concentration helpers ------------------------------------------
+# The scenarios are sections of the tests above, one widget for each of them.
 
-#: Positions of the two components the concentration tests place.
+#: Positions of the two components the concentration sections place.
 _CONC_COMPONENTS = ((0.9, 0.25), (0.25, 0.43))
 
 
-def _concentration_widget(qtbot, make_viewer_model, reference=True):
-    """Return ``(viewer, reference_layer, widget)`` set up for a
-    two-component absolute concentration, measured on a viewer layer when
-    *reference* is true."""
-    viewer = make_viewer_model()
-    reference_layer = _make_phasor_layer(name="reference", harmonic=[1, 2])
-    viewer.add_layer(reference_layer)
-    widget = BatchAnalysisWidget(viewer)
-    qtbot.addWidget(widget)
+def _concentration_ready(widget, reference_layer=None):
+    """Set *widget* up for a two-component absolute concentration.
+
+    Places and names the components and measures the reference solution on
+    *reference_layer*; without one the reference is typed in, from empty.
+    """
     widget.components_group.setChecked(True)
     widget.analysis_type_combo.setCurrentText(ABSOLUTE_CONCENTRATION)
     for row, name, (g, s) in zip(
@@ -4961,11 +5261,19 @@ def _concentration_widget(qtbot, make_viewer_model, reference=True):
         row["g"].setText(str(g))
         row["s"].setText(str(s))
         widget._store_component_coord(row)
-    if reference:
+    if reference_layer is not None:
         widget.concentration_reference_combo.setCurrentText(
             reference_layer.name
         )
-    return viewer, reference_layer, widget
+    else:
+        widget.concentration_reference_combo.setCurrentText(MANUAL_REFERENCE)
+        for edit in (
+            widget.concentration_mean_edit,
+            widget.concentration_g_edit,
+            widget.concentration_s_edit,
+        ):
+            edit.setText("")
+        widget._store_concentration_reference()
 
 
 def _concentration_config(ratio=None, calibrated=0, units="mM"):
@@ -4988,382 +5296,16 @@ def _concentration_config(ratio=None, calibrated=0, units="mM"):
     }
 
 
-def test_concentration_box_follows_the_analysis_type(qtbot, make_viewer_model):
-    """The calibration inputs show only for two-component concentrations."""
-    widget = BatchAnalysisWidget(make_viewer_model())
-    qtbot.addWidget(widget)
-    widget.components_group.setChecked(True)
-    assert widget.concentration_box.isHidden()
-    assert [
-        widget.analysis_type_combo.itemText(i)
-        for i in range(widget.analysis_type_combo.count())
-    ] == ["Linear Projection", "Component Fit", ABSOLUTE_CONCENTRATION]
-    assert "Absolute Concentration" in widget.components_note.text()
-
-    widget.analysis_type_combo.setCurrentText(ABSOLUTE_CONCENTRATION)
-    assert not widget.concentration_box.isHidden()
-    assert [
-        widget.concentration_calibrated_combo.itemText(i)
-        for i in range(widget.concentration_calibrated_combo.count())
-    ] == ["Component 1", "Component 2"]
-    assert "Component 2" in widget.concentration_second_checkbox.text()
-
-    # The labels follow the component names and the calibrated component.
-    widget._component_rows[1]["name"].setText("Bound")
-    assert widget.concentration_calibrated_combo.itemText(1) == "Bound"
-    assert "Bound" in widget.concentration_second_checkbox.text()
-    widget.concentration_calibrated_combo.setCurrentIndex(1)
-    assert "Component 1" in widget.concentration_second_checkbox.text()
-
-    assert not widget.concentration_ratio_edit.isEnabled()
-    widget.concentration_second_checkbox.setChecked(True)
-    assert widget.concentration_ratio_edit.isEnabled()
-
-    # A third component leaves only a fit.
-    widget._add_component_row("Third", 0.5, 0.5)
-    assert widget.analysis_type_combo.currentText() == "Component Fit"
-    assert widget.concentration_box.isHidden()
-
-
-def test_collect_components_concentration_from_a_layer(
-    qtbot, make_viewer_model
-):
-    """A reference layer is measured when the batch is set up."""
-    viewer, reference, widget = _concentration_widget(qtbot, make_viewer_model)
-    measured = phasor_reference_from_layer(reference, 1)
-    assert widget.concentration_mean_edit.isReadOnly()
-    assert widget.concentration_mean_edit.text() == f"{measured[0]:.6g}"
-
-    config = widget.build_pipeline([1, 2]).components
-    assert config["analysis_type"] == "concentration"
-    assert config["names"] == ["Free", "Bound"]
-    assert config["concentration"] == {
-        "calibrated_component": 0,
-        "reference": list(measured),
-        "reference_layer": reference.name,
-        "reference_concentration": 1.0,
-        "units": "mM",
-        "brightness_ratio": None,
-    }
-
-    widget.concentration_second_checkbox.setChecked(True)
-    widget.concentration_ratio_edit.setText("0")
-    with pytest.raises(ValueError, match="brightness ratio"):
-        widget.build_pipeline([1, 2])
-    widget.concentration_ratio_edit.setText("2.5")
-    assert (
-        widget.build_pipeline([1, 2]).components["concentration"][
-            "brightness_ratio"
-        ]
-        == 2.5
-    )
-
-    widget.concentration_value_edit.setText("-1")
-    with pytest.raises(ValueError, match="reference concentration"):
-        widget.build_pipeline([1, 2])
-    widget.concentration_value_edit.setText("1")
-
-    # The model needs the two components apart along G.
-    widget._component_rows[1]["g"].setText(str(_CONC_COMPONENTS[0][0]))
-    widget._store_component_coord(widget._component_rows[1])
-    with pytest.raises(ValueError, match="different G"):
-        widget.build_pipeline([1, 2])
-
-    # A reference without data at the harmonic, or no longer open, is named.
-    with pytest.raises(ValueError, match="No usable phasor data"):
-        widget._collect_concentration(5)
-    widget.concentration_reference_combo.addItem("closed layer")
-    widget.concentration_reference_combo.setCurrentText("closed layer")
-    assert "No usable phasor data in closed layer" in (
-        widget.concentration_note.text()
-    )
-    with pytest.raises(ValueError, match="no longer open"):
-        widget._collect_concentration(1)
-
-
-def test_collect_components_concentration_from_typed_values(
-    qtbot, make_viewer_model
-):
-    """Typed reference phasors are kept per harmonic, like the components."""
-    viewer, reference, widget = _concentration_widget(
-        qtbot, make_viewer_model, reference=False
-    )
-    with pytest.raises(ValueError, match="intensity, G and S at harmonic 1"):
-        widget.build_pipeline([1, 2])
-
-    widget.concentration_mean_edit.setText("-4")
-    widget.concentration_g_edit.setText("0.8")
-    widget.concentration_s_edit.setText("0.3")
-    widget._store_concentration_reference()
-    with pytest.raises(ValueError, match="intensity must be positive"):
-        widget.build_pipeline([1, 2])
-    widget.concentration_mean_edit.setText("4")
-    assert widget.build_pipeline([1, 2]).components["concentration"][
-        "reference"
-    ] == [4.0, 0.8, 0.3]
-
-    # Another harmonic has its own phasor.
-    widget.components_harmonic_spin.setValue(2)
-    assert widget.concentration_g_edit.text() == ""
-    widget.concentration_g_edit.setText("0.6")
-    widget.concentration_s_edit.setText("0.35")
-    for row, (g, s) in zip(
-        widget._component_rows, ((0.7, 0.4), (0.1, 0.25)), strict=True
-    ):
-        row["g"].setText(str(g))
-        row["s"].setText(str(s))
-    config = widget.build_pipeline([1, 2]).components
-    assert config["harmonic"] == 2
-    assert config["concentration"]["reference"] == [4.0, 0.6, 0.35]
-
-    widget.components_harmonic_spin.setValue(1)
-    assert widget.concentration_g_edit.text() == "0.8"
-    assert widget._concentration_reference_coords == {
-        1: (0.8, 0.3),
-        2: (0.6, 0.35),
-    }
-
-
-def test_concentration_reference_layer_removed_keeps_its_values(
-    qtbot, make_viewer_model
-):
-    """A reference layer that goes leaves its measurement as typed values."""
-    viewer, reference, widget = _concentration_widget(qtbot, make_viewer_model)
-    measured = phasor_reference_from_layer(reference, 1)
-    viewer.layers.remove(reference)
-    assert widget.concentration_reference_combo.currentText() == (
-        MANUAL_REFERENCE
-    )
-    assert not widget.concentration_mean_edit.isReadOnly()
-    config = widget.build_pipeline([1]).components
-    assert config["concentration"]["reference"] == pytest.approx(
-        list(measured), rel=1e-5
-    )
-    assert config["concentration"]["reference_layer"] is None
-
-
-def test_apply_component_concentration_outputs():
-    """The pipeline step makes one image per quantity, as the tab does."""
-    from napari_phasors.components_tab import component_concentrations
-
-    layer = _make_phasor_layer(name="a", harmonic=[1, 2])
-    real, imag = harmonic_plane(layer, 1)
-
-    outputs = _apply_component_fraction(
-        layer, _concentration_config(ratio=2.0, calibrated=1, units="µM")
-    )
-    assert [image.name for image in outputs] == [
-        analysis_layer_name(concentration_analysis_label("Bound"), layer.name),
-        analysis_layer_name(concentration_analysis_label("Free"), layer.name),
-        analysis_layer_name(concentration_analysis_label("Total"), layer.name),
-    ]
-    want = component_concentrations(
-        np.asarray(layer.data),
-        real,
-        imag,
-        [_CONC_COMPONENTS[1][0], _CONC_COMPONENTS[0][0]],
-        [_CONC_COMPONENTS[1][1], _CONC_COMPONENTS[0][1]],
-        (5.0, 0.8, 0.28),
-        2.0,
-        2.0,
-    )
-    for image, values in zip(outputs, want, strict=True):
-        np.testing.assert_array_equal(image.data, values)
-    assert outputs[0].metadata["axis_label"] == "Bound concentration (µM)"
-    assert outputs[0].colormap.name == "cyan"
-    assert outputs[2].colormap.name == "viridis"
-
-    only = _apply_component_fraction(layer, _concentration_config(units=""))
-    assert [image.name for image in only] == [
-        analysis_layer_name(concentration_analysis_label("Free"), layer.name)
-    ]
-    assert only[0].metadata["axis_label"] == "Free concentration"
-
-    # Through the whole pipeline too.
-    extra = apply_pipeline(
-        _make_phasor_layer(name="b", harmonic=[1]),
-        BatchPipeline(components=_concentration_config(ratio=1.0)),
-    )
-    assert len(extra) == 3
-
-    # A harmonic the file lacks, or a mismatched intensity, yields nothing.
-    missing = _concentration_config()
-    missing["harmonic"] = 7
-    assert _apply_component_fraction(layer, missing) == []
-    odd = Image(
-        np.ones((3, 3)),
-        metadata={"G": np.zeros((4, 4)), "S": np.zeros((4, 4))},
-    )
-    assert _apply_component_fraction(odd, _concentration_config()) == []
-
-
-def test_apply_settings_copies_a_concentration(qtbot, make_viewer_model):
-    """Copied settings reproduce the analysis, at the harmonic it ran at."""
-    viewer = make_viewer_model()
-    reference = _make_phasor_layer(name="reference", harmonic=[1, 2])
-    viewer.add_layer(reference)
-    widget = BatchAnalysisWidget(viewer)
-    qtbot.addWidget(widget)
-
-    def settings(reference_layer):
-        return {
-            "component_analysis": {
-                "analysis_type": ABSOLUTE_CONCENTRATION,
-                "last_analysis_harmonic": 2,
-                "components": {
-                    "0": {
-                        "name": "Free",
-                        "gs_harmonics": {
-                            "1": {"g": 0.9, "s": 0.25},
-                            "2": {"g": 0.7, "s": 0.4},
-                        },
-                    },
-                    "1": {
-                        "name": "Bound",
-                        "gs_harmonics": {
-                            "1": {"g": 0.25, "s": 0.43},
-                            "2": {"g": 0.1, "s": 0.25},
-                        },
-                    },
-                },
-                "concentration": {
-                    "calibrated_component": 1,
-                    "reference_layer": reference_layer,
-                    "reference_mean": 3.25,
-                    "reference_gs_harmonics": {
-                        "1": {"g": 0.8, "s": 0.3},
-                        "2": {"g": 0.6, "s": 0.35},
-                        "3": {"g": None, "s": None},
-                    },
-                    "reference_concentration": 250.0,
-                    "units": "µM",
-                    "second_component": True,
-                    "brightness_ratio": 3.0,
-                },
-            }
-        }
-
-    widget._apply_settings_to_ui(settings("closed layer"))
-    assert widget.components_group.isChecked()
-    assert widget.analysis_type_combo.currentText() == ABSOLUTE_CONCENTRATION
-    assert not widget.concentration_box.isHidden()
-    assert widget.components_harmonic_spin.value() == 2
-    assert widget.concentration_calibrated_combo.currentIndex() == 1
-    assert widget.concentration_reference_combo.currentText() == (
-        MANUAL_REFERENCE
-    )
-    assert widget.concentration_mean_edit.text() == "3.25"
-    assert widget.concentration_g_edit.text() == "0.6"
-    assert widget.concentration_value_edit.text() == "250"
-    assert widget.concentration_units_combo.currentText() == "µM"
-    assert widget.concentration_second_checkbox.isChecked()
-    assert widget.concentration_ratio_edit.text() == "3"
-    config = widget.build_pipeline([1, 2]).components
-    assert config["harmonic"] == 2
-    assert config["concentration"]["reference"] == [3.25, 0.6, 0.35]
-    assert config["concentration"]["calibrated_component"] == 1
-
-    # A reference layer that is open here is measured again.
-    widget._apply_settings_to_ui(settings(reference.name))
-    assert widget.concentration_reference_combo.currentText() == (
-        reference.name
-    )
-    assert widget.concentration_mean_edit.isReadOnly()
-    config = widget.build_pipeline([1, 2]).components
-    assert config["concentration"]["reference"] == list(
-        phasor_reference_from_layer(reference, 2)
-    )
-
-
-def test_run_batch_exports_concentrations(qtbot, make_viewer_model, tmp_path):
-    """End to end: maps, histograms with units, statistics and plots."""
-    in_root = tmp_path / "in"
-    in_root.mkdir()
-    out_root = tmp_path / "out"
-    out_root.mkdir()
-    for name in ("a", "b"):
-        write_ome_tiff(
-            str(in_root / f"{name}.ome.tif"),
-            _make_phasor_layer(name=name, harmonic=[1]),
-        )
-
-    viewer, reference, widget = _concentration_widget(qtbot, make_viewer_model)
-    widget.concentration_second_checkbox.setChecked(True)
-    widget.concentration_ratio_edit.setText("2")
-    widget._input_folder = str(in_root)
-    widget._rescan()
-    widget.format_combobox.setCurrentIndex(
-        widget.format_combobox.findData(".ome.tif")
-    )
-    widget.harmonics_edit.setText("1")
-    widget._export_folder = str(out_root)
-    widget.export_ometiff_checkbox.setChecked(False)
-    widget.components_plot_toggle.setChecked(True)
-    widget.plot_combined_checkbox.setChecked(True)
-    controls = widget.components_export_controls
-    controls["stats"].setChecked(True)
-    controls["histogram"].setCheckedItems(["PNG"])
-
-    widget.run_batch()
-
-    files = {path.name for path in out_root.rglob("*") if path.is_file()}
-    for label in ("Free", "Bound", "Total"):
-        assert f"a_{label}_concentration.png" in files
-        assert f"a_{label}_concentration_histogram.png" in files
-        assert (
-            f"components_{label}_concentration_grouped_histogram.png" in files
-        )
-    assert "a_components_phasor_H1.png" in files
-    assert widget._output_axis_labels == {
-        "Free concentration": "Free concentration (mM)",
-        "Bound concentration": "Bound concentration (mM)",
-        "Total concentration": "Total concentration (mM)",
-    }
-    with open(next(out_root.rglob("components_statistics.csv"))) as handle:
-        rows = list(csv.DictReader(handle))
-    assert {row["Output"] for row in rows} == {
-        "Free concentration",
-        "Bound concentration",
-        "Total concentration",
-    }
-    assert len({row["File"] for row in rows}) == 2
-
-
-def test_components_overlay_draws_concentrations():
-    """The exported phasor plot draws the components, not the reference."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    from types import SimpleNamespace
-
-    import matplotlib.pyplot as plt
-
-    from napari_phasors._batch_analysis import _add_phasor_overlay
-
-    config = _concentration_config(ratio=2.0)
-    config["line_style"] = {"show_colormap_line": True}
-    config["label_style"] = {"show_labels": True}
-    fig, ax = plt.subplots()
-    _add_phasor_overlay(
-        SimpleNamespace(ax=ax), {"kind": "components", "components": config}
-    )
-    assert not any(line.get_marker() == "*" for line in ax.lines)
-    assert not any("Reference" in text.get_text() for text in ax.texts)
-    plt.close(fig)
-
-    assert (
-        BatchAnalysisWidget._subfolder_for_layer(
-            None, "a [(Absolute Concentration) Free]"
-        )
-        == "components"
-    )
-
-
 @pytest.mark.parametrize(
     ("layer_name", "tab", "label"),
     [
         ("img [(Linear Projection) Donor]", "components", "Donor fraction"),
         ("img [(Component Fit) A]", "components", "A fraction"),
+        (
+            "img [(Absolute Concentration) Free]",
+            "components",
+            "Free concentration",
+        ),
         ("img [Apparent Phase Lifetime]", "phasor_mapping", None),
         ("img [Phase]", "phasor_mapping", None),
         ("img [FRET efficiency]", "fret", None),
