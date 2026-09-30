@@ -84,7 +84,6 @@ from ._utils import (
     apply_filter_and_threshold,
     component_analysis_label,
     compute_calibration_parameters,
-    keep_layer_units_consistent,
     make_solid_contour_cmap,
     normalize_legend_location,
     normalize_rgb,
@@ -1184,7 +1183,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         """Build the batch analysis window and all of its tabs."""
         super().__init__()
         self.viewer = viewer
-        keep_layer_units_consistent(self.viewer)
         self._floated = False
         self._scanned = {}  # extension -> list[path]
         self._input_folder = None

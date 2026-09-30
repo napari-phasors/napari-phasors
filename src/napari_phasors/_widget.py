@@ -74,7 +74,6 @@ from ._utils import (
     FileOrderDialog,
     PopoutWindowMixin,
     TileLayoutDialog,
-    keep_layer_units_consistent,
     natural_sort_key,
     show_activity_progress,
 )
@@ -110,7 +109,6 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         """Initialize the widget."""
         super().__init__()
         self.viewer = viewer
-        keep_layer_units_consistent(self.viewer)
         self._floated = False
 
         self.setMinimumWidth(400)

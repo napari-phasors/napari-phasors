@@ -21,7 +21,6 @@ import numpy as np
 import phasorpy.io as io
 import tifffile
 import xarray as xr
-from napari import current_viewer
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 
@@ -38,7 +37,6 @@ from ._utils import (
     cast_phasor_storage,
     extract_channel_label,
     format_phasor_layer_name,
-    keep_layer_units_consistent,
     show_activity_progress,
 )
 
@@ -334,10 +332,6 @@ def napari_get_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
-    # Whatever this reads lands in the open viewer, beside layers whose units
-    # may not match its own.
-    keep_layer_units_consistent(current_viewer())
-
     if isinstance(path, list):
         if len(path) == 0:
             show_error("No files selected.")
