@@ -3751,6 +3751,17 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.sd_checkbox.setChecked(show_sd)
         layout.addWidget(self.sd_checkbox)
 
+        # --- Fill area under the curve ---
+        self.fill_checkbox = QCheckBox("Fill area under the curve")
+        self.fill_checkbox.setToolTip(
+            "Colour the area under the merged curve. Available when no "
+            "standard deviation band is drawn, for instance with a single "
+            "layer."
+        )
+        self.fill_checkbox.setChecked(True)
+        self.fill_checkbox.setEnabled(False)
+        layout.addWidget(self.fill_checkbox)
+
         # --- Normalise to maximum ---
         self.normalize_checkbox = QCheckBox("Normalize to maximum")
         self.normalize_checkbox.setToolTip(
@@ -3813,6 +3824,12 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             lambda _index: self._fill_legend_positions()
         )
         self.legend_checkbox.toggled.connect(self._update_legend_controls)
+        self._sd_layer_count = len(layer_labels or [])
+        self.sd_checkbox.toggled.connect(
+            lambda _checked: self._update_ui_for_mode(
+                self.mode_combo.currentText()
+            )
+        )
 
         # --- Layer colours (Individual layers mode) ---
         default_tab10 = plt.cm.tab10.colors
@@ -3863,6 +3880,11 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         style_row.addStretch()
         series_layout.addLayout(style_row)
 
+        # The colour buttons only matter for solid colours
+        self._series_colors_widget = QWidget()
+        series_colors_layout = QVBoxLayout(self._series_colors_widget)
+        series_colors_layout.setContentsMargins(0, 0, 0, 0)
+        series_layout.addWidget(self._series_colors_widget)
         self._series_color_buttons = {}
         if series_labels:
             for idx, label in enumerate(series_labels):
@@ -3879,8 +3901,12 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
                 self._set_btn_color(btn, color)
                 btn.clicked.connect(lambda checked, b=btn: self._pick_color(b))
                 row.addWidget(btn)
-                series_layout.addLayout(row)
+                series_colors_layout.addLayout(row)
                 self._series_color_buttons[label] = btn
+        self.series_style_combo.currentIndexChanged.connect(
+            lambda _index: self._update_series_colors_visibility()
+        )
+        self._update_series_colors_visibility()
         layout.addWidget(self._series_section)
 
         # --- Group section (Grouped mode) ---
@@ -4019,13 +4045,26 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             and not is_grouped
             and not is_individual
         )
-        # SD only meaningful for Merged / Grouped
-        self.sd_checkbox.setEnabled(not is_individual)
+        # SD needs several layers to pool, and only applies to Merged / Grouped
+        sd_available = not is_individual and self._sd_layer_count > 1
+        self.sd_checkbox.setEnabled(sd_available)
+        # The fill stands in for the SD band on a single merged curve
+        self.fill_checkbox.setEnabled(
+            mode == "Merged"
+            and not self._series_color_buttons
+            and not (sd_available and self.sd_checkbox.isChecked())
+        )
         # Merged draws a legend only when it shows several series at once
         self.legend_checkbox.setEnabled(
             is_individual or is_grouped or bool(self._series_color_buttons)
         )
         self._update_legend_controls()
+
+    def _update_series_colors_visibility(self) -> None:
+        """Show the per-series colour buttons only for solid colours."""
+        self._series_colors_widget.setVisible(
+            self.series_style_combo.currentData() == "solid"
+        )
 
     def _update_legend_controls(self, *_args) -> None:
         """Enable the legend location controls only while a legend is shown."""
@@ -4857,6 +4896,7 @@ class HistogramWidget(QWidget):
         self._group_colors = {}  # {group_id: (r,g,b)}
         self._white_background = False
         self._smooth_curves = True
+        self._fill_area = True
         self._log_scale = False
         self._export_options = None
 
@@ -5842,6 +5882,7 @@ class HistogramWidget(QWidget):
         )
         dlg.white_bg_checkbox.setChecked(self._white_background)
         dlg.smooth_checkbox.setChecked(self._smooth_curves)
+        dlg.fill_checkbox.setChecked(self._fill_area)
 
         if dlg.exec() == QDialog.Accepted:
             split_changed = (
@@ -5859,6 +5900,7 @@ class HistogramWidget(QWidget):
             self._show_legend = dlg.legend_checkbox.isChecked()
             self._white_background = dlg.white_bg_checkbox.isChecked()
             self._smooth_curves = dlg.smooth_checkbox.isChecked()
+            self._fill_area = dlg.fill_checkbox.isChecked()
             self._legend_placement = dlg.get_legend_placement()
             self._legend_position = dlg.get_legend_position()
             if dlg._group_row_data:
@@ -7066,13 +7108,6 @@ class HistogramWidget(QWidget):
             self._draw_gradient_line(
                 x_fine, mean_fine, cmap, norm, linewidth=2
             )
-        elif self._show_sd and n == 1:
-            counts = list(self._counts_per_dataset.values())[0]
-            x_fine, y_fine = self._smooth_curve(counts)
-            y_fine = y_fine * self._display_scale(y_fine)
-            self._draw_gradient_line(x_fine, y_fine, cmap, norm, linewidth=2)
-            self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
-            self.ax.set_ylim(0, float(np.max(y_fine)) * 1.05)
         else:
             if n > 1:
                 all_counts = np.array(
@@ -7085,17 +7120,21 @@ class HistogramWidget(QWidget):
             x_fine, mean_fine = self._smooth_curve(mean_counts)
             mean_fine = mean_fine * self._display_scale(mean_fine)
 
-            self._fill_gradient(
-                x_fine,
-                mean_fine,
-                np.zeros_like(mean_fine),
-                cmap,
-                norm,
-                alpha=0.8,
-            )
+            if self._fill_area:
+                self._fill_gradient(
+                    x_fine,
+                    mean_fine,
+                    np.zeros_like(mean_fine),
+                    cmap,
+                    norm,
+                    alpha=0.8,
+                )
             self._draw_gradient_line(
                 x_fine, mean_fine, cmap, norm, linewidth=2
             )
+            if not self._fill_area:
+                self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
+                self.ax.set_ylim(0, float(np.max(mean_fine)) * 1.05)
 
     def _render_merged_series(self, series: dict) -> None:
         """Draw one merged curve per series, each pooling only its own layers.

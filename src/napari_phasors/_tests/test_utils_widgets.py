@@ -443,6 +443,15 @@ def test_histogram_widget_grouped_sd_band(qtbot):
     bands = [c for c in widget.ax.collections if isinstance(c, PolyCollection)]
     assert bands == []  # no bands when SD shading is off
 
+    # A single merged curve can drop its colored area under the curve
+    widget.display_mode = "Merged"
+    widget.update_multi_data({"only": datasets["G1::a"]})
+    n_filled = len(widget.ax.images)
+    widget._fill_area = False
+    widget._render()
+    assert n_filled > 0
+    assert len(widget.ax.images) == 0
+
 
 def test_statistics_table_widget_populates_rows(qtbot):
     """StatisticsTableWidget should populate rows for each dataset."""

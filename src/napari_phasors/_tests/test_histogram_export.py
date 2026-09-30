@@ -132,6 +132,25 @@ def test_settings_dialog_legend_location(qtbot):
     assert dlg.legend_checkbox.isEnabled()
     assert dlg.legend_placement_combo.isEnabled()
 
+    # Colour buttons are only offered for solid colours, and SD / fill follow
+    # how many layers there are.
+    dlg.show()
+    assert not dlg._series_colors_widget.isVisible()
+    _select(dlg.series_style_combo, "solid")
+    assert dlg._series_colors_widget.isVisible()
+    assert not dlg.sd_checkbox.isEnabled()
+    assert not dlg.fill_checkbox.isEnabled()
+    single = HistogramSettingsDialog(layer_labels=["a"])
+    qtbot.addWidget(single)
+    assert not single.sd_checkbox.isEnabled()
+    assert single.fill_checkbox.isEnabled()
+    several = HistogramSettingsDialog(layer_labels=["a", "b"], show_sd=True)
+    qtbot.addWidget(several)
+    assert several.sd_checkbox.isEnabled()
+    assert not several.fill_checkbox.isEnabled()
+    several.sd_checkbox.setChecked(False)
+    assert several.fill_checkbox.isEnabled()
+
     # The dialog opens on the stored placement and position.
     dlg = HistogramSettingsDialog(
         display_mode="Individual layers",
