@@ -106,7 +106,7 @@ label, including the per-timepoint rows of a time-lapse.
 - **Normalize to maximum**: Divides every curve by its own peak so it reaches 1. Distributions whose pixel counts differ by orders of magnitude can then be compared in the same plot; the y axis is labelled *(normalized)* and the CSV export is scaled the same way.
 - **Logarithmic y axis**: Draws the counts on a log scale so sparse tails stay visible next to a tall peak. Empty bins are drawn on the zero baseline rather than leaving gaps in the curves.
 - **Number of bins**: How many bins the value range is divided into. Changing it recomputes the histogram, its CSV export and the bin-based statistics (center of mass).
-- **Show statistics line**: Overlays a vertical line at the *Center of mass*, *Mean*, or *Median*.
+- **Show Center of Mass, Mean or Median**: Overlays a vertical line at the *Center of mass*, *Mean*, or *Median*.
 - **Show legend**: Toggles the curve legend. **Legend location** places it *inside* the plot at a corner or edge (upper right by default), or *outside*, to the right of, above or below the plot, where it never covers a curve.
 - **White background**: Switches to a white plot background for figures.
 - **Smooth curves**: Applies Gaussian smoothing to improve curve readability.

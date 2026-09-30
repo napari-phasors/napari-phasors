@@ -3705,6 +3705,7 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.mode_combo.addItems(list(self.DISPLAY_MODES))
         self.mode_combo.setCurrentText(display_mode)
         mode_layout.addWidget(self.mode_combo)
+        mode_layout.addStretch()
         layout.addLayout(mode_layout)
 
         # --- Number of bins ---
@@ -3725,13 +3726,14 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
 
         # --- Central tendency ---
         ct_layout = QHBoxLayout()
-        ct_layout.addWidget(QLabel("Show statistics line:"))
+        ct_layout.addWidget(QLabel("Show Center of Mass, Mean or Median:"))
         self.central_tendency_combo = QComboBox()
         self.central_tendency_combo.addItems(
             list(self.CENTRAL_TENDENCY_OPTIONS)
         )
         self.central_tendency_combo.setCurrentText(central_tendency)
         ct_layout.addWidget(self.central_tendency_combo)
+        ct_layout.addStretch()
         layout.addLayout(ct_layout)
 
         # --- Separate mask labels ---
@@ -4079,6 +4081,18 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
             is_individual or is_grouped or bool(self._series_color_buttons)
         )
         self._update_legend_controls()
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        """Resize the dialog's height to the sections now showing."""
+        if not self.isVisible():
+            return
+        self.layout().activate()
+        height = self.sizeHint().height()
+        screen = self.screen()
+        if screen is not None:
+            height = min(height, screen.availableGeometry().height())
+        self.resize(self.width(), height)
 
     def showEvent(self, event) -> None:
         """Widen the dialog to fit the full layer names, up to the screen."""
@@ -4096,6 +4110,7 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self._series_colors_widget.setVisible(
             self.series_style_combo.currentData() == "solid"
         )
+        self._fit_height()
 
     def _update_legend_controls(self, *_args) -> None:
         """Enable the legend location controls only while a legend is shown."""
@@ -6603,11 +6618,26 @@ class HistogramWidget(QWidget):
         handles, labels = self.ax.get_legend_handles_labels()
         if not handles:
             return
+        handles = [
+            (
+                ColormapLegendProxy(h._legend_cmap, h.get_linewidths()[0])
+                if hasattr(h, "_legend_cmap")
+                else h
+            )
+            for h in handles
+        ]
+        handler_map = {ColormapLegendProxy: ColormapLegendHandler()}
         placement, position = normalize_legend_location(
             self._legend_placement, self._legend_position
         )
         if placement == "inside":
-            self.ax.legend(fontsize=self._legend_fontsize, loc=position)
+            self.ax.legend(
+                handles,
+                labels,
+                fontsize=self._legend_fontsize,
+                loc=position,
+                handler_map=handler_map,
+            )
         else:
             self.fig.legend(
                 handles,
@@ -6615,6 +6645,7 @@ class HistogramWidget(QWidget):
                 fontsize=self._legend_fontsize,
                 loc=_OUTSIDE_LEGEND_LOCS[position],
                 ncol=1 if position == "right" else min(len(handles), 4),
+                handler_map=handler_map,
             )
 
     def _clear_figure_legends(self) -> None:
@@ -6943,6 +6974,8 @@ class HistogramWidget(QWidget):
         lc = LineCollection(segments, colors=colors, linewidths=linewidth)
         if label is not None:
             lc.set_label(label)
+            # The legend shows the whole colormap, not just one of its colors
+            lc._legend_cmap = cmap
         self.ax.add_collection(lc)
         # A LineCollection does not take part in autoscaling, so make sure the
         # curve it draws is inside the view.

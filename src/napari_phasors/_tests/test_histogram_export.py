@@ -1,5 +1,6 @@
 """Tests for the histogram export dialog and the legend location option."""
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from matplotlib.colors import to_rgba
@@ -136,8 +137,10 @@ def test_settings_dialog_legend_location(qtbot):
     # how many layers there are.
     dlg.show()
     assert not dlg._series_colors_widget.isVisible()
+    short = dlg.height()
     _select(dlg.series_style_combo, "solid")
     assert dlg._series_colors_widget.isVisible()
+    assert dlg.height() > short  # the window grows to fit the colour rows
     # Several components of a single layer: no SD, so fill (and opacity) apply
     assert not dlg.sd_checkbox.isEnabled()
     assert dlg.fill_checkbox.isEnabled()
@@ -288,6 +291,16 @@ def test_legend_placement_on_the_plot(qtbot, monkeypatch):
     merged._render()
     assert len(merged.fig.legends) == 1
     assert _legend_texts(merged.fig.legends[0]) == ["Series A", "Series B"]
+
+    # A colormap-drawn curve shows the whole colormap in the legend
+    merged._series_style = "colormap"
+    merged._series_cmap_and_norm = lambda name: (
+        plt.get_cmap("viridis"),
+        plt.Normalize(0, 3),
+    )
+    merged._render()
+    handle = merged.fig.legends[0].legend_handles[0]
+    assert len(np.unique(handle.get_array())) > 2
 
     # Accepting the settings moves the legend, and reopening shows it.
     widget = _histogram(qtbot)
