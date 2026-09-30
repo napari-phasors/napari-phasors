@@ -21,7 +21,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from napari.layers import Image, Labels
 from napari.utils.notifications import show_error, show_info
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtGui import QDoubleValidator, QIntValidator
 from qtpy.QtWidgets import (
     QApplication,
@@ -233,6 +233,64 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         else:
             self.run_button.setText("Phasor Transform")
         self._refresh_run_button()
+        self._schedule_fit_height()
+
+    def _schedule_fit_height(self):
+        """Fit the window height once the option widgets have been laid out.
+
+        Deferred (and coalesced) because files are cleared and added in
+        several steps. The timer is parented to the widget so Qt cancels it on
+        teardown.
+        """
+        timer = getattr(self, "_fit_height_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._fit_height_to_content)
+            self._fit_height_timer = timer
+        timer.start(0)
+
+    def _fit_height_to_content(self):
+        """Resize the window to the option widgets now shown.
+
+        Grows or shrinks to the content, up to the screen size. Only acts
+        once the widget is a window of its own (see ``PopoutWindowMixin``).
+        """
+        if not self.isVisible() or not self.isWindow():
+            return
+        self.content_widget.layout().activate()
+        margins = self.outer_layout.contentsMargins()
+        height = (
+            self.content_widget.sizeHint().height()
+            + self.run_button.sizeHint().height()
+            + self.outer_layout.spacing()
+            + margins.top()
+            + margins.bottom()
+            + 2 * self.scroll_area.frameWidth()
+        )
+        screen = self.screen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        height = max(300, min(height, avail.height() - 120))
+        width = (
+            self.content_widget.sizeHint().width()
+            + margins.left()
+            + margins.right()
+            + 2 * self.scroll_area.frameWidth()
+            + self.scroll_area.verticalScrollBar().sizeHint().width()
+        )
+        width = max(self.minimumWidth(), min(width, avail.width() - 80))
+        if (width, height) == (self.width(), self.height()):
+            return
+        self.resize(width, height)
+        # Keep the window on screen when it grows.
+        geo = self.frameGeometry()
+        if geo.bottom() > avail.bottom():
+            geo.moveBottom(avail.bottom())
+        if geo.right() > avail.right():
+            geo.moveRight(avail.right())
+        self.move(geo.topLeft())
 
     def _open_file_dialog(self):
         """Open a dialog to select one or many files for import.
