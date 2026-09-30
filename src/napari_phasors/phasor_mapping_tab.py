@@ -53,17 +53,20 @@ from ._utils import (
     LIFETIME_OUTPUT_TYPES,
     AutoUpdateMixin,
     HistogramWidget,
+    analysis_layer_name,
     analysis_section_stylesheet,
     create_mpl_colormap_from_qcolor,
     create_settings_note_label,
     layer_colormap_from_settings,
     layer_colormap_to_settings,
     make_section,
+    phasor_layer_base_name,
     populate_colormap_combobox,
     resolve_colormap_by_name,
     resolve_napari_layer_colormap,
     set_settings_note,
     setup_primary_button,
+    split_analysis_layer_name,
 )
 
 if TYPE_CHECKING:
@@ -1716,18 +1719,16 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             source_name = tag.get('source_layer')
             if output_type in _MAPPING_OUTPUT_TYPES and source_name:
                 return output_type, source_name
-        for output_type in _MAPPING_OUTPUT_TYPES:
-            prefix = f"{output_type}: "
-            if layer.name.startswith(prefix):
-                source_name = layer.name[len(prefix) :]
-                if source_name in self.viewer.layers:
-                    source_layer = self.viewer.layers[source_name]
-                    if (
-                        isinstance(source_layer, Image)
-                        and 'G' in source_layer.metadata
-                        and 'S' in source_layer.metadata
-                    ):
-                        return output_type, source_name
+        base, analysis = split_analysis_layer_name(layer.name)
+        if analysis in _MAPPING_OUTPUT_TYPES:
+            for source_layer in self.viewer.layers:
+                if (
+                    isinstance(source_layer, Image)
+                    and 'G' in source_layer.metadata
+                    and 'S' in source_layer.metadata
+                    and phasor_layer_base_name(source_layer.name) == base
+                ):
+                    return analysis, source_layer.name
         return None
 
     def _mapping_output_layers(self, output_type=None, selected_only=False):
@@ -2169,26 +2170,17 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         return layers
 
     def _refresh_settings_note(self):
-        """Caution about settings and frequencies a Calculate would change."""
+        """Caution about the frequencies the selected layers are analysed at."""
         note = getattr(self, '_settings_note', None)
         if note is None or self.parent_widget is None:
             return
         if getattr(self, '_needs_update', False):
             # The controls still show another layer; refreshed on restore.
             return
+        messages = []
         block = self._collect_mapping_settings()
-        rule = self._mapping_merge_rule(block['output_type'])
-        messages = [
-            self.parent_widget.settings_overwrite_message(
-                'phasor_mapping_tab',
-                values={'phasor_mapping': block, 'lifetime': block},
-                merge={'phasor_mapping': rule, 'lifetime': rule},
-                keys=['phasor_mapping', 'lifetime'],
-                action="Calculating",
-            )
-        ]
         if self._output_requires_frequency(block['output_type']):
-            messages += self.parent_widget.frequency_note_messages(
+            messages = self.parent_widget.frequency_note_messages(
                 self.frequency_input.text()
             )
         set_settings_note(note, messages)
@@ -2709,12 +2701,12 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             # Keep a narrow fallback for calculations that have populated
             # per-layer arrays but have not created the viewer layers yet.
             named = {
-                f"{output_type}: {name}": data
+                analysis_layer_name(output_type, name): data
                 for name, data in (self.per_layer_metric_data or {}).items()
                 if name in selected_names
             }
             sources = {
-                f"{output_type}: {name}": name
+                analysis_layer_name(output_type, name): name
                 for name in (self.per_layer_metric_data or {})
                 if name in selected_names
             }
@@ -2793,7 +2785,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                     (
                         candidate
                         for candidate in _MAPPING_OUTPUT_TYPES
-                        if output_layer.name == f"{candidate}: {old_name}"
+                        if output_layer.name
+                        == analysis_layer_name(candidate, old_name)
                     ),
                     None,
                 )
@@ -2805,8 +2798,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                 'source_layer': new_name,
                 'output_type': output_type,
             }
-            if old_output_name == f"{output_type}: {old_name}":
-                output_layer.name = f"{output_type}: {new_name}"
+            if old_output_name == analysis_layer_name(output_type, old_name):
+                output_layer.name = analysis_layer_name(output_type, new_name)
             if output_layer.name != old_output_name:
                 self.histogram_widget.rename_dataset(
                     old_output_name, output_layer.name
@@ -2843,7 +2836,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
 
             output_values = output_data_dict[self.parent_widget.harmonic]
 
-            output_layer_name = f"{output_type}: {layer.name}"
+            output_layer_name = analysis_layer_name(output_type, layer.name)
 
             min_val, max_val = self.lifetime_range_slider.value()
             min_lifetime = min_val / self.lifetime_range_factor
@@ -2872,6 +2865,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                     clipped_output,
                     name=output_layer_name,
                     scale=layer.scale,
+                    units=layer.units,
                     colormap=colormap,
                     contrast_limits=[min_lifetime, cl_max],
                     metadata={_MAPPING_OUTPUT_METADATA_KEY: output_metadata},
@@ -2880,6 +2874,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             else:
                 output_layer.data = clipped_output
                 output_layer.scale = layer.scale
+                output_layer.units = layer.units
                 output_layer.colormap = colormap
                 output_layer.contrast_limits = [
                     min_lifetime,
@@ -3557,9 +3552,11 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         """Colour the phasor plot by *output_type* and draw the mesh overlay.
 
         Only "Phase" and "Modulation" are colourable; any other output type
-        returns without touching the plot.
+        returns without touching the plot, and so does a hidden tab.
         """
         if output_type not in {"Phase", "Modulation"}:
+            return
+        if self._coloring_paused_by_tab:
             return
         pw = self.parent_widget
         if pw is None or getattr(pw, 'plot_type', 'HISTOGRAM2D') == 'NONE':
@@ -4280,9 +4277,12 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
 
         Only the mesh is drawn: unlike Phase/Modulation, Lifetime mode does
         not recolour the phasor data itself. Without the mesh toggle or a
-        frequency the mesh and its colorbar are removed.
+        frequency the mesh and its colorbar are removed. Nothing is drawn
+        while the tab is hidden.
         """
         if output_type not in LIFETIME_OUTPUT_TYPES:
+            return
+        if self._coloring_paused_by_tab:
             return
         pw = self.parent_widget
         if pw is None or getattr(pw, 'plot_type', 'HISTOGRAM2D') == 'NONE':

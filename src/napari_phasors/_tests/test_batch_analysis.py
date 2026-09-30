@@ -28,6 +28,7 @@ from napari_phasors._batch_analysis import (
     _store_plot_settings,
     apply_pipeline,
     default_component_label_style,
+    default_group_config,
     match_extension,
     parse_harmonics,
     scan_folder,
@@ -43,6 +44,23 @@ from napari_phasors._utils import (
     read_ome_tiff_settings,
 )
 from napari_phasors._writer import write_ome_tiff
+
+
+@pytest.fixture(autouse=True)
+def _low_export_dpi(monkeypatch):
+    """Render batch exports at the lowest DPI the widget offers.
+
+    These tests check which files a run writes, not their resolution, and
+    rasterising and PNG-encoding the plots at the 300 DPI default was most
+    of this module's run time.
+    """
+    original_init = BatchAnalysisWidget.__init__
+
+    def init_with_low_dpi(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self.export_dpi_combo.setCurrentIndex(0)
+
+    monkeypatch.setattr(BatchAnalysisWidget, "__init__", init_with_low_dpi)
 
 
 def _make_phasor_layer(name="FLIM data", harmonic=None):
@@ -520,7 +538,9 @@ def test_n_component_fit_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 3
-    assert all("fraction" in lyr.name for lyr in extra_layers)
+    assert [lyr.name for lyr in extra_layers] == [
+        f"FLIM data Intensity [(Component Fit) {name}]" for name in "ABC"
+    ]
 
 
 def test_required_component_harmonics():
@@ -555,7 +575,11 @@ def test_multiharmonic_component_fit_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 4
-    assert all("fraction" in lyr.name for lyr in extra_layers)
+    assert all(
+        "(Component Fit)" in lyr.name
+        and lyr.name.startswith("FLIM data Intensity [")
+        for lyr in extra_layers
+    )
 
 
 def test_collect_components_multiharmonic(qtbot, make_viewer_model):
@@ -615,7 +639,7 @@ def test_phasor_mapping_pipeline():
         )
         extra_layers = apply_pipeline(layer, pipeline)
         assert len(extra_layers) == 1
-        assert extra_layers[0].name.startswith(output_type)
+        assert extra_layers[0].name == f"FLIM data Intensity [{output_type}]"
         assert extra_layers[0].data.shape == layer.data.shape
 
 
@@ -634,7 +658,7 @@ def test_fret_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 1
-    assert extra_layers[0].name.startswith("FRET efficiency")
+    assert extra_layers[0].name == "FLIM data Intensity [FRET efficiency]"
     finite = extra_layers[0].data[np.isfinite(extra_layers[0].data)]
     assert np.all((finite >= 0) & (finite <= 1))
 
@@ -653,7 +677,7 @@ def test_selection_pipeline():
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 1
     selection = extra_layers[0]
-    assert selection.name.startswith("Cursor selection")
+    assert selection.name == "FLIM data Intensity [Cursor selection]"
     assert selection.data.shape == layer.data.shape
     # Labels are 0 (unselected) plus one id per cursor that matched.
     assert set(np.unique(selection.data)).issubset({0, 1, 2})
@@ -886,8 +910,8 @@ def test_mapping_multi_output_pipeline():
     out = apply_pipeline(layer, pipeline)
     names = [lyr.name for lyr in out]
     assert len(out) == 3
-    assert any(n.startswith("Phase:") for n in names)
-    assert any(n.startswith("Modulation:") for n in names)
+    assert any(n.endswith("[Phase]") for n in names)
+    assert any(n.endswith("[Modulation]") for n in names)
 
 
 def test_mapping_mesh_plot_jobs(qtbot, make_viewer_model):
@@ -1292,6 +1316,7 @@ def test_collect_plot_settings(qtbot, make_viewer_model, tmp_path):
     widget.plot_center_checkbox.setChecked(True)
     widget._update_run_enabled()
     assert widget.run_button.isEnabled()
+    assert widget._run_validation() is None
 
     plot_settings = widget._collect_plot_settings()
     assert plot_settings["white_background"] is True
@@ -1459,7 +1484,7 @@ def test_selection_cluster_pipeline():
     )
     extra_layers = apply_pipeline(layer, pipeline)
     assert len(extra_layers) == 1
-    assert extra_layers[0].name.startswith("Cluster selection")
+    assert extra_layers[0].name == "FLIM data Intensity [Cluster selection]"
     assert extra_layers[0].data.shape == layer.data.shape
 
 
@@ -2327,6 +2352,111 @@ def test_open_plot_group_dialog_round_trips_groups(
     assert "contour_group_styles" in widget._group_config
 
 
+def test_histogram_settings_dialog_stores_the_legend_location(
+    qtbot, make_viewer_model, tmp_path, monkeypatch
+):
+    """The histogram settings dialog keeps where the legend was placed."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._utils import HistogramSettingsDialog
+
+    write_ome_tiff(str(tmp_path / "a.ome.tif"), _make_phasor_layer(name="a"))
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._input_folder = str(tmp_path)
+    widget._rescan()
+    widget.format_combobox.setCurrentIndex(
+        widget.format_combobox.findData(".ome.tif")
+    )
+    assert widget._group_config["legend_placement"] == "inside"
+    assert widget._group_config["legend_position"] == "upper right"
+
+    opened_on = []
+
+    def fake_exec(self):
+        opened_on.append(
+            (self.get_legend_placement(), self.get_legend_position())
+        )
+        self.legend_placement_combo.setCurrentIndex(
+            self.legend_placement_combo.findData("outside")
+        )
+        self.legend_position_combo.setCurrentIndex(
+            self.legend_position_combo.findData("bottom")
+        )
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, "exec", fake_exec)
+    widget._open_group_dialog()
+
+    assert widget._group_config["legend_placement"] == "outside"
+    assert widget._group_config["legend_position"] == "bottom"
+
+    # Reopening starts from the stored choice.
+    widget._open_group_dialog()
+    assert opened_on == [("inside", "upper right"), ("outside", "bottom")]
+
+
+def test_group_config_legend_location_survives_copy_settings(
+    qtbot, make_viewer_model
+):
+    """The legend location is stored with the layer and restored from it."""
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    layer = _make_phasor_layer()
+    plot_settings = {
+        "semi_circle": True,
+        "log_scale": False,
+        "white_background": False,
+        "colormap": "turbo",
+    }
+
+    config = default_group_config()
+    config.update(legend_placement="outside", legend_position="top")
+    _store_plot_settings(layer, plot_settings, config)
+    stored = layer.metadata["settings"]["batch_group_config"]
+    assert stored["legend_placement"] == "outside"
+    assert stored["legend_position"] == "top"
+
+    widget._apply_settings_to_ui(layer.metadata["settings"])
+    assert widget._group_config["legend_placement"] == "outside"
+    assert widget._group_config["legend_position"] == "top"
+
+    # Settings saved before the option existed use the default location.
+    _store_plot_settings(layer, plot_settings, {"mode": "Merged"})
+    del layer.metadata["settings"]["batch_group_config"]["show_legend"]
+    widget._apply_settings_to_ui(layer.metadata["settings"])
+    assert widget._group_config["legend_placement"] == "inside"
+    assert widget._group_config["legend_position"] == "upper right"
+
+
+def test_export_histogram_places_the_legend(qtbot):
+    """Batch histograms are drawn with the configured legend location."""
+    from napari_phasors._batch_analysis import (
+        _new_export_histogram,
+        default_group_config,
+    )
+
+    config = default_group_config()
+    hw = _new_export_histogram(config, "Lifetime")
+    assert (hw._legend_placement, hw._legend_position) == (
+        "inside",
+        "upper right",
+    )
+
+    config.update(legend_placement="outside", legend_position="bottom")
+    hw = _new_export_histogram(config, "Lifetime")
+    assert (hw._legend_placement, hw._legend_position) == (
+        "outside",
+        "bottom",
+    )
+
+    # A location that no longer exists falls back rather than failing.
+    config.update(legend_placement="outside", legend_position="lower left")
+    hw = _new_export_histogram(config, "Lifetime")
+    assert (hw._legend_placement, hw._legend_position) == ("outside", "right")
+
+
 # -- Round 6: clean export names + per-tab combined phasor plots -----------
 
 
@@ -3000,9 +3130,9 @@ def test_linear_projection_exports_both_fractions():
     }
     outputs = _apply_component_fraction(layer, config)
     assert len(outputs) == 2
-    assert [o.name.split(":")[0] for o in outputs] == [
-        "A fraction",
-        "B fraction",
+    assert [o.name for o in outputs] == [
+        "FLIM data Intensity [(Linear Projection) A]",
+        "FLIM data Intensity [(Linear Projection) B]",
     ]
     first = np.asarray(outputs[0].data)
     second = np.asarray(outputs[1].data)
@@ -3272,6 +3402,107 @@ def test_select_harmonic_arrays_falls_back_without_harmonics():
     real, imag = _select_harmonic_arrays(layer, 1)
     assert np.array_equal(real, np.ones((2, 3)))
     assert np.array_equal(imag, np.zeros((2, 3)))
+
+
+def test_select_harmonic_arrays_single_layout_ignores_harmonic():
+    # A single-harmonic layout is returned as is, whatever is requested.
+    layer = _make_phasor_layer(harmonic=1)
+    g_array = layer.metadata["G"]
+    assert g_array.ndim == layer.data.ndim
+    real, _ = _select_harmonic_arrays(layer, 3)
+    assert real is g_array
+
+
+def test_select_harmonic_arrays_picks_requested_plane():
+    layer = _make_phasor_layer(harmonic=[1, 2])
+    real, imag = _select_harmonic_arrays(layer, 2)
+    assert real.shape == layer.data.shape
+    assert np.array_equal(real, layer.metadata["G"][1], equal_nan=True)
+    assert np.array_equal(imag, layer.metadata["S"][1], equal_nan=True)
+
+
+def test_select_harmonic_arrays_missing_harmonic_returns_none():
+    layer = _make_phasor_layer(harmonic=[1, 2])
+    assert layer.metadata["G"].ndim == layer.data.ndim + 1
+    assert _select_harmonic_arrays(layer, 3) == (None, None)
+
+
+def test_select_harmonic_arrays_stack_without_matching_plane():
+    layer = _plain_layer((2, 3))
+    layer.metadata["G"] = np.ones((2, 2, 3))
+    layer.metadata["S"] = np.zeros((2, 2, 3))
+    # Stacked planes with no harmonics to index them by.
+    assert _select_harmonic_arrays(layer, 1) == (None, None)
+    # Harmonics listing more entries than the stack holds planes.
+    layer.metadata["harmonics"] = [1, 2, 3]
+    assert _select_harmonic_arrays(layer, 3) == (None, None)
+    real, _ = _select_harmonic_arrays(layer, 2)
+    assert real.shape == (2, 3)
+
+
+def test_apply_analyses_skip_file_missing_harmonic():
+    # The file only holds harmonics 1 and 2; every per-file analysis asked
+    # for harmonic 3 skips it rather than computing on the whole stack.
+    layer = _make_phasor_layer(harmonic=[1, 2])
+    linear = {
+        "analysis_type": "linear",
+        "names": ["A", "B"],
+        "component_real": [0.1, 0.8],
+        "component_imag": [0.2, 0.3],
+        "harmonic": 3,
+    }
+    assert _apply_component_fraction(layer, linear) == []
+    fit = dict(
+        linear,
+        analysis_type="fit",
+        names=["A", "B", "C"],
+        component_real=[0.1, 0.5, 0.8],
+        component_imag=[0.2, 0.4, 0.3],
+    )
+    assert _apply_component_fraction(layer, fit) == []
+    multi_fit = {
+        "analysis_type": "fit",
+        "names": ["A", "B", "C", "D"],
+        "harmonics": [1, 3],
+        "component_real": [[0.1, 0.4, 0.7, 0.9], [0.05, 0.2, 0.4, 0.6]],
+        "component_imag": [[0.2, 0.4, 0.3, 0.1], [0.1, 0.25, 0.3, 0.2]],
+        "harmonic": 1,
+    }
+    assert _apply_component_fraction(layer, multi_fit) == []
+    mapping = {"output_type": "Phase", "frequency": 80.0, "harmonic": 3}
+    assert _apply_phasor_mapping(layer, mapping) == []
+    fret = {
+        "donor_lifetime": 2.0,
+        "frequency": 80.0,
+        "harmonic": 3,
+        "donor_background": 0.1,
+        "donor_fretting": 1.0,
+        "background_real": 0.0,
+        "background_imag": 0.0,
+    }
+    assert _apply_fret(layer, fret) == []
+    selection = {
+        "harmonic": 3,
+        "mode": "manual",
+        "cursors": [{"type": "circular", "g": 0.5, "s": 0.25, "radius": 1}],
+    }
+    assert _apply_selection(layer, selection) == []
+    assert _selection_statistics(layer, selection, None) == []
+
+
+def test_apply_pipeline_file_missing_harmonic_yields_no_outputs():
+    layer = _make_phasor_layer(harmonic=[1, 2])
+    pipeline = BatchPipeline(
+        mapping={"output_type": "Phase", "frequency": 80.0, "harmonic": 3},
+        components={
+            "analysis_type": "linear",
+            "names": ["A", "B"],
+            "component_real": [0.1, 0.8],
+            "component_imag": [0.2, 0.3],
+            "harmonic": 3,
+        },
+    )
+    assert apply_pipeline(layer, pipeline) == []
 
 
 def test_apply_component_fraction_no_data_returns_empty():
@@ -4693,3 +4924,40 @@ def test_export_histogram_honours_log_scale_and_bins(qtbot, tmp_path):
         log_scale=True,
     )
     assert path.exists()
+
+
+@pytest.mark.parametrize(
+    ("layer_name", "tab", "label"),
+    [
+        ("img [(Linear Projection) Donor]", "components", "Donor fraction"),
+        ("img [(Component Fit) A]", "components", "A fraction"),
+        ("img [Apparent Phase Lifetime]", "phasor_mapping", None),
+        ("img [Phase]", "phasor_mapping", None),
+        ("img [FRET efficiency]", "fret", None),
+        ("img [Cursor selection]", "selection", None),
+        ("img [Cluster selection]", "selection", None),
+        ("img [Phasor]", None, "Phasor"),
+    ],
+)
+def test_batch_output_layer_classification(layer_name, tab, label):
+    """The analysis tab and file label come from the bracketed analysis."""
+    assert BatchAnalysisWidget._subfolder_for_layer(None, layer_name) == tab
+    expected = label or layer_name[layer_name.index("[") + 1 : -1]
+    assert BatchAnalysisWidget._clean_layer_name(None, layer_name) == expected
+
+
+def test_run_button_is_blocked_with_a_reason_until_configured(
+    make_viewer_model, qtbot, tmp_path
+):
+    """The run button explains what is missing instead of being disabled."""
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    reason = widget._run_validation()
+    assert reason == "Select an input folder containing supported files."
+    assert widget.run_button.toolTip() == reason
+
+    widget._input_folder = str(tmp_path)
+    widget._export_folder = None
+    widget._update_run_enabled()
+    assert widget.run_button.toolTip() == widget._run_validation()

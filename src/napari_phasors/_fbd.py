@@ -23,6 +23,13 @@ internally, and the refined ``laser_factor`` forces exactly ``frame_size``
 lines per frame, which shears the image along the slow scan axis. See
 :py:func:`iotech_laser_factor`.
 
+The same card sometimes records a frame marker twice, a few scanner samples
+apart. :py:meth:`fbdfile.FbdFile.frames` starts such a frame at the second
+marker, shifting it along the fast scan axis relative to the frames whose
+marker was recorded once, so the integrated image shows every feature twice.
+SimFCS starts the frame at the first marker, and so does
+:py:func:`signal_from_fbd` when a file mixes both kinds of frames.
+
 Finding those settings by hand is tedious, so :py:func:`match_reference_settings`
 derives them from a SimFCS reference image (an R64/REF file exported for the
 same acquisition) by maximizing the correlation between the reconstruction and
@@ -328,7 +335,7 @@ def signal_from_fbd(
         if want_iotech:
             # after opening, so the header is available to derive it from
             fbd.laser_factor = iotech_laser_factor(fbd)
-        data = fbd.asimage(integrate_frames=integrate_frames, refine=refine)
+        data = _asimage(fbd, integrate_frames=integrate_frames, refine=refine)
         if integrate_frames:
             frame = None
         copy = False
@@ -381,6 +388,72 @@ def signal_from_fbd(
             attrs["flimbox_settings"] = fbd.fbs
 
     return DataArray(data, dims=tuple(axes), coords={"H": phases}, attrs=attrs)
+
+
+def _asimage(
+    fbd: Any,
+    /,
+    *,
+    integrate_frames: int,
+    refine: bool | None,
+    square_frame: bool = True,
+) -> NDArray[numpy.uint16]:
+    """Return image histograms with every frame starting at its first marker.
+
+    Same as :py:meth:`fbdfile.FbdFile.asimage`, except that frames whose
+    marker was recorded twice are not shifted along the scan line. See
+    :py:func:`_merge_split_markers`.
+    """
+    records = fbd.decode()
+    shape, frame_markers = fbd.frames(records, refine=refine)
+    # after frames(): refining changes the line time the merge relies on
+    frame_markers = _merge_split_markers(fbd, records, frame_markers)
+    return fbd.asimage(
+        records,
+        (shape, frame_markers),
+        integrate_frames=integrate_frames,
+        square_frame=square_frame,
+    )
+
+
+def _merge_split_markers(
+    fbd: Any,
+    records: tuple[NDArray[Any], NDArray[Any], NDArray[Any]],
+    frame_markers: NDArray[Any],
+    /,
+) -> NDArray[Any]:
+    """Return `frame_markers` with split markers moved to their first edge.
+
+    Two markers less than one scan line apart cannot delimit a frame, so
+    they are one marker recorded twice. The frame detection skips the short
+    interval between them and starts the frame at the later one, which moves
+    that frame towards the line start by the width of the split (9 samples
+    in the files seen so far). Starting at the earlier one instead keeps it
+    registered with the frames whose marker was recorded once, which is what
+    SimFCS does.
+
+    Files in which every marker is split are returned unchanged: their
+    frames are already registered with each other, and the constant offset
+    is part of the ``scanner_line_start`` that matches them.
+    """
+    times, markers = records[-2:]
+    markers = numpy.asarray(markers)
+    marker_times = numpy.asarray(times)[markers].astype(numpy.int64)
+    line_time = float(fbd.scanner_line_length) * float(fbd.units_per_sample)
+
+    merged = numpy.array(frame_markers, copy=True)
+    for row, index in enumerate(numpy.searchsorted(markers, merged[:, 0])):
+        while (
+            index > 0
+            and marker_times[index] - marker_times[index - 1] < line_time
+        ):
+            index -= 1
+        merged[row, 0] = markers[index]
+
+    split = merged[:, 0] != numpy.asarray(frame_markers)[:, 0]
+    if split.all():
+        return frame_markers
+    return merged
 
 
 def find_reference_file(filename: str | PathLike[Any], /) -> str | None:
@@ -610,7 +683,8 @@ def _match_candidate(
     ) as fbd:
         if want_iotech:
             fbd.laser_factor = iotech_laser_factor(fbd)
-        data = fbd.asimage(
+        data = _asimage(
+            fbd,
             integrate_frames=integrate_frames,
             square_frame=False,
             refine=refine,

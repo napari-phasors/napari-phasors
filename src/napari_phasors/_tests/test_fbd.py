@@ -17,6 +17,7 @@ from napari_phasors._fbd import (
     _best_line_start,
     _intensity_image,
     _is_iotech,
+    _merge_split_markers,
     _nominal_dwell_time,
     find_reference_file,
     image_correlation,
@@ -127,11 +128,29 @@ class FakeFbdFile:
     def __exit__(self, *exc):
         return False
 
+    #: FLIMbox units per scan line, used to tell split markers apart.
+    scanner_line_length = 9
+    units_per_sample = 100.0
+
+    def decode(self):
+        """Return ``(bins, times, markers)`` with one marker per frame."""
+        times = np.arange(4, dtype=np.uint64) * 4500
+        return None, times, np.arange(4)
+
+    def frames(self, records, /, *, refine=True):
+        """Return the scanner shape and one marker pair per frame."""
+        self.refine_calls.append(refine)
+        markers = records[-1]
+        return (
+            self.shape[2:4],
+            np.stack([markers[:-1], markers[1:] - 1], axis=1),
+        )
+
     def asimage(
-        self, *, integrate_frames=1, square_frame=True, refine=None, **kwargs
+        self, records, frames, /, *, integrate_frames=1, square_frame=True
     ):
         """Return the payload, cropped like the real reader would."""
-        self.refine_calls.append(refine)
+        self.frame_markers = frames[1]
         data = self.data
         if integrate_frames:
             data = data.sum(axis=0, keepdims=True, dtype=np.uint16)
@@ -157,6 +176,54 @@ def fake_fbdfile(monkeypatch):
 
     monkeypatch.setattr(fbdfile, "FbdFile", factory)
     return created
+
+
+# -- split frame markers ---------------------------------------------------
+
+
+class _Scanner:
+    """Scanner timing of one scan line spanning 900 FLIMbox units."""
+
+    scanner_line_length = 9
+    units_per_sample = 100.0
+
+
+def _records(marker_times):
+    """Return decoded records with one record per unit of time."""
+    times = np.arange(max(marker_times) + 1, dtype=np.uint64)
+    return None, times, np.asarray(marker_times)
+
+
+def _frames(starts, stops):
+    """Return frame markers as :meth:`fbdfile.FbdFile.frames` reports them."""
+    return np.stack([starts, np.asarray(stops) - 1], axis=1)
+
+
+def test_merge_split_markers_moves_split_frames_to_first_marker():
+    """A frame after a doubled marker starts at the first of the two."""
+    # the marker of the second frame is recorded at 5000 and again at 5009
+    records = _records([0, 5000, 5009, 10000, 15000])
+    frames = _frames([0, 5009, 10000], [5000, 10000, 15000])
+    merged = _merge_split_markers(_Scanner(), records, frames)
+    assert merged.tolist() == [[0, 4999], [5000, 9999], [10000, 14999]]
+    assert frames[1, 0] == 5009  # input is not modified
+
+
+@pytest.mark.parametrize(
+    ("marker_times", "starts", "stops"),
+    [
+        ([0, 5000, 10000, 15000], [0, 5000, 10000], [5000, 10000, 15000]),
+        ([0, 9, 5000, 5009, 10000, 10009], [9, 5009], [5000, 10000]),
+    ],
+    ids=["no split markers", "every marker split"],
+)
+def test_merge_split_markers_keeps_consistent_files(
+    marker_times, starts, stops
+):
+    """Frames already registered with each other are left untouched."""
+    frames = _frames(starts, stops)
+    merged = _merge_split_markers(_Scanner(), _records(marker_times), frames)
+    assert np.array_equal(merged, frames)
 
 
 # -- signal_from_fbd -------------------------------------------------------
@@ -707,68 +774,44 @@ def test_parse_optional():
     assert _parse_optional("-", float) is None
 
 
-def test_fbd_widget_option_defaults(make_viewer_model, qtbot, fbd_file):
-    """The new fields start out neutral, so defaults are unchanged."""
+def test_fbd_widget_reconstruction_fields(make_viewer_model, qtbot, fbd_file):
+    """The laser factor, IOTech toggle, scanner line start and refine fields
+    start out neutral, reach the reader (unless an "Additional kwargs"
+    entry overrides them) and invalidate the preview cache."""
     widget = FbdWidget(make_viewer_model(), path=fbd_file)
 
+    # The new fields start out neutral, so defaults are unchanged.
     assert widget.iotech_laser_factor.isChecked() is False
     assert widget.scanner_line_start.text() == ""
     assert widget.refine.currentText() == "Auto"
-
     options = {}
     widget._apply_fbd_options(options)
     assert options == {"laser_factor": -1.0}
+    baseline = widget._preview_signature()
 
-
-def test_fbd_widget_iotech_toggle(make_viewer_model, qtbot, fbd_file):
-    """Checking the box derives the factor and greys out the manual one."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-
+    # Checking the box derives the factor and greys out the manual one.
     with patch.object(widget, "_update_signal_plot") as update:
         widget.iotech_laser_factor.setChecked(True)
     update.assert_called_once()
     assert widget.laser_factor.isEnabled() is False
-
     options = {}
     widget._apply_fbd_options(options)
     assert options["laser_factor"] == IOTECH
-
     with patch.object(widget, "_update_signal_plot"):
         widget.iotech_laser_factor.setChecked(False)
     assert widget.laser_factor.isEnabled() is True
 
+    # Every explicit refine mode reaches the reader; "Auto" does not.
+    for index, refine in ((1, True), (2, None), (3, False)):
+        with patch.object(widget, "_update_signal_plot"):
+            widget.refine.setCurrentIndex(index)
+        options = {}
+        widget._apply_fbd_options(options)
+        assert options["refine"] is refine
 
-@pytest.mark.parametrize(
-    ("index", "refine"),
-    [(1, True), (2, None), (3, False)],
-)
-def test_fbd_widget_refine_modes(
-    make_viewer_model, qtbot, fbd_file, index, refine
-):
-    """Every explicit refine mode reaches the reader; "Auto" does not."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-
-    options = {}
-    widget._apply_fbd_options(options)
-    assert "refine" not in options
-
-    with patch.object(widget, "_update_signal_plot"):
-        widget.refine.setCurrentIndex(index)
-    options = {}
-    widget._apply_fbd_options(options)
-    assert options["refine"] is refine
-
-
-def test_fbd_widget_options_and_signature(make_viewer_model, qtbot, fbd_file):
-    """Every field reaches the reader and invalidates the preview cache."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-    baseline = widget._preview_signature()
-
+    # Every field reaches the reader and invalidates the preview cache.
     widget.laser_factor.setText("0.5")
     widget.scanner_line_start.setText("51")
-    with patch.object(widget, "_update_signal_plot"):
-        widget.refine.setCurrentIndex(3)
-
     options = {}
     widget._apply_fbd_options(options)
     assert options == {
@@ -788,31 +831,10 @@ def test_fbd_widget_options_and_signature(make_viewer_model, qtbot, fbd_file):
     )
     assert widget._preview_signature() != baseline
 
-
-def test_fbd_widget_extra_kwargs_win(make_viewer_model, qtbot, fbd_file):
-    """A name typed in "Additional kwargs" overrides the dedicated field."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-    widget.scanner_line_start.setText("51")
-    widget.add_kwarg_btn.click()
-    key_edit, val_edit, _ = widget.kwargs_widgets[0]
-    key_edit.setText("scanner_line_start")
-    val_edit.setText("74")
-
-    options = {}
-    widget._apply_fbd_options(options)
-    assert options["scanner_line_start"] == 74
-
-
-def test_fbd_widget_on_click_applies_options(
-    make_viewer_model, qtbot, fbd_file
-):
-    """The transform runs with the settings shown in the widget."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
+    # The transform runs with the settings shown in the widget.
     widget.iotech_laser_factor.blockSignals(True)
     widget.iotech_laser_factor.setChecked(True)
     widget.iotech_laser_factor.blockSignals(False)
-    widget.scanner_line_start.setText("51")
-
     reader_options = {"frame": -1, "channel": 0}
     with patch(
         "napari_phasors._widget.AdvancedOptionsWidget._on_click"
@@ -822,150 +844,25 @@ def test_fbd_widget_on_click_applies_options(
     assert reader_options["laser_factor"] == IOTECH
     assert reader_options["scanner_line_start"] == 51
 
-
-def test_fbd_widget_match_reference(
-    make_viewer_model, qtbot, fbd_file, reference_file
-):
-    """Matching a reference file fills every reconstruction field."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-
-    with (
-        quiet(),
-        patch(
-            "napari_phasors._widget.QFileDialog.getOpenFileName",
-            return_value=(reference_file, ""),
-        ),
-    ):
-        widget.match_reference_btn.click()
-
-    assert widget.iotech_laser_factor.isChecked() is True
-    assert widget.laser_factor.isEnabled() is False
-    assert widget.scanner_line_start.text() == str(MATCHED_LINE_START)
-    assert widget.refine.currentText() == "Never"
-    assert "line start 60" in widget.match_reference_label.text()
-    assert "r = 1.0000" in widget.match_reference_label.text()
-    assert widget.match_reference_btn.isEnabled()
-
+    # A name typed in "Additional kwargs" overrides the dedicated field.
+    widget.add_kwarg_btn.click()
+    key_edit, val_edit, _ = widget.kwargs_widgets[0]
+    key_edit.setText("scanner_line_start")
+    val_edit.setText("74")
     options = {}
     widget._apply_fbd_options(options)
-    assert options == {
-        "laser_factor": IOTECH,
-        "scanner_line_start": MATCHED_LINE_START,
-        "refine": False,
-    }
+    assert options["scanner_line_start"] == 74
 
+    # A matched refine value with no combobox entry falls back to "Auto".
+    with patch.object(widget, "_update_signal_plot"):
+        widget._apply_matched_settings(
+            FbdReconstructionSettings(9, 0.5, "unknown", 0.25, 0.5)
+        )
+    assert widget.refine.currentIndex() == 0
+    assert widget.laser_factor.text() == "0.5"
+    assert widget.scanner_line_start.text() == "9"
 
-def test_fbd_widget_match_reference_cancelled(
-    make_viewer_model, qtbot, fbd_file
-):
-    """Cancelling the file dialog leaves the fields untouched."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-
-    with (
-        patch(
-            "napari_phasors._widget.QFileDialog.getOpenFileName",
-            return_value=("", ""),
-        ),
-        patch("napari_phasors._widget.match_reference_settings") as match,
-    ):
-        widget.match_reference_btn.click()
-    match.assert_not_called()
-    assert widget.scanner_line_start.text() == ""
-    assert widget.match_reference_label.text() == ""
-
-
-def test_fbd_widget_match_reference_starts_at_companion(
-    make_viewer_model, qtbot, fbd_file, tmp_path
-):
-    """The dialog opens on the companion reference file when there is one."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-    companion = str(tmp_path / "companion_ch1.r64")
-
-    with (
-        patch(
-            "napari_phasors._widget.find_reference_file",
-            return_value=companion,
-        ),
-        patch(
-            "napari_phasors._widget.QFileDialog.getOpenFileName",
-            return_value=("", ""),
-        ) as dialog,
-    ):
-        widget.match_reference_btn.click()
-    assert dialog.call_args[0][2] == companion
-
-    with (
-        patch("napari_phasors._widget.find_reference_file", return_value=None),
-        patch(
-            "napari_phasors._widget.QFileDialog.getOpenFileName",
-            return_value=("", ""),
-        ) as dialog,
-    ):
-        widget.match_reference_btn.click()
-    assert dialog.call_args[0][2] == os.path.dirname(fbd_file)
-
-
-def test_fbd_widget_match_reference_failure(
-    make_viewer_model, qtbot, fbd_file
-):
-    """A failed match is reported and leaves the button usable."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-
-    with (
-        patch(
-            "napari_phasors._widget.QFileDialog.getOpenFileName",
-            return_value=("missing.r64", ""),
-        ),
-        patch(
-            "napari_phasors._widget.match_reference_settings",
-            side_effect=ValueError("boom"),
-        ),
-        patch("napari_phasors._widget.show_error") as show,
-    ):
-        widget.match_reference_btn.click()
-
-    assert "boom" in show.call_args[0][0]
-    assert widget.match_reference_btn.isEnabled()
-    assert widget.match_reference_label.text() == ""
-
-
-def test_fbd_widget_match_reference_uses_current_options(
-    make_viewer_model, qtbot, fbd_file
-):
-    """The match runs on the frame and channel the widget is showing."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-    widget.reader_options["frame"] = 2
-    assert widget._match_channel() == 0  # "All channels" -> first channel
-    widget.reader_options["channel"] = 1
-    assert widget._match_channel() == 1
-
-    with (
-        patch(
-            "napari_phasors._widget.QFileDialog.getOpenFileName",
-            return_value=("reference.r64", ""),
-        ),
-        patch(
-            "napari_phasors._widget.match_reference_settings",
-            return_value=FbdReconstructionSettings(7, -1.0, True, 0.5, 1.0),
-        ) as match,
-    ):
-        widget.match_reference_btn.click()
-
-    assert match.call_args[0] == (widget.path, "reference.r64")
-    assert match.call_args[1]["frame"] == 2
-    assert match.call_args[1]["channel"] == 1
-    # a numeric factor is written to the field instead of deriving it
-    assert widget.iotech_laser_factor.isChecked() is False
-    assert widget.laser_factor.text() == "-1"
-    assert widget.refine.currentText() == "Always"
-
-
-def test_fbd_widget_match_progress_updates_description(
-    make_viewer_model, qtbot, fbd_file
-):
-    """The activity progress reports how many candidates were tried."""
-    widget = FbdWidget(make_viewer_model(), path=fbd_file)
-
+    # The activity progress reports how many candidates were tried.
     class _Progress:
         descriptions = []
 
@@ -979,13 +876,99 @@ def test_fbd_widget_match_progress_updates_description(
     ]
 
 
-def test_fbd_widget_apply_unknown_refine(make_viewer_model, qtbot, fbd_file):
-    """A refine value with no combobox entry falls back to "Auto"."""
+def test_fbd_widget_match_reference(
+    make_viewer_model, qtbot, fbd_file, reference_file, tmp_path
+):
+    """Matching a reference file (offered from the companion file when
+    there is one) fills every reconstruction field for the frame and
+    channel shown; cancelling or failing leaves them untouched."""
     widget = FbdWidget(make_viewer_model(), path=fbd_file)
-    with patch.object(widget, "_update_signal_plot"):
-        widget._apply_matched_settings(
-            FbdReconstructionSettings(9, 0.5, "unknown", 0.25, 0.5)
+
+    def choose(path):
+        return patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileName",
+            return_value=(path, ""),
         )
-    assert widget.refine.currentIndex() == 0
-    assert widget.laser_factor.text() == "0.5"
-    assert widget.scanner_line_start.text() == "9"
+
+    # Cancelling the file dialog leaves the fields untouched.
+    with (
+        choose(""),
+        patch("napari_phasors._widget.match_reference_settings") as match,
+    ):
+        widget.match_reference_btn.click()
+    match.assert_not_called()
+    assert widget.scanner_line_start.text() == ""
+    assert widget.match_reference_label.text() == ""
+
+    # The dialog opens on the companion reference file when there is one,
+    # and in the file's folder otherwise.
+    companion = str(tmp_path / "companion_ch1.r64")
+    with (
+        patch(
+            "napari_phasors._widget.find_reference_file",
+            return_value=companion,
+        ),
+        choose("") as dialog,
+    ):
+        widget.match_reference_btn.click()
+    assert dialog.call_args[0][2] == companion
+    with (
+        patch("napari_phasors._widget.find_reference_file", return_value=None),
+        choose("") as dialog,
+    ):
+        widget.match_reference_btn.click()
+    assert dialog.call_args[0][2] == os.path.dirname(fbd_file)
+
+    # A failed match is reported and leaves the button usable.
+    with (
+        choose("missing.r64"),
+        patch(
+            "napari_phasors._widget.match_reference_settings",
+            side_effect=ValueError("boom"),
+        ),
+        patch("napari_phasors._widget.show_error") as show,
+    ):
+        widget.match_reference_btn.click()
+    assert "boom" in show.call_args[0][0]
+    assert widget.match_reference_btn.isEnabled()
+    assert widget.match_reference_label.text() == ""
+
+    # Matching a reference file fills every reconstruction field.
+    with quiet(), choose(reference_file):
+        widget.match_reference_btn.click()
+    assert widget.iotech_laser_factor.isChecked() is True
+    assert widget.laser_factor.isEnabled() is False
+    assert widget.scanner_line_start.text() == str(MATCHED_LINE_START)
+    assert widget.refine.currentText() == "Never"
+    assert "line start 60" in widget.match_reference_label.text()
+    assert "r = 1.0000" in widget.match_reference_label.text()
+    assert widget.match_reference_btn.isEnabled()
+    options = {}
+    widget._apply_fbd_options(options)
+    assert options == {
+        "laser_factor": IOTECH,
+        "scanner_line_start": MATCHED_LINE_START,
+        "refine": False,
+    }
+
+    # The match runs on the frame and channel the widget is showing.
+    widget.reader_options["frame"] = 2
+    widget.reader_options["channel"] = None
+    assert widget._match_channel() == 0  # "All channels" -> first channel
+    widget.reader_options["channel"] = 1
+    assert widget._match_channel() == 1
+    with (
+        choose("reference.r64"),
+        patch(
+            "napari_phasors._widget.match_reference_settings",
+            return_value=FbdReconstructionSettings(7, -1.0, True, 0.5, 1.0),
+        ) as match,
+    ):
+        widget.match_reference_btn.click()
+    assert match.call_args[0] == (widget.path, "reference.r64")
+    assert match.call_args[1]["frame"] == 2
+    assert match.call_args[1]["channel"] == 1
+    # a numeric factor is written to the field instead of deriving it
+    assert widget.iotech_laser_factor.isChecked() is False
+    assert widget.laser_factor.text() == "-1"
+    assert widget.refine.currentText() == "Always"

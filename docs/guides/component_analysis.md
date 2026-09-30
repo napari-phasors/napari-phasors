@@ -126,6 +126,10 @@ Filters always evaluate against **the fractions of the latest analysis run**. Mo
 > [!IMPORTANT]
 > Fraction filters belong to the **same stack** as the criteria in the **Phasor Mapping** and **FRET** tabs. A pixel is kept only when *every* enabled criterion across all tabs keeps it. Because each criterion evaluates independently against the unfiltered data, the order you add them in does not change the result.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20filter.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20filter.mp4" type="video/mp4">
+</video>
+
 ### Pixel counts and percentages in the filter
 
 The **Statistics** dock reports these metrics directly. Once a filter is active, the columns reflect the configured range—for example, *Component 1 Pixels in 0.2 – 0.8* and *Component 1 % in 0.2 – 0.8*.
@@ -141,7 +145,9 @@ Check **Labels layer** to create a napari labels layer using the components' des
 
 ### Component colors
 
-Each component card carries a color swatch at the right of its **G** and **S** fields, showing the color that component is drawn in on the phasor plot. Click it to choose a different one: the color you pick stays put whatever the plot's colormap does afterwards, and the **Reset** button that appears beside the swatch restores the inherited one. The choice applies at once to the component's dot on the phasor plot, to its filter card, to both labels layouts and to its label in the combined layer, so a component reads the same everywhere, and it is saved with the layer's settings rather than picked again every session.
+Each component card carries a color swatch at the right of its **G** and **S** fields, showing the color that component is drawn in on the phasor plot. Click it to choose a different one. The choice applies at once to the component's dot on the phasor plot, to its filter card, to both labels layouts, to its label in the combined layer and to its curve in the fraction histogram, so a component reads the same everywhere, and it is saved with the layer's settings rather than picked again every session. Once the analysis has run, the pick also recolors the component's fraction layer from black to the chosen color; in a Linear Projection, whose one layer holds both components, it sets that component's end of the colormap.
+
+The color and the fraction layer's colormap follow whichever was changed last: choosing another colormap for the fraction layer in napari's layer controls recolors the dot, the card and the histogram curve to the colormap's highest value, replacing the color picked on the card.
 
 
 ## Visualization and quantitative analysis

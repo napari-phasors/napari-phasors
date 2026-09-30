@@ -2,6 +2,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+from napari.utils.colormaps import Colormap
 from numpy.testing import assert_array_equal
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
@@ -20,12 +21,15 @@ from napari_phasors._tests.test_plotter import (
     assert_run_row_is_pinned,
     create_image_layer_with_phasors,
 )
+from napari_phasors._utils import analysis_layer_name
 from napari_phasors.fret_tab import draw_fret_trajectory_overlay
 from napari_phasors.plotter import PlotterWidget
 
 
-def test_fret_widget_initialization(make_viewer_model, qtbot):
-    """Test the initialization of the FretWidget."""
+def test_fret_widget_initial_state_and_controls(make_viewer_model, qtbot):
+    """A fresh FRET tab, its controls, and every action with no layer."""
+    from napari.layers import Image
+
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
@@ -45,35 +49,39 @@ def test_fret_widget_initialization(make_viewer_model, qtbot):
         == "Calculate FRET efficiency"
     )
 
-    # Test source selectors are set to Manual by default
+    # Source selectors are Manual, showing the manual inputs, by default.
     assert widget.donor_source_selector.currentText() == "Manual"
     assert widget.bg_source_selector.currentText() == "Manual"
-
-    # Test stacked widgets show manual inputs by default
     assert widget.donor_stack.currentIndex() == 0  # Manual page
     assert widget.bg_stack.currentIndex() == 0  # Manual page
 
-    # Test donor lifetime combobox (CheckableComboBox: empty when no items checked)
+    # Donor lifetime combobox (CheckableComboBox: starts empty, no placeholder
+    # item) and the lifetime modes.
+    assert widget.donor_lifetime_combobox.count() == 0
     assert widget.donor_lifetime_combobox.currentText() == ""
     assert (
         widget.lifetime_type_combobox.currentText()
         == "Apparent Phase Lifetime"
     )
     assert widget.lifetime_type_combobox.count() == 3
-
-    # Verify all lifetime modes are present
     lifetime_modes = [
         widget.lifetime_type_combobox.itemText(i)
         for i in range(widget.lifetime_type_combobox.count())
     ]
-    expected_modes = [
+    assert lifetime_modes == [
         "Apparent Phase Lifetime",
         "Apparent Modulation Lifetime",
         "Normal Lifetime",
     ]
-    assert lifetime_modes == expected_modes
+    for mode in (
+        "Apparent Modulation Lifetime",
+        "Normal Lifetime",
+        "Apparent Phase Lifetime",
+    ):
+        widget.lifetime_type_combobox.setCurrentText(mode)
+        assert widget.lifetime_type_combobox.currentText() == mode
 
-    # Test slider initial values
+    # Slider initial values and the colormap toggle.
     assert widget.background_slider.value() == 10  # 0.1 * 100
     assert widget.fretting_slider.value() == 100  # 1.0 * 100
     assert isinstance(widget.colormap_checkbox, QToggleSwitch)
@@ -83,1512 +91,214 @@ def test_fret_widget_initialization(make_viewer_model, qtbot):
     )
     assert widget.colormap_checkbox.isChecked() is True
 
-    # Test dynamic labels show default text
+    # Dynamic labels show default text
     assert widget.donor_label.text() == "Donor lifetime (ns):"
     assert widget.background_position_label.text() == "Background position:"
 
+    # The primary action stays reachable however long the settings get.
+    assert_run_row_is_pinned(
+        widget,
+        widget.calculate_fret_efficiency_button,
+        widget.autoupdate_container,
+    )
 
-def test_fret_widget_parameter_updates(make_viewer_model, qtbot):
-    """Test that parameters update correctly when UI changes."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
+    # One efficiency filter: always shown, nothing to add or remove.
+    assert isinstance(widget.filter_list, MappingFilterList)
+    assert not widget.filter_list.add_button.isVisibleTo(widget.filter_list)
+    assert not hasattr(widget.filter_list, 'clear_button')
+    card = _efficiency_card(widget)
+    assert card.metric_label.text() == FRET_EFFICIENCY
+    assert not card.remove_button.isVisibleTo(card)
+    assert not card.entry['enabled']
+    assert widget.filter_list.filters() == []
 
-    # Create and add layer
-    test_layer = create_image_layer_with_phasors()
-    viewer.add_layer(test_layer)
+    # The style button leads into the filter section; the toggle is in its
+    # dialog, which opens once however often the button is clicked.
+    content_layout = widget.filter_box.parentWidget().layout()
+    display_box = widget.trajectory_style_btn.parentWidget()
+    style = content_layout.indexOf(display_box)
+    assert style >= 0
+    assert content_layout.indexOf(widget.filter_box) > style
+    assert widget.colormap_checkbox.window() is widget.trajectory_style_dialog
+    widget.trajectory_style_btn.click()
+    dialog = widget.trajectory_style_dialog
+    assert dialog.isVisible()
+    widget.trajectory_style_btn.click()
+    assert widget.trajectory_style_dialog is dialog
+    dialog.close()
 
-    # Test donor lifetime input
-    widget.donor_line_edit.setText("2.5")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.2")
-    widget.background_imag_edit.setText("0.3")
-
-    # Trigger parameter change
-    widget._on_parameters_changed()
-
-    assert widget.donor_lifetime == 2.5
-    assert widget.frequency == 80 * parent.harmonic
-    assert widget.background_real == 0.2
-    assert widget.background_imag == 0.3
-
-
-def test_fret_widget_background_slider(make_viewer_model, qtbot):
-    """Test background slider functionality."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Test slider value change
+    # Sliders and the colormap toggle.
     widget.background_slider.setValue(25)  # 0.25
     widget._on_background_slider_changed()
-
     assert widget.donor_background == 0.25
     assert widget.background_label.text() == "0.25"
-
-
-def test_fret_widget_fretting_slider(make_viewer_model, qtbot):
-    """Test fretting proportion slider functionality."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Test slider value change
+    widget.background_slider.setValue(10)
+    widget._on_background_slider_changed()
     widget.fretting_slider.setValue(75)  # 0.75
     widget._on_fretting_slider_changed()
-
     assert widget.donor_fretting_proportion == 0.75
     assert widget.fretting_label.text() == "0.75"
-
-
-def test_fret_widget_colormap_checkbox(make_viewer_model, qtbot):
-    """Test colormap checkbox functionality."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Test unchecking colormap
+    widget.fretting_slider.setValue(100)
+    widget._on_fretting_slider_changed()
     widget.colormap_checkbox.setChecked(False)
     widget._on_colormap_checkbox_changed()
-
     assert widget.use_colormap is False
-
-    # Test checking colormap
     widget.colormap_checkbox.setChecked(True)
     widget._on_colormap_checkbox_changed()
-
     assert widget.use_colormap is True
 
-
-def test_calculate_background_position_no_layer(make_viewer_model, qtbot):
-    """Test background calculation with no layer selected."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # No layer selected
-    parent._labels_layer_with_phasor_features = None
-
-    # Should return without error
-    widget._calculate_background_position()
-
-    # Values should remain at defaults
-    assert widget.background_real_edit.text() == "0.0"
-    assert widget.background_imag_edit.text() == "0.0"
-
-
-def test_calculate_background_position_with_layer(make_viewer_model, qtbot):
-    """Test background calculation with a valid layer."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Update the background combobox to include the new layer
-    widget._update_background_combobox()
-
-    # Check that the combobox has been populated correctly (CheckableComboBox: no placeholder item)
-    combobox_items = [
-        widget.background_image_combobox.itemText(i)
-        for i in range(widget.background_image_combobox.count())
-    ]
-    assert "Select layer..." not in combobox_items
-    assert "test_layer" in combobox_items
-
-    # Switch to "From layer(s)" mode and check the test layer
+    # The donor and background source selectors switch pages.
+    widget.donor_source_selector.setCurrentText("From layer(s)")
+    widget._on_donor_source_changed(1)
+    assert widget.donor_stack.currentIndex() == 1  # From layer(s) page
+    assert widget.donor_label.text() == "Donor lifetime (ns):"
+    widget.donor_source_selector.setCurrentText("Manual")
+    widget._on_donor_source_changed(0)
+    assert widget.donor_stack.currentIndex() == 0
+    assert widget.donor_label.text() == "Donor lifetime (ns):"
     widget.bg_source_selector.setCurrentText("From layer(s)")
-    widget.background_image_combobox.setCheckedItems(["test_layer"])
-
-    # Set up the parent widget properly
-    parent.harmonic = 1
-
-    # Calculate background position
-    widget._calculate_background_position()
-
-    # Check that values were updated (they should be different from defaults)
-    real_text = widget.background_real_edit.text()
-    imag_text = widget.background_imag_edit.text()
-
-    # Values should be numeric strings
-    assert (
-        real_text != "0.0" or imag_text != "0.0"
-    )  # At least one should change
-    assert float(real_text) >= 0
-    assert float(imag_text) >= 0
-
-    # Check that the position was stored for the current harmonic
-    assert parent.harmonic in widget.background_positions_by_harmonic
-    stored_position = widget.background_positions_by_harmonic[parent.harmonic]
-
-    # Compare with proper precision handling - the stored values should match
-    # the displayed text when formatted to 3 decimal places
-    assert abs(stored_position['real'] - float(real_text)) < 0.001
-    assert abs(stored_position['imag'] - float(imag_text)) < 0.001
-
-    # Check that the label shows the calculated values in "From layer" mode
-    expected_label = f"Background position: G={stored_position['real']:.2f}, S={stored_position['imag']:.2f}"
-    assert widget.background_position_label.text() == expected_label
-
-    # Test with no layer checked - should not crash
-    widget.background_image_combobox.deselectAll()
-    widget._calculate_background_position()
-
-    # Label should revert to default when no layer is selected
+    widget._on_bg_source_changed(1)
+    assert widget.bg_stack.currentIndex() == 1
+    assert widget.background_position_label.text() == "Background position:"
+    widget.bg_source_selector.setCurrentText("Manual")
+    widget._on_bg_source_changed(0)
+    assert widget.bg_stack.currentIndex() == 0
     assert widget.background_position_label.text() == "Background position:"
 
-
-def test_plot_donor_trajectory_no_parameters(make_viewer_model, qtbot):
-    """Test plotting donor trajectory with missing parameters."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Try to plot without setting parameters
-    widget.plot_donor_trajectory()
-
-    # Should not create a line
-    assert widget.current_donor_line is None
-
-
-def test_plot_donor_trajectory_with_parameters(make_viewer_model, qtbot):
-    """Test plotting donor trajectory with valid parameters."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Set valid parameters
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    # Mock the canvas and figure
-    parent.canvas_widget = Mock()
-    parent.canvas_widget.figure = Mock()
-    ax_mock = Mock()
-    parent.canvas_widget.figure.gca.return_value = ax_mock
-    parent.canvas_widget.canvas = Mock()
-
-    # Plot trajectory
-    widget.plot_donor_trajectory()
-
-    # Should create a line
-    assert ax_mock.plot.called
-
-
-def test_calculate_fret_efficiency_no_layer(make_viewer_model, qtbot):
-    """Test FRET efficiency calculation with no layer selected."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # No layer selected
+    # With no layer, nothing is calculated.
     parent._labels_layer_with_phasor_features = None
-
-    # Should return without error and create no FRET layer.
+    widget._calculate_background_position()
+    assert widget.background_real_edit.text() == "0.0"
+    assert widget.background_imag_edit.text() == "0.0"
+    widget.plot_donor_trajectory()
+    assert widget.current_donor_line is None
     widget.calculate_fret_efficiency()
     assert widget.fret_layer is None
     assert len(viewer.layers) == 0
-
-
-def test_calculate_fret_efficiency_with_layer(make_viewer_model, qtbot):
-    """Test FRET efficiency calculation with valid data."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Setup widget parameters
-    widget.donor_line_edit.setText("2.0")
     widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    # Get values of G and S from the test layer using new array-based metadata
-    metadata = test_layer.metadata
-    G_image = metadata["G"]
-    S_image = metadata["S"]
-    harmonics = metadata.get("harmonics", [1])
-
-    # Get the harmonic index (0-based for array access)
-    harmonic = parent.harmonic
-    if isinstance(harmonics, (list, np.ndarray)) and len(harmonics) > 1:
-        # Multi-harmonic case: G and S have shape (n_harmonics, ...)
-        harmonic_idx = (
-            list(harmonics).index(harmonic) if harmonic in harmonics else 0
-        )
-        real = G_image[harmonic_idx].flatten()
-        imag = S_image[harmonic_idx].flatten()
-    else:
-        # Single harmonic case
-        real = G_image.flatten()
-        imag = S_image.flatten()
-
-    # Get trajectory data
-    donor_trajectory_real, donor_trajectory_imag = phasor_from_fret_donor(
-        80,
-        2,
-        fret_efficiency=widget._fret_efficiencies,
-        donor_background=widget.donor_background,
-        background_imag=0.1,
-        background_real=0.1,
-        donor_fretting=widget.donor_fretting_proportion,
-    )
-
-    # Calculate expected FRET efficiency
-    expected_fret_efficiency = phasor_nearest_neighbor(
-        np.array(real),
-        np.array(imag),
-        donor_trajectory_real,
-        donor_trajectory_imag,
-        values=widget._fret_efficiencies,
-    )
-
-    # Click on calculate button
-    widget.calculate_fret_efficiency_button.click()
-
-    # Check that a FRET layer was added
-    fret_layer_name = "FRET efficiency: test_layer"
-    assert fret_layer_name in [layer.name for layer in viewer.layers]
-    assert widget.fret_layer is not None
-
-    # Check that the created layer has the expected FRET values
-    fret_layer = viewer.layers[fret_layer_name]
-    assert_array_equal(fret_layer.data.flatten(), expected_fret_efficiency)
-
-    # Change values and recalculate
-    widget.donor_line_edit.setText("1.5")
-
-    # Get trajectory data
-    donor_trajectory_real, donor_trajectory_imag = phasor_from_fret_donor(
-        80,
-        1.5,
-        fret_efficiency=widget._fret_efficiencies,
-        donor_background=widget.donor_background,
-        background_imag=0.1,
-        background_real=0.1,
-        donor_fretting=widget.donor_fretting_proportion,
-    )
-
-    # Calculate expected FRET efficiency
-    expected_fret_efficiency = phasor_nearest_neighbor(
-        np.array(real),
-        np.array(imag),
-        donor_trajectory_real,
-        donor_trajectory_imag,
-        values=widget._fret_efficiencies,
-    )
-
-    # Click on calculate button
-    widget.calculate_fret_efficiency_button.click()
-
-    # Check that the existing FRET layer was updated
-    assert fret_layer_name in [layer.name for layer in viewer.layers]
-    fret_layer = viewer.layers[fret_layer_name]
-    assert_array_equal(fret_layer.data.flatten(), expected_fret_efficiency)
-
-
-def test_artist_management(make_viewer_model, qtbot):
-    """Test artist visibility and management."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Initially no artists
-    assert len(widget.get_all_artists()) == 0
-
-    # Add values and plot
-    widget.frequency_input.setText("80")
-    widget.donor_line_edit.setText("2.0")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-    widget.plot_donor_trajectory()
-
-    # Should have one artist now
-    assert len(widget.get_all_artists()) == 3
-    assert widget.current_donor_line is not None
-    assert widget.current_donor_line in widget.get_all_artists()
-
-    # Artist should be visible initially
-    assert widget.current_donor_line.get_visible() is True
-
-    # Simulate switching to another tab (artist should be hidden)
-    widget.set_artists_visible(False)
-    assert widget.current_donor_line.get_visible() is False
-
-    # Simulate switching back to FRET tab (artist should be visible again)
-    widget.set_artists_visible(True)
-    assert widget.current_donor_line.get_visible() is True
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-
-def test_colormap_events(make_viewer_model, qtbot):
-    """Test colormap and contrast limit event handling."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Setup FRET calculation parameters
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    # Calculate FRET efficiency to create the FRET layer
-    widget.calculate_fret_efficiency_button.click()
-
-    fret_layer_name = "FRET efficiency: test_layer"
-    assert fret_layer_name in [layer.name for layer in viewer.layers]
-
-    # Get the created FRET layer
-    fret_layer = viewer.layers[fret_layer_name]
-    widget.fret_layer = fret_layer
-
-    # Test initial colormap properties
-    initial_colormap = fret_layer.colormap.name
-    initial_contrast_limits = fret_layer.contrast_limits
-
-    # Verify initial state is captured
-    assert initial_colormap is not None
-    assert initial_contrast_limits is not None
-    assert len(initial_contrast_limits) == 2
-
-    # Test colormap change
-    new_colormap = 'viridis'
-    # Ensure we're actually changing to a different colormap
-    if initial_colormap == new_colormap:
-        new_colormap = 'plasma'
-
-    fret_layer.colormap = new_colormap
-    mock_event = Mock()
-    mock_event.source = fret_layer
-    widget._on_colormap_changed(mock_event)
-
-    # Check that the widget's colormap property was updated
-    assert (
-        widget.fret_colormap is not None
-    )  # Should be updated with new colors
-    assert widget.fret_layer.colormap.name == new_colormap
-    assert (
-        widget.fret_layer.colormap.name != initial_colormap
-    )  # Should have changed
-
-    # Test contrast limits change
-    new_contrast_limits = [0.2, 0.8]
-    # Ensure we're actually changing the contrast limits
-    if initial_contrast_limits == new_contrast_limits:
-        new_contrast_limits = [0.3, 0.9]
-
-    fret_layer.contrast_limits = new_contrast_limits
-    widget._on_contrast_limits_changed(mock_event)
-
-    # Check that the widget's contrast limits were updated
-    assert widget.colormap_contrast_limits == new_contrast_limits
-    assert (
-        widget.colormap_contrast_limits != initial_contrast_limits
-    )  # Should have changed
-
-
-def test_fret_gamma_links_layers_and_histogram(make_viewer_model, qtbot):
-    """Changing gamma on one FRET layer syncs siblings and the histogram."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    layer_a = create_image_layer_with_phasors()
-    layer_a.name = "layer_a"
-    layer_b = create_image_layer_with_phasors()
-    layer_b.name = "layer_b"
-    viewer.add_layer(layer_a)
-    viewer.add_layer(layer_b)
-
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    with patch.object(
-        parent, "get_selected_layers", return_value=[layer_a, layer_b]
-    ):
-        widget.calculate_fret_efficiency_button.click()
-
-    assert len(widget.fret_layers) == 2
-
-    # Changing gamma on one FRET layer propagates to the sibling layer, the
-    # stored gamma, and the histogram widget.
-    widget.fret_layers[0].gamma = 0.7
-
-    assert widget.fret_layers[1].gamma == 0.7
-    assert widget.colormap_gamma == 0.7
-    assert widget.histogram_widget.gamma == 0.7
-
-
-def test_draw_colormap_trajectory(make_viewer_model, qtbot):
-    """Test drawing trajectory with colormap."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Create mock axes
-    ax_mock = Mock()
-
-    # Test trajectory data
-    trajectory_real = np.linspace(0.1, 0.9, 100)
-    trajectory_imag = np.linspace(0.1, 0.5, 100)
-
-    # Set up FRET layer for colormap
-    mock_layer = Mock()
-    mock_layer.contrast_limits = (0.0, 1.0)
-    widget.fret_layer = mock_layer
-    widget.colormap_contrast_limits = (0.0, 1.0)
-
-    # Draw colormap trajectory
-    widget._draw_colormap_trajectory(ax_mock, trajectory_real, trajectory_imag)
-
-    # Should call add_collection on axes
-    assert ax_mock.add_collection.called
-
-
-def test_fret_widget_layer_replacement(make_viewer_model, qtbot):
-    """Test that existing FRET layers are replaced when calculating new ones."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Setup widget
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    # Calculate FRET efficiency first time
-    widget.calculate_fret_efficiency_button.click()
-
-    fret_layer_name = "FRET efficiency: test_layer"
-    assert fret_layer_name in [layer.name for layer in viewer.layers]
-
-    # Count layers before second calculation
-    initial_layer_count = len(viewer.layers)
-
-    # Change values
-    widget.donor_line_edit.setText("1.5")
-    widget.frequency_input.setText("90")
-    widget.background_real_edit.setText("0.2")
-    widget.background_imag_edit.setText("0.2")
-
-    # Calculate again - should replace existing layer
-    widget.calculate_fret_efficiency_button.click()
-
-    # Should not have added an extra layer
-    assert len(viewer.layers) == initial_layer_count
-    assert fret_layer_name in [layer.name for layer in viewer.layers]
-
-
-def test_harmonic_change_updates_trajectory(make_viewer_model, qtbot):
-    """Test that changing harmonics updates the donor trajectory."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Set up initial parameters
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    # Mock the canvas and figure
-    parent.canvas_widget = Mock()
-    parent.canvas_widget.figure = Mock()
-    ax_mock = Mock()
-    # Make ax.plot() return a list-like object that can be subscripted
-    ax_mock.plot.return_value = [Mock()]
-    parent.canvas_widget.figure.gca.return_value = ax_mock
-    parent.canvas_widget.canvas = Mock()
-    # Set up axes attribute for _update_plot_elements
-    parent.canvas_widget.axes = ax_mock
-    # Mock artists dict to avoid subscript errors
-    histogram_mock = Mock()
-    histogram_mock.histogram = None
-    parent.canvas_widget.artists = {'HISTOGRAM2D': histogram_mock}
-
-    # Set initial harmonic to 1
-    parent.harmonic = 1
-    widget.current_harmonic = 1
-
-    # Plot initial trajectory
-    widget.plot_donor_trajectory()
-    initial_frequency = widget.frequency
-
-    # Verify initial state
-    assert widget.current_harmonic == 1
-    assert initial_frequency == 80.0  # base_frequency * harmonic (80 * 1)
-
-    # Change harmonic to 2
-    parent.harmonic = 2
-    widget._on_harmonic_changed()
-
-    # Verify harmonic updated
-    assert widget.current_harmonic == 2
-    assert widget.frequency == 160.0  # base_frequency * harmonic (80 * 2)
-
-    # Change harmonic to 3
-    parent.harmonic = 3
-    widget._on_harmonic_changed()
-
-    # Verify harmonic updated again
-    assert widget.current_harmonic == 3
-    assert widget.frequency == 240.0  # base_frequency * harmonic (80 * 3)
-
-
-def test_background_position_storage_by_harmonic(make_viewer_model, qtbot):
-    """Test that background positions are stored and retrieved by harmonic."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Set initial harmonic and background position
-    parent.harmonic = 1
-    widget.current_harmonic = 1
-    widget.background_real_edit.setText("0.2")
-    widget.background_imag_edit.setText("0.3")
-
-    # Store current position for harmonic 1
-    widget._store_current_background_position()
-
-    # Verify position was stored
-    assert 1 in widget.background_positions_by_harmonic
-    assert widget.background_positions_by_harmonic[1]['real'] == 0.2
-    assert widget.background_positions_by_harmonic[1]['imag'] == 0.3
-
-    # Change to harmonic 2 (should get default position)
-    parent.harmonic = 2
-    widget._on_harmonic_changed()
-
-    # Should have default position for harmonic 2
-    assert widget.background_real_edit.text() == "0.000"
-    assert widget.background_imag_edit.text() == "0.000"
-    assert widget.current_harmonic == 2
-
-    # Set different position for harmonic 2
-    widget.background_real_edit.setText("0.5")
-    widget.background_imag_edit.setText("0.6")
-    widget._store_current_background_position()
-
-    # Verify position stored for harmonic 2
-    assert 2 in widget.background_positions_by_harmonic
-    assert widget.background_positions_by_harmonic[2]['real'] == 0.5
-    assert widget.background_positions_by_harmonic[2]['imag'] == 0.6
-
-    # Switch back to harmonic 1
-    parent.harmonic = 1
-    widget._on_harmonic_changed()
-
-    # Should restore original position for harmonic 1
-    assert widget.background_real_edit.text() == "0.200"
-    assert widget.background_imag_edit.text() == "0.300"
-    assert widget.current_harmonic == 1
-
-
-def test_trajectory_calculation_with_different_harmonics(
-    make_viewer_model, qtbot
-):
-    """Test that trajectory calculations use effective frequency (base * harmonic)."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Set base parameters
-    base_frequency = 80.0
-    donor_lifetime = 2.0
-    widget.donor_line_edit.setText(str(donor_lifetime))
-    widget.frequency_input.setText(str(base_frequency))
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    # Test harmonic 1
-    parent.harmonic = 1
-    widget._on_parameters_changed()
-    trajectory_h1_real, trajectory_h1_imag = phasor_from_fret_donor(
-        base_frequency * 1,  # effective frequency
-        donor_lifetime,
-        fret_efficiency=widget._fret_efficiencies,
-        donor_background=widget.donor_background,
-        background_imag=0.1,
-        background_real=0.1,
-        donor_fretting=widget.donor_fretting_proportion,
-    )
-
-    # Test harmonic 2
-    parent.harmonic = 2
-    widget._on_parameters_changed()
-    trajectory_h2_real, trajectory_h2_imag = phasor_from_fret_donor(
-        base_frequency * 2,  # effective frequency
-        donor_lifetime,
-        fret_efficiency=widget._fret_efficiencies,
-        donor_background=widget.donor_background,
-        background_imag=0.1,
-        background_real=0.1,
-        donor_fretting=widget.donor_fretting_proportion,
-    )
-
-    # Test harmonic 3
-    parent.harmonic = 3
-    widget._on_parameters_changed()
-    trajectory_h3_real, trajectory_h3_imag = phasor_from_fret_donor(
-        base_frequency * 3,  # effective frequency
-        donor_lifetime,
-        fret_efficiency=widget._fret_efficiencies,
-        donor_background=widget.donor_background,
-        background_imag=0.1,
-        background_real=0.1,
-        donor_fretting=widget.donor_fretting_proportion,
-    )
-
-    # Trajectories should be different for different harmonics
-    assert not np.array_equal(trajectory_h1_real, trajectory_h2_real)
-    assert not np.array_equal(trajectory_h1_real, trajectory_h3_real)
-    assert not np.array_equal(trajectory_h2_real, trajectory_h3_real)
-
-
-def test_fret_efficiency_calculation_with_harmonics(make_viewer_model, qtbot):
-    """Test FRET efficiency calculation respects harmonic changes."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Setup widget parameters
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    # Test with harmonic 1
-    parent.harmonic = 1
-    widget._on_harmonic_changed()
-    widget.calculate_fret_efficiency_button.click()
-
-    fret_layer_name_h1 = "FRET efficiency: test_layer"
-    assert fret_layer_name_h1 in [layer.name for layer in viewer.layers]
-    fret_data_h1 = viewer.layers[fret_layer_name_h1].data.copy()
-
-    # Change to harmonic 2 and recalculate
-    parent.harmonic = 2
-    widget._on_harmonic_changed()
-    widget.calculate_fret_efficiency_button.click()
-
-    # Same layer name but data should be different
-    fret_data_h2 = viewer.layers[fret_layer_name_h1].data.copy()
-
-    # FRET efficiency should be different for different harmonics
-    assert not np.array_equal(fret_data_h1, fret_data_h2)
-
-
-def test_fret_efficiency_calculation_single_harmonic_layer(
-    make_viewer_model, qtbot
-):
-    """A layer with a single harmonic (no leading harmonic axis in G/S)
-    should produce a FRET efficiency map matching the image shape, not a
-    malformed slice of G/S."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    test_layer = create_image_layer_with_phasors(harmonic=1)
-    assert test_layer.metadata["G"].ndim == test_layer.data.ndim
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    parent.harmonic = 1
-    widget._on_harmonic_changed()
-    widget.calculate_fret_efficiency_button.click()
-
-    fret_layer_name = "FRET efficiency: test_layer"
-    assert fret_layer_name in [layer.name for layer in viewer.layers]
-    assert viewer.layers[fret_layer_name].data.shape == test_layer.data.shape
-
-
-def test_background_position_manual_changes_stored_by_harmonic(
-    make_viewer_model,
-    qtbot,
-):
-    """Test that manual background position changes are stored per harmonic."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Start with harmonic 1
-    parent.harmonic = 1
-    widget.current_harmonic = 1
-
-    # Manually change background position
-    widget.background_real_edit.setText("0.15")
-    widget.background_imag_edit.setText("0.25")
-    widget._on_background_position_changed()
-
-    # Verify stored for harmonic 1
-    assert 1 in widget.background_positions_by_harmonic
-    assert widget.background_positions_by_harmonic[1]['real'] == 0.15
-    assert widget.background_positions_by_harmonic[1]['imag'] == 0.25
-
-    # Switch to harmonic 2
-    parent.harmonic = 2
-    widget._on_harmonic_changed()
-
-    # Should be default for harmonic 2
-    assert widget.background_real_edit.text() == "0.000"
-    assert widget.background_imag_edit.text() == "0.000"
-
-    # Set different values for harmonic 2
-    widget.background_real_edit.setText("0.35")
-    widget.background_imag_edit.setText("0.45")
-    widget._on_background_position_changed()
-
-    # Switch back to harmonic 1
-    parent.harmonic = 1
-    widget._on_harmonic_changed()
-
-    # Should restore harmonic 1 values
-    assert float(widget.background_real_edit.text()) == 0.15
-    assert float(widget.background_imag_edit.text()) == 0.25
-
-
-@pytest.mark.parametrize(
-    "donor_lifetime,frequency,expected_message,message_type",
-    [
-        # Empty values - these should be warnings
-        ("", "80", "Enter a Donor lifetime value.", "warning"),
-        ("2.0", "", "Enter a frequency value.", "warning"),
-        ("", "", "Enter a Donor lifetime value.", "warning"),
-        # Whitespace only values - these should be warnings
-        ("   ", "80", "Enter a Donor lifetime value.", "warning"),
-        ("2.0", "   ", "Enter a frequency value.", "warning"),
-        ("   ", "   ", "Enter a Donor lifetime value.", "warning"),
-        # Invalid numeric values - these should be errors
-        (
-            "not_a_number",
-            "80",
-            "Enter valid numeric values for donor lifetime and frequency.",
-            "error",
-        ),
-        (
-            "2.0",
-            "invalid_frequency",
-            "Enter valid numeric values for donor lifetime and frequency.",
-            "error",
-        ),
-        (
-            "invalid_lifetime",
-            "invalid_frequency",
-            "Enter valid numeric values for donor lifetime and frequency.",
-            "error",
-        ),
-        (
-            "abc",
-            "xyz",
-            "Enter valid numeric values for donor lifetime and frequency.",
-            "error",
-        ),
-        # Mixed invalid cases - empty/whitespace takes precedence, so warnings
-        ("", "invalid_frequency", "Enter a Donor lifetime value.", "warning"),
-        ("   ", "not_a_number", "Enter a Donor lifetime value.", "warning"),
-    ],
-)
-def test_calculate_fret_efficiency_invalid_inputs(
-    make_viewer_model,
-    qtbot,
-    donor_lifetime,
-    frequency,
-    expected_message,
-    message_type,
-):
-    """Test FRET efficiency calculation with various invalid inputs."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    widget.donor_line_edit.setText(donor_lifetime)
-    widget.frequency_input.setText(frequency)
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    initial_layer_count = len(viewer.layers)
-
-    if message_type == "warning":
-        with patch(
-            'napari_phasors.fret_tab.show_warning'
-        ) as mock_show_warning:
-            widget.calculate_fret_efficiency()
-            mock_show_warning.assert_called_once_with(expected_message)
-    else:  # message_type == "error"
-        with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
-            widget.calculate_fret_efficiency()
-            mock_show_error.assert_called_once_with(expected_message)
-
-    assert len(viewer.layers) == initial_layer_count
-
-    fret_layer_name = "FRET efficiency: test_layer"
-    assert fret_layer_name not in [layer.name for layer in viewer.layers]
-
-    assert widget.fret_layer is None
-
-
-def test_donor_lifetime_combobox_initialization(make_viewer_model, qtbot):
-    """Test that donor lifetime combobox is properly initialized."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # CheckableComboBox: starts empty (no placeholder item), shows placeholder text
-    assert widget.donor_lifetime_combobox.count() == 0
-    assert widget.donor_lifetime_combobox.currentText() == ""
-
-
-def test_donor_lifetime_combobox_updates_with_layers(make_viewer_model, qtbot):
-    """Test that donor lifetime combobox updates when layers are added/removed."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Initial state
-    initial_count = widget.donor_lifetime_combobox.count()
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Combobox should be updated
-    new_count = widget.donor_lifetime_combobox.count()
-    assert new_count == initial_count + 1
-
-    # Check that the new layer is in the combobox
-    combobox_items = [
-        widget.donor_lifetime_combobox.itemText(i)
-        for i in range(widget.donor_lifetime_combobox.count())
-    ]
-    assert "test_layer" in combobox_items
-
-    # Remove layer
-    viewer.layers.remove(test_layer)
-
-    # Combobox should be updated back to original count
-    assert widget.donor_lifetime_combobox.count() == initial_count
-
-
-def test_lifetime_type_combobox_modes(make_viewer_model, qtbot):
-    """Test the lifetime type combobox modes."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Test changing modes
-    widget.lifetime_type_combobox.setCurrentText(
-        "Apparent Modulation Lifetime"
-    )
-    assert (
-        widget.lifetime_type_combobox.currentText()
-        == "Apparent Modulation Lifetime"
-    )
-
-    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
-    assert widget.lifetime_type_combobox.currentText() == "Normal Lifetime"
-
-    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
-    assert (
-        widget.lifetime_type_combobox.currentText()
-        == "Apparent Phase Lifetime"
-    )
-
-
-def test_calculate_donor_lifetime_no_layer_selected(make_viewer_model, qtbot):
-    """Test donor lifetime calculation with no layer selected."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Set frequency for calculations
-    widget.frequency_input.setText("80")
-
-    # Should return without error when no layer is checked
     initial_lifetime = widget.donor_line_edit.text()
-
     widget._calculate_donor_lifetime()
-
-    # Lifetime should remain unchanged
     assert widget.donor_line_edit.text() == initial_lifetime
 
-
-def test_calculate_donor_lifetime_no_frequency(make_viewer_model, qtbot):
-    """Test donor lifetime calculation with no frequency set."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Check the layer but don't set frequency
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
-    widget.frequency_input.setText("")  # No frequency
-
-    initial_lifetime = widget.donor_line_edit.text()
-
-    # Should return without error
-    widget._calculate_donor_lifetime()
-
-    # Lifetime should remain unchanged
-    assert widget.donor_line_edit.text() == initial_lifetime
-
-
-def test_calculate_donor_lifetime_apparent_phase(make_viewer_model, qtbot):
-    """Test donor lifetime calculation using apparent phase lifetime."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Set up parameters
-    widget.frequency_input.setText("80")
-    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
-
-    # Set up parent widget properly
+    # "From layer(s)" with nothing checked changes nothing.
     parent.harmonic = 1
-
-    # Calculate donor lifetime
-    widget._calculate_donor_lifetime()
-
-    # Should have updated the donor lifetime
-    assert widget.donor_line_edit.text() != ""
-    lifetime_value = float(widget.donor_line_edit.text())
-    assert lifetime_value > 0
-    assert widget.donor_lifetime == lifetime_value
-
-
-def test_calculate_donor_lifetime_apparent_modulation(
-    make_viewer_model, qtbot
-):
-    """Test donor lifetime calculation using apparent modulation lifetime."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Set up parameters
-    widget.frequency_input.setText("80")
-    widget.lifetime_type_combobox.setCurrentText(
-        "Apparent Modulation Lifetime"
-    )
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
-
-    # Set up parent widget properly
-    parent.harmonic = 1
-
-    # Calculate donor lifetime
-    widget._calculate_donor_lifetime()
-
-    # Should have updated the donor lifetime
-    assert widget.donor_line_edit.text() != ""
-    lifetime_value = float(widget.donor_line_edit.text())
-    assert lifetime_value > 0
-    assert widget.donor_lifetime == lifetime_value
-
-
-def test_calculate_donor_lifetime_normal_lifetime(make_viewer_model, qtbot):
-    """Test donor lifetime calculation using normal lifetime."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Set up parameters
-    widget.frequency_input.setText("80")
-    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
-
-    # Set up parent widget properly
-    parent.harmonic = 1
-
-    # Calculate donor lifetime
-    widget._calculate_donor_lifetime()
-
-    # Should have updated the donor lifetime
-    assert widget.donor_line_edit.text() != ""
-    lifetime_value = float(widget.donor_line_edit.text())
-    assert lifetime_value > 0
-    assert widget.donor_lifetime == lifetime_value
-
-
-def test_calculate_donor_lifetime_different_harmonics(
-    make_viewer_model, qtbot
-):
-    """Test donor lifetime calculation with different harmonics."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Set up parameters
-    widget.frequency_input.setText("80")
-    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
-
-    # Test with harmonic 1
-    parent.harmonic = 1
-    widget._calculate_donor_lifetime()
-    lifetime_h1 = widget.donor_line_edit.text()
-
-    # Test with harmonic 2
-    parent.harmonic = 2
-    widget._calculate_donor_lifetime()
-    lifetime_h2 = widget.donor_line_edit.text()
-
-    # Test with harmonic 3
-    parent.harmonic = 3
-    widget._calculate_donor_lifetime()
-    lifetime_h3 = widget.donor_line_edit.text()
-
-    # Lifetimes should be different for different harmonics
-    assert lifetime_h1 != lifetime_h2
-    assert lifetime_h1 != lifetime_h3
-    assert lifetime_h2 != lifetime_h3
-
-
-def test_calculate_donor_lifetime_mode_differences(make_viewer_model, qtbot):
-    """Test that different lifetime modes give different results."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Set up parameters
-    widget.frequency_input.setText("80")
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
-    parent.harmonic = 1
-
-    # Test apparent phase lifetime
-    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
-    widget._calculate_donor_lifetime()
-    phase_lifetime = widget.donor_line_edit.text()
-
-    # Test apparent modulation lifetime
-    widget.lifetime_type_combobox.setCurrentText(
-        "Apparent Modulation Lifetime"
-    )
-    widget._calculate_donor_lifetime()
-    mod_lifetime = widget.donor_line_edit.text()
-
-    # Test normal lifetime
-    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
-    widget._calculate_donor_lifetime()
-    normal_lifetime = widget.donor_line_edit.text()
-
-    # All should be valid numbers
-    assert phase_lifetime != ""
-    assert mod_lifetime != ""
-    assert normal_lifetime != ""
-
-    phase_val = float(phase_lifetime)
-    mod_val = float(mod_lifetime)
-    normal_val = float(normal_lifetime)
-
-    assert phase_val > 0
-    assert mod_val > 0
-    assert normal_val > 0
-
-    # They should generally be different (though could be close)
-    # At least one should be different from the others
-    assert not (phase_val == mod_val == normal_val)
-
-
-def test_donor_lifetime_combobox_layer_selection_persistence(
-    make_viewer_model,
-    qtbot,
-):
-    """Test that donor lifetime combobox checked selection persists when layers change."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add first layer
-    test_layer1 = create_image_layer_with_phasors()
-    test_layer1.name = "test_layer1"
-    viewer.add_layer(test_layer1)
-
-    # Check first layer
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer1"])
-    assert widget.donor_lifetime_combobox.checkedItems() == ["test_layer1"]
-
-    # Add second layer
-    test_layer2 = create_image_layer_with_phasors()
-    test_layer2.name = "test_layer2"
-    viewer.add_layer(test_layer2)
-
-    # Checked selection should persist after combobox refresh
-    assert "test_layer1" in widget.donor_lifetime_combobox.checkedItems()
-
-    # Switch check to second layer
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer2"])
-    assert widget.donor_lifetime_combobox.checkedItems() == ["test_layer2"]
-
-    # Remove first layer
-    viewer.layers.remove(test_layer1)
-
-    # Checked selection should still be test_layer2
-    assert widget.donor_lifetime_combobox.checkedItems() == ["test_layer2"]
-
-    # Remove second layer
-    viewer.layers.remove(test_layer2)
-
-    # Should have no checked items and empty display text
-    assert widget.donor_lifetime_combobox.checkedItems() == []
-    assert widget.donor_lifetime_combobox.currentText() == ""
-
-
-def test_calculate_donor_lifetime_error_handling(make_viewer_model, qtbot):
-    """Test error handling in donor lifetime calculation."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Create a layer without proper phasor data
-    import numpy as np
-    from napari.layers import Image
-
-    bad_layer = Image(np.random.random((10, 10)), name="bad_layer")
-    viewer.add_layer(bad_layer)
-
-    # bad_layer will NOT be added to the CheckableComboBox (no phasor metadata)
-    assert "bad_layer" not in widget.donor_lifetime_combobox.allItems()
-
-    # Calling _calculate_donor_lifetime with no checked layers should be a no-op
-    widget.frequency_input.setText("80")
-    parent.harmonic = 1
-
-    initial_lifetime = widget.donor_line_edit.text()
-
-    # Should handle gracefully: no checked layers → no-op
-    widget._calculate_donor_lifetime()
-
-    # Should not crash and lifetime should remain unchanged
-    assert widget.donor_line_edit.text() == initial_lifetime
-
-
-def test_donor_source_selector_functionality(make_viewer_model, qtbot):
-    """Test the donor source selector switches between Manual and From layer(s) modes."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Initially should be in Manual mode
-    assert widget.donor_source_selector.currentText() == "Manual"
-    assert widget.donor_stack.currentIndex() == 0  # Manual page
-    assert widget.donor_label.text() == "Donor lifetime (ns):"
-
-    # Switch to "From layer(s)" mode
-    widget.donor_source_selector.setCurrentText("From layer(s)")
-    widget._on_donor_source_changed(1)
-
-    assert widget.donor_stack.currentIndex() == 1  # From layer(s) page
-    assert widget.donor_label.text() == "Donor lifetime (ns):"
-
-    # Switch back to Manual mode
-    widget.donor_source_selector.setCurrentText("Manual")
-    widget._on_donor_source_changed(0)
-
-    assert widget.donor_stack.currentIndex() == 0  # Manual page
-    assert widget.donor_label.text() == "Donor lifetime (ns):"
-
-
-def test_background_source_selector_functionality(make_viewer_model, qtbot):
-    """Test the background source selector switches between Manual and From layer(s) modes."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Initially should be in Manual mode
-    assert widget.bg_source_selector.currentText() == "Manual"
-    assert widget.bg_stack.currentIndex() == 0  # Manual page
-    assert widget.background_position_label.text() == "Background position:"
-
-    # Switch to "From layer(s)" mode
-    widget.bg_source_selector.setCurrentText("From layer(s)")
-    widget._on_bg_source_changed(1)
-
-    assert widget.bg_stack.currentIndex() == 1  # From layer(s) page
-    assert widget.background_position_label.text() == "Background position:"
-
-    # Switch back to Manual mode
-    widget.bg_source_selector.setCurrentText("Manual")
-    widget._on_bg_source_changed(0)
-
-    assert widget.bg_stack.currentIndex() == 0  # Manual page
-    assert widget.background_position_label.text() == "Background position:"
-
-
-def test_donor_lifetime_label_updates_with_layer_calculation(
-    make_viewer_model,
-    qtbot,
-):
-    """Test that donor lifetime label updates when calculated from layer."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Set up parameters
-    widget.frequency_input.setText("80")
-    parent.harmonic = 1
-
-    # Switch to "From layer(s)" mode
-    widget.donor_source_selector.setCurrentText("From layer(s)")
-    widget._on_donor_source_changed(1)
-
-    # Check the test layer
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
-
-    # Calculate donor lifetime
-    widget._calculate_donor_lifetime()
-
-    # Label should now show the calculated lifetime value
-    label_text = widget.donor_label.text()
-    assert "Donor lifetime (from layer(s)):" in label_text
-    assert "ns" in label_text
-
-    # Switch back to Manual mode
-    widget.donor_source_selector.setCurrentText("Manual")
-    widget._on_donor_source_changed(0)
-
-    # Label should revert to default
-    assert widget.donor_label.text() == "Donor lifetime (ns):"
-
-
-def test_background_position_label_updates_with_layer_calculation(
-    make_viewer_model,
-    qtbot,
-):
-    """Test that background position label updates when calculated from layer."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Set up parameters
-    parent.harmonic = 1
-
-    # Switch to "From layer(s)" mode
-    widget.bg_source_selector.setCurrentText("From layer(s)")
-    widget._on_bg_source_changed(1)
-
-    # Check the test layer
-    widget.background_image_combobox.setCheckedItems(["test_layer"])
-
-    # Calculate background position
-    widget._calculate_background_position()
-
-    # Label should now show the calculated G and S values
-    label_text = widget.background_position_label.text()
-    assert "Background position: G=" in label_text
-    assert "S=" in label_text
-
-    # Switch back to Manual mode
-    widget.bg_source_selector.setCurrentText("Manual")
-    widget._on_bg_source_changed(0)
-
-    # Label should revert to default
-    assert widget.background_position_label.text() == "Background position:"
-
-
-def test_layer_selection_with_no_valid_layers(make_viewer_model, qtbot):
-    """Test behavior when no valid layers are available for selection."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add a layer without phasor data
-    import numpy as np
-    from napari.layers import Image
-
-    invalid_layer = Image(np.random.random((10, 10)), name="invalid_layer")
-    viewer.add_layer(invalid_layer)
-
-    # Update comboboxes
-    widget._update_donor_lifetime_combobox()
-    widget._update_background_combobox()
-
-    # CheckableComboBox: no items added since invalid_layer has no phasor data
-    assert widget.donor_lifetime_combobox.count() == 0
-    assert widget.background_image_combobox.count() == 0
-
-
-def test_calculate_values_with_select_layer_option(make_viewer_model, qtbot):
-    """Test calculation behavior when 'Select layer...' is selected."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Set frequency for donor calculation
-    widget.frequency_input.setText("80")
-    parent.harmonic = 1
-
-    # Switch to From layer(s) modes
     widget.donor_source_selector.setCurrentText("From layer(s)")
     widget._on_donor_source_changed(1)
     widget.bg_source_selector.setCurrentText("From layer(s)")
     widget._on_bg_source_changed(1)
-
-    # Ensure nothing is checked (comboboxes start empty)
-
-    # Store initial values
     initial_donor_text = widget.donor_line_edit.text()
     initial_donor_label = widget.donor_label.text()
     initial_bg_real = widget.background_real_edit.text()
     initial_bg_imag = widget.background_imag_edit.text()
     initial_bg_label = widget.background_position_label.text()
-
-    # Try to calculate - should not crash and should not change values
     widget._calculate_donor_lifetime()
     widget._calculate_background_position()
-
-    # Values should remain unchanged
     assert widget.donor_line_edit.text() == initial_donor_text
     assert widget.donor_label.text() == initial_donor_label
     assert widget.background_real_edit.text() == initial_bg_real
     assert widget.background_imag_edit.text() == initial_bg_imag
     assert widget.background_position_label.text() == initial_bg_label
+    widget.donor_source_selector.setCurrentText("Manual")
+    widget._on_donor_source_changed(0)
+    widget.bg_source_selector.setCurrentText("Manual")
+    widget._on_bg_source_changed(0)
 
-
-def test_ui_mode_switching_preserves_manual_values(make_viewer_model, qtbot):
-    """Test that switching between modes preserves manually entered values."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Set manual values
+    # Switching between modes preserves manually entered values.
     widget.donor_line_edit.setText("2.5")
     widget.background_real_edit.setText("0.3")
     widget.background_imag_edit.setText("0.4")
-
-    # Switch to From layer(s) mode and back
     widget.donor_source_selector.setCurrentText("From layer(s)")
     widget._on_donor_source_changed(1)
     widget.donor_source_selector.setCurrentText("Manual")
     widget._on_donor_source_changed(0)
-
     widget.bg_source_selector.setCurrentText("From layer(s)")
     widget._on_bg_source_changed(1)
     widget.bg_source_selector.setCurrentText("Manual")
     widget._on_bg_source_changed(0)
-
-    # Manual values should be preserved
     assert widget.donor_line_edit.text() == "2.5"
     assert widget.background_real_edit.text() == "0.3"
     assert widget.background_imag_edit.text() == "0.4"
 
+    # Layers without phasor data are never offered.
+    invalid_layer = Image(np.random.random((10, 10)), name="invalid_layer")
+    viewer.add_layer(invalid_layer)
+    widget._update_donor_lifetime_combobox()
+    widget._update_background_combobox()
+    assert widget.donor_lifetime_combobox.count() == 0
+    assert widget.background_image_combobox.count() == 0
+    assert "invalid_layer" not in widget.donor_lifetime_combobox.allItems()
+    # With no checked layers the donor calculation is a no-op.
+    initial_lifetime = widget.donor_line_edit.text()
+    widget._calculate_donor_lifetime()
+    assert widget.donor_line_edit.text() == initial_lifetime
 
-def test_metadata_initialization(make_viewer_model, qtbot):
-    """Test that FRET settings are only initialized when analysis is performed."""
+
+def test_fret_efficiency_calculation(make_viewer_model, qtbot):
+    """FRET efficiency matches phasorpy, is written to one layer per source,
+    stores its settings and colormap, and follows the harmonic."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
-    # Add layer with phasor data
     test_layer = create_image_layer_with_phasors()
     test_layer.name = "test_layer"
     viewer.add_layer(test_layer)
+    fret_layer_name = "test_layer [FRET efficiency]"
+    hw = widget.histogram_widget
 
-    # Select the layer
+    # FRET settings are only initialized when the analysis is performed.
     parent.image_layer_with_phasor_features_combobox.setCurrentText(
         "test_layer"
     )
-
-    # Trigger layer change - should NOT initialize FRET metadata
     widget._on_image_layer_changed()
-
-    # Check that FRET settings were NOT initialized
     if 'settings' in test_layer.metadata:
         assert 'fret' not in test_layer.metadata['settings']
 
-    # Now perform FRET analysis
     widget.donor_line_edit.setText("2.0")
     widget.frequency_input.setText("80")
     widget.background_real_edit.setText("0.1")
     widget.background_imag_edit.setText("0.1")
 
-    # Calculate FRET efficiency - this should initialize metadata
-    widget.calculate_fret_efficiency_button.click()
+    # Expected FRET efficiency from the layer's phasor coordinates.
+    metadata = test_layer.metadata
+    harmonics = metadata.get("harmonics", [1])
+    harmonic = parent.harmonic
+    if isinstance(harmonics, (list, np.ndarray)) and len(harmonics) > 1:
+        harmonic_idx = (
+            list(harmonics).index(harmonic) if harmonic in harmonics else 0
+        )
+        real = metadata["G"][harmonic_idx].flatten()
+        imag = metadata["S"][harmonic_idx].flatten()
+    else:
+        real = metadata["G"].flatten()
+        imag = metadata["S"].flatten()
 
-    # Now check that settings were initialized
+    def expected_efficiency(donor_lifetime):
+        trajectory_real, trajectory_imag = phasor_from_fret_donor(
+            80,
+            donor_lifetime,
+            fret_efficiency=widget._fret_efficiencies,
+            donor_background=widget.donor_background,
+            background_imag=0.1,
+            background_real=0.1,
+            donor_fretting=widget.donor_fretting_proportion,
+        )
+        return phasor_nearest_neighbor(
+            np.array(real),
+            np.array(imag),
+            trajectory_real,
+            trajectory_imag,
+            values=widget._fret_efficiencies,
+        )
+
+    expected = expected_efficiency(2)
+    widget.calculate_fret_efficiency_button.click()
+    assert fret_layer_name in [layer.name for layer in viewer.layers]
+    assert widget.fret_layer is not None
+    assert_array_equal(viewer.layers[fret_layer_name].data.flatten(), expected)
+    # The settings were initialized with the analysis.
     assert 'settings' in test_layer.metadata
     assert 'fret' in test_layer.metadata['settings']
-
-    # Verify default values
     fret_settings = test_layer.metadata['settings']['fret']
     assert fret_settings['donor_lifetime'] == 2.0
     assert test_layer.metadata['settings']['frequency'] == 80.0
@@ -1598,490 +308,141 @@ def test_metadata_initialization(make_viewer_model, qtbot):
     assert fret_settings['background_positions_by_harmonic'] == {
         1: {'imag': 0.1, 'real': 0.1}
     }
-
-    # Check colormap settings
     assert 'colormap_settings' in fret_settings
     assert fret_settings['colormap_settings']['colormap_name'] == 'viridis'
     assert fret_settings['colormap_settings']['colormap_colors'] is None
     assert fret_settings['colormap_settings']['contrast_limits'] == [0, 1]
     assert fret_settings['colormap_settings']['colormap_changed'] is False
 
-
-def test_metadata_storage_manual_values(make_viewer_model, qtbot):
-    """Test that manual values are correctly stored in metadata."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Set manual values
+    # Parameters update from the UI.
     widget.donor_line_edit.setText("2.5")
-    widget.frequency_input.setText("85")
-    widget.background_real_edit.setText("0.15")
-    widget.background_imag_edit.setText("0.25")
-    widget.background_slider.setValue(30)  # 0.3
-    widget.fretting_slider.setValue(75)  # 0.75
-    widget.colormap_checkbox.setChecked(False)
-
-    # Trigger updates
-    parent._broadcast_frequency_value_across_tabs('85')
-    widget._on_parameters_changed()
-    widget._on_background_position_changed()  # Explicitly store background position
-    widget._on_background_slider_changed()
-    widget._on_fretting_slider_changed()
-    widget._on_colormap_checkbox_changed()
-
-    # Edits are unsaved settings of the layer until FRET is calculated.
-    assert 'fret' not in test_layer.metadata.get('settings', {})
-    settings = parent.layer_settings(test_layer)
-    fret_settings = settings['fret']
-    assert fret_settings['donor_lifetime'] == 2.5
-    assert settings['frequency'] == 85.0
-    assert fret_settings['donor_background'] == 0.3
-    assert fret_settings['donor_fretting_proportion'] == 0.75
-    assert fret_settings['use_colormap'] is False
-    # Background positions should be stored in background_positions_by_harmonic
-    assert 1 in fret_settings['background_positions_by_harmonic']
-    assert fret_settings['background_positions_by_harmonic'][1]['real'] == 0.15
-    assert fret_settings['background_positions_by_harmonic'][1]['imag'] == 0.25
-
-
-def test_metadata_storage_background_positions_by_harmonic(
-    make_viewer_model, qtbot
-):
-    """Test that background positions by harmonic are correctly stored."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Set background for harmonic 1
-    parent.harmonic = 1
-    widget._on_harmonic_changed()
+    widget.frequency_input.setText("80")
     widget.background_real_edit.setText("0.2")
     widget.background_imag_edit.setText("0.3")
-    widget._on_background_position_changed()
-
-    # Set background for harmonic 2
-    parent.harmonic = 2
-    widget._on_harmonic_changed()
-    widget.background_real_edit.setText("0.5")
-    widget.background_imag_edit.setText("0.6")
-    widget._on_background_position_changed()
-
-    # Check the layer's (unsaved) settings
-    fret_settings = parent.layer_settings(test_layer)['fret']
-    bg_positions = fret_settings['background_positions_by_harmonic']
-
-    assert 1 in bg_positions
-    assert bg_positions[1]['real'] == 0.2
-    assert bg_positions[1]['imag'] == 0.3
-
-    assert 2 in bg_positions
-    assert bg_positions[2]['real'] == 0.5
-    assert bg_positions[2]['imag'] == 0.6
-
-
-def test_metadata_storage_from_layer_mode(make_viewer_model, qtbot):
-    """Test that 'From layer' mode settings are stored in metadata."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layers
-    donor_layer = create_image_layer_with_phasors()
-    donor_layer.name = "donor_layer"
-    viewer.add_layer(donor_layer)
-
-    bg_layer = create_image_layer_with_phasors()
-    bg_layer.name = "bg_layer"
-    viewer.add_layer(bg_layer)
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "donor_layer"
-    )
-    widget._on_image_layer_changed()
-    widget.frequency_input.setText("80")
-
-    # Switch to From layer(s) mode for donor
-    widget.donor_source_selector.setCurrentText("From layer(s)")
-    widget._on_donor_source_changed(1)
-    widget.donor_lifetime_combobox.setCheckedItems(["donor_layer"])
-    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
-
-    # Switch to From layer(s) mode for background
-    widget.bg_source_selector.setCurrentText("From layer(s)")
-    widget._on_bg_source_changed(1)
-    widget.background_image_combobox.setCheckedItems(["bg_layer"])
-
-    # Check the layer's (unsaved) settings
-    fret_settings = parent.layer_settings(donor_layer)['fret']
-    assert fret_settings['donor_source'] == 'From layer(s)'
-    assert fret_settings['donor_layer_names'] == ['donor_layer']
-    assert fret_settings['donor_lifetime_type'] == 'Normal Lifetime'
-    assert fret_settings['background_source'] == 'From layer(s)'
-    assert fret_settings['background_layer_names'] == ['bg_layer']
-
-
-def test_metadata_restoration_manual_values(make_viewer_model, qtbot):
-    """Test that manual values are correctly restored from metadata."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Set and store values
-    widget.donor_line_edit.setText("3.5")
-    widget.frequency_input.setText("90")
-    widget.background_slider.setValue(40)  # 0.4
-    widget.fretting_slider.setValue(85)  # 0.85
-    widget.colormap_checkbox.setChecked(False)
-
-    parent._broadcast_frequency_value_across_tabs('90')
     widget._on_parameters_changed()
-    widget._on_background_slider_changed()
-    widget._on_fretting_slider_changed()
-    widget._on_colormap_checkbox_changed()
-
-    parent.harmonic = 1
-    widget._on_harmonic_changed()
-    widget.background_real_edit.setText("0.35")
-    widget.background_imag_edit.setText("0.45")
-    widget._on_background_position_changed()
-
-    # Switch to another layer and back
-    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
-    widget._on_image_layer_changed()
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Verify restoration (comparing float values, not exact string format)
-    assert float(widget.donor_line_edit.text()) == 3.5
-    assert float(widget.frequency_input.text()) == 90.0
-    assert widget.background_slider.value() == 40
-    assert widget.background_label.text() == "0.40"
-    assert widget.fretting_slider.value() == 85
-    assert widget.fretting_label.text() == "0.85"
-    assert widget.colormap_checkbox.isChecked() is False
-    assert float(widget.background_real_edit.text()) == 0.35
-    assert float(widget.background_imag_edit.text()) == 0.45
-
-
-def test_metadata_restoration_background_positions_by_harmonic(
-    make_viewer_model,
-    qtbot,
-):
-    """Test that background positions by harmonic are correctly restored."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Set positions for different harmonics
-    parent.harmonic = 1
-    widget._on_harmonic_changed()
+    assert widget.donor_lifetime == 2.5
+    assert widget.frequency == 80 * parent.harmonic
+    assert widget.background_real == 0.2
+    assert widget.background_imag == 0.3
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
     widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    # The histogram dataset is labelled with the FRET output layer's name.
+    assert list(hw._datasets.keys()) == [fret_layer_name]
+    # The range-changed path re-labels the same way.
+    widget._on_fret_range_changed(0.1, 0.9)
+    assert list(hw._datasets.keys()) == [fret_layer_name]
+    # Clip the FRET layers to a sub-range and refresh the histogram.
+    widget._on_fret_range_changed(0.1, 0.5)
+    widget._update_fret_histogram()
+    widget._on_fret_range_changed(0.0, 1.0)
+
+    # A new donor lifetime updates the existing FRET layer.
+    widget.donor_line_edit.setText("1.5")
+    expected = expected_efficiency(1.5)
+    widget.calculate_fret_efficiency_button.click()
+    assert fret_layer_name in [layer.name for layer in viewer.layers]
+    assert_array_equal(viewer.layers[fret_layer_name].data.flatten(), expected)
+
+    # Recalculating with other values replaces the layer, not adds one.
+    initial_layer_count = len(viewer.layers)
+    widget.donor_line_edit.setText("1.5")
+    widget.frequency_input.setText("90")
+    widget.background_real_edit.setText("0.2")
     widget.background_imag_edit.setText("0.2")
-    widget._on_background_position_changed()
+    widget.calculate_fret_efficiency_button.click()
+    assert len(viewer.layers) == initial_layer_count
+    assert fret_layer_name in [layer.name for layer in viewer.layers]
 
-    parent.harmonic = 2
-    widget._on_harmonic_changed()
-    widget.background_real_edit.setText("0.3")
-    widget.background_imag_edit.setText("0.4")
-    widget._on_background_position_changed()
-
-    parent.harmonic = 3
-    widget._on_harmonic_changed()
-    widget.background_real_edit.setText("0.5")
-    widget.background_imag_edit.setText("0.6")
-    widget._on_background_position_changed()
-
-    # Switch to another layer and back
-    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
-    widget._on_image_layer_changed()
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Verify restoration for each harmonic
-    parent.harmonic = 1
-    widget._on_harmonic_changed()
-    assert float(widget.background_real_edit.text()) == 0.1
-    assert float(widget.background_imag_edit.text()) == 0.2
-
-    parent.harmonic = 2
-    widget._on_harmonic_changed()
-    assert float(widget.background_real_edit.text()) == 0.3
-    assert float(widget.background_imag_edit.text()) == 0.4
-
-    parent.harmonic = 3
-    widget._on_harmonic_changed()
-    assert float(widget.background_real_edit.text()) == 0.5
-    assert float(widget.background_imag_edit.text()) == 0.6
-
-
-def test_metadata_restoration_from_layer_mode(make_viewer_model, qtbot):
-    """Test that 'From layer' mode settings are correctly restored."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layers
-    donor_layer = create_image_layer_with_phasors()
-    donor_layer.name = "donor_layer"
-    viewer.add_layer(donor_layer)
-
-    bg_layer = create_image_layer_with_phasors()
-    bg_layer.name = "bg_layer"
-    viewer.add_layer(bg_layer)
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "donor_layer"
-    )
-    widget._on_image_layer_changed()
-    widget.frequency_input.setText("80")
-
-    # Configure From layer(s) mode
-    widget.donor_source_selector.setCurrentText("From layer(s)")
-    widget._on_donor_source_changed(1)
-    widget.donor_lifetime_combobox.setCheckedItems(["donor_layer"])
-    widget.lifetime_type_combobox.setCurrentText(
-        "Apparent Modulation Lifetime"
-    )
-
-    widget.bg_source_selector.setCurrentText("From layer(s)")
-    widget._on_bg_source_changed(1)
-    widget.background_image_combobox.setCheckedItems(["bg_layer"])
-
-    # Switch away and back
-    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
-    widget._on_image_layer_changed()
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "donor_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Verify restoration
-    assert widget.donor_source_selector.currentText() == "From layer(s)"
-    assert widget.donor_lifetime_combobox.checkedItems() == ["donor_layer"]
-    assert (
-        widget.lifetime_type_combobox.currentText()
-        == "Apparent Modulation Lifetime"
-    )
-    assert widget.bg_source_selector.currentText() == "From layer(s)"
-    assert widget.background_image_combobox.checkedItems() == ["bg_layer"]
-
-
-def test_metadata_restoration_reverts_to_manual_when_layer_missing(
-    make_viewer_model,
-    qtbot,
-):
-    """Test that settings revert to manual mode when selected layers are missing."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layers
-    donor_layer = create_image_layer_with_phasors()
-    donor_layer.name = "donor_layer"
-    viewer.add_layer(donor_layer)
-
-    bg_layer = create_image_layer_with_phasors()
-    bg_layer.name = "bg_layer"
-    viewer.add_layer(bg_layer)
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "donor_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Configure From layer(s) mode
-    widget.frequency_input.setText("80")
-    widget.donor_line_edit.setText("2.5")
-    widget.donor_source_selector.setCurrentText("From layer(s)")
-    widget._on_donor_source_changed(1)
-    widget.donor_lifetime_combobox.setCheckedItems(["donor_layer"])
-
-    widget.bg_source_selector.setCurrentText("From layer(s)")
-    widget._on_bg_source_changed(1)
-    widget.background_image_combobox.setCheckedItems(["bg_layer"])
-
-    # Remove the referenced layer
-    viewer.layers.remove(bg_layer)
-
-    # Switch away and back
-    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
-    widget._on_image_layer_changed()
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "donor_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Background should revert to Manual since bg_layer is missing
-    assert widget.bg_source_selector.currentText() == "Manual"
-
-    # Donor should still be From layer(s) since donor_layer exists
-    assert widget.donor_source_selector.currentText() == "From layer(s)"
-
-
-def test_metadata_colormap_settings_storage(make_viewer_model, qtbot):
-    """Test that colormap settings are correctly stored in metadata."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
-    )
-    widget._on_image_layer_changed()
-
-    # Calculate FRET to create FRET layer
+    # Running FRET again keeps the colormap, limits and gamma of the layer.
     widget.donor_line_edit.setText("2.0")
     widget.frequency_input.setText("80")
     widget.background_real_edit.setText("0.1")
     widget.background_imag_edit.setText("0.1")
     widget.calculate_fret_efficiency()
+    assert widget.fret_layer.colormap.name == 'viridis'
+    widget.fret_layer.colormap = 'magma'
+    widget.fret_layer.contrast_limits = (0.1, 0.9)
+    widget.fret_layer.gamma = 0.8
+    widget.calculate_fret_efficiency()
+    assert widget.fret_layer.colormap.name == 'magma'
+    assert tuple(widget.fret_layer.contrast_limits) == pytest.approx(
+        (0.1, 0.9)
+    )
+    assert widget.fret_layer.gamma == pytest.approx(0.8)
+    colormap_settings = test_layer.metadata['settings']['fret'][
+        'colormap_settings'
+    ]
+    assert colormap_settings['colormap_name'] == 'magma'
+    assert colormap_settings['gamma'] == pytest.approx(0.8)
 
-    # Change colormap settings
+    # Colormap and contrast limit events update the tab.
+    fret_layer = viewer.layers[fret_layer_name]
+    widget.fret_layer = fret_layer
+    initial_colormap = fret_layer.colormap.name
+    initial_contrast_limits = fret_layer.contrast_limits
+    assert initial_colormap is not None
+    assert initial_contrast_limits is not None
+    assert len(initial_contrast_limits) == 2
+    new_colormap = 'viridis'
+    fret_layer.colormap = new_colormap
+    mock_event = Mock()
+    mock_event.source = fret_layer
+    widget._on_colormap_changed(mock_event)
+    assert widget.fret_colormap is not None
+    assert widget.fret_layer.colormap.name == new_colormap
+    assert widget.fret_layer.colormap.name != initial_colormap
+    new_contrast_limits = [0.2, 0.8]
+    fret_layer.contrast_limits = new_contrast_limits
+    widget._on_contrast_limits_changed(mock_event)
+    assert widget.colormap_contrast_limits == new_contrast_limits
+    assert widget.colormap_contrast_limits != initial_contrast_limits
+
+    # Colormap settings are stored in the metadata.
     widget.fret_layer.colormap = 'plasma'
     widget.fret_layer.contrast_limits = (0.2, 0.8)
-
-    # Trigger colormap change events
-    mock_event = Mock()
-    mock_event.source = widget.fret_layer
     widget._on_colormap_changed(mock_event)
     widget._on_contrast_limits_changed(mock_event)
-
-    # Check metadata
     colormap_settings = test_layer.metadata['settings']['fret'][
         'colormap_settings'
     ]
     assert colormap_settings['colormap_name'] == 'plasma'
     assert colormap_settings['contrast_limits'] == [0.2, 0.8]
     assert colormap_settings['colormap_changed'] is True
+    # Regression: a built-in colormap picked after the run was stored with
+    # all its colours, while the run itself stores it by name only.
+    assert colormap_settings['colormap_colors'] is None
 
+    # A custom colormap keeps its colours, even though napari knows it by
+    # name once the layer has used it, so it can come back in another
+    # session.
+    custom = Colormap(
+        colors=[[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        name='fret test black to red',
+    )
+    widget.fret_layer.colormap = custom
+    widget._on_colormap_changed(mock_event)
+    colormap_settings = test_layer.metadata['settings']['fret'][
+        'colormap_settings'
+    ]
+    assert colormap_settings['colormap_name'] == 'fret test black to red'
+    np.testing.assert_allclose(
+        colormap_settings['colormap_colors'],
+        np.asarray(widget.fret_layer.colormap.colors),
+    )
 
-def test_metadata_persistence_across_layer_switches(make_viewer_model, qtbot):
-    """Test that metadata persists correctly when switching between layers."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add two layers
-    layer1 = create_image_layer_with_phasors()
-    layer1.name = "layer1"
-    viewer.add_layer(layer1)
-
-    layer2 = create_image_layer_with_phasors()
-    layer2.name = "layer2"
-    viewer.add_layer(layer2)
-
-    # Configure layer 1
-    parent.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
-    widget._on_image_layer_changed()
-    widget.donor_line_edit.setText("2.5")
-    widget.frequency_input.setText("80.0")
-    widget.background_slider.setValue(30)
-    parent._broadcast_frequency_value_across_tabs('80.0')
-    widget._on_parameters_changed()
-    widget._on_background_slider_changed()
-
-    # Configure layer 2 with different values
-    parent.image_layer_with_phasor_features_combobox.setCurrentText("layer2")
-    widget._on_image_layer_changed()
-    widget.donor_line_edit.setText("3.5")
-    widget.frequency_input.setText("90.0")
-    widget.background_slider.setValue(50)
-    parent._broadcast_frequency_value_across_tabs('90.0')
-    widget._on_parameters_changed()
-    widget._on_background_slider_changed()
-
-    # Switch back to layer 1
-    parent.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
-    widget._on_image_layer_changed()
-
-    # Verify layer 1 settings were restored
-    assert widget.donor_line_edit.text() == "2.5"
-    assert widget.frequency_input.text() == "80.0"
-    assert widget.background_slider.value() == 30
-
-    # Switch to layer 2
-    parent.image_layer_with_phasor_features_combobox.setCurrentText("layer2")
-    widget._on_image_layer_changed()
-
-    # Verify layer 2 settings were restored
-    assert widget.donor_line_edit.text() == "3.5"
-    assert widget.frequency_input.text() == "90.0"
-    assert widget.background_slider.value() == 50
-
-
-def test_fret_full_calculation_range_and_histogram(make_viewer_model, qtbot):
-    """Run a full FRET efficiency calculation then exercise range/histogram/
-    colormap downstream paths."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    parent = PlotterWidget(viewer)
-    w = parent.fret_tab
-
-    w.donor_line_edit.setText("2.0")
-    w.frequency_input.setText("80")
-    w.background_real_edit.setText("0.1")
-    w.background_imag_edit.setText("0.1")
-    w.calculate_fret_efficiency()
-    assert len(w.fret_layers) >= 1
-
-    # Clip the FRET layers to a sub-range and refresh the histogram.
-    w._on_fret_range_changed(0.1, 0.5)
-    w._update_fret_histogram()
+    # FRET efficiency respects harmonic changes.
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.calculate_fret_efficiency_button.click()
+    fret_data_h1 = viewer.layers[fret_layer_name].data.copy()
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+    widget.calculate_fret_efficiency_button.click()
+    fret_data_h2 = viewer.layers[fret_layer_name].data.copy()
+    assert not np.array_equal(fret_data_h1, fret_data_h2)
 
 
 def test_fret_histogram_stays_empty_before_any_analysis(
@@ -2128,6 +489,782 @@ def test_fret_histogram_stays_empty_before_any_analysis(
     assert hw.counts is None
 
 
+def test_fret_donor_and_background_from_layers(make_viewer_model, qtbot):
+    """The donor lifetime and background position computed from layers, for
+    every lifetime type and harmonic, and the labels that report them."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # The donor combobox follows layers being added and removed.
+    initial_count = widget.donor_lifetime_combobox.count()
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+    assert widget.donor_lifetime_combobox.count() == initial_count + 1
+    combobox_items = [
+        widget.donor_lifetime_combobox.itemText(i)
+        for i in range(widget.donor_lifetime_combobox.count())
+    ]
+    assert "test_layer" in combobox_items
+    viewer.layers.remove(test_layer)
+    assert widget.donor_lifetime_combobox.count() == initial_count
+    viewer.add_layer(test_layer)
+
+    # Without a frequency the donor lifetime is left alone.
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
+    widget.frequency_input.setText("")
+    initial_lifetime = widget.donor_line_edit.text()
+    widget._calculate_donor_lifetime()
+    assert widget.donor_line_edit.text() == initial_lifetime
+
+    # Every lifetime type gives a positive donor lifetime.
+    widget.frequency_input.setText("80")
+    parent.harmonic = 1
+    values = {}
+    for lifetime_type in (
+        "Apparent Phase Lifetime",
+        "Apparent Modulation Lifetime",
+        "Normal Lifetime",
+    ):
+        widget.lifetime_type_combobox.setCurrentText(lifetime_type)
+        widget._calculate_donor_lifetime()
+        assert widget.donor_line_edit.text() != ""
+        lifetime_value = float(widget.donor_line_edit.text())
+        assert lifetime_value > 0
+        assert widget.donor_lifetime == lifetime_value
+        values[lifetime_type] = lifetime_value
+    # They should generally be different (though could be close).
+    assert len(set(values.values())) > 1
+
+    # Different harmonics give different lifetimes.
+    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    lifetimes = []
+    for harmonic in (1, 2, 3):
+        parent.harmonic = harmonic
+        widget._calculate_donor_lifetime()
+        lifetimes.append(widget.donor_line_edit.text())
+    assert lifetimes[0] != lifetimes[1]
+    assert lifetimes[0] != lifetimes[2]
+    assert lifetimes[1] != lifetimes[2]
+    parent.harmonic = 1
+
+    # "From layer(s)": a finite averaged lifetime for each type, and the
+    # label shows it until switching back to Manual.
+    widget.donor_source_selector.setCurrentIndex(1)  # From layer(s)
+    widget._on_donor_source_changed(1)
+    widget._update_donor_lifetime_combobox()
+    widget.donor_lifetime_combobox.setCheckedItems([test_layer.name])
+    for lifetime_type in (
+        "Apparent Phase Lifetime",
+        "Apparent Modulation Lifetime",
+        "Normal Lifetime",
+    ):
+        widget.lifetime_type_combobox.setCurrentText(lifetime_type)
+        widget._calculate_donor_lifetime()
+        assert widget.donor_lifetime is not None and widget.donor_lifetime > 0
+        assert widget.donor_line_edit.text() != ""
+    label_text = widget.donor_label.text()
+    assert "Donor lifetime (from layer(s)):" in label_text
+    assert "ns" in label_text
+    widget.donor_source_selector.setCurrentText("Manual")
+    widget._on_donor_source_changed(0)
+    assert widget.donor_label.text() == "Donor lifetime (ns):"
+
+    # The background position from a layer.
+    widget._update_background_combobox()
+    combobox_items = [
+        widget.background_image_combobox.itemText(i)
+        for i in range(widget.background_image_combobox.count())
+    ]
+    assert "Select layer..." not in combobox_items
+    assert "test_layer" in combobox_items
+    widget.bg_source_selector.setCurrentText("From layer(s)")
+    widget._on_bg_source_changed(1)
+    widget.background_image_combobox.setCheckedItems(["test_layer"])
+    widget._calculate_background_position()
+    real_text = widget.background_real_edit.text()
+    imag_text = widget.background_imag_edit.text()
+    assert real_text != "0.0" or imag_text != "0.0"
+    assert float(real_text) >= 0
+    assert float(imag_text) >= 0
+    # The position was stored for the current harmonic, matching the
+    # displayed text to 3 decimal places.
+    assert parent.harmonic in widget.background_positions_by_harmonic
+    stored_position = widget.background_positions_by_harmonic[parent.harmonic]
+    assert abs(stored_position['real'] - float(real_text)) < 0.001
+    assert abs(stored_position['imag'] - float(imag_text)) < 0.001
+    # The label shows the calculated values in "From layer" mode.
+    expected_label = (
+        f"Background position: G={stored_position['real']:.2f}, "
+        f"S={stored_position['imag']:.2f}"
+    )
+    assert widget.background_position_label.text() == expected_label
+    assert "Background position: G=" in expected_label
+    # With no layer checked the label reverts to its default.
+    widget.background_image_combobox.deselectAll()
+    widget._calculate_background_position()
+    assert widget.background_position_label.text() == "Background position:"
+    # Back to Manual, the label reverts too.
+    widget.background_image_combobox.setCheckedItems(["test_layer"])
+    widget._calculate_background_position()
+    assert "S=" in widget.background_position_label.text()
+    widget.bg_source_selector.setCurrentText("Manual")
+    widget._on_bg_source_changed(0)
+    assert widget.background_position_label.text() == "Background position:"
+
+
+def test_fret_donor_trajectory_on_a_mocked_canvas(make_viewer_model, qtbot):
+    """The trajectory is plotted, follows the harmonic, and falls back to
+    plt.cm.jet when a FRET layer is active but no colormap was set."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    # Mock the canvas and figure
+    parent.canvas_widget = Mock()
+    parent.canvas_widget.figure = Mock()
+    ax_mock = Mock()
+    parent.canvas_widget.figure.gca.return_value = ax_mock
+    parent.canvas_widget.canvas = Mock()
+
+    # A failure while drawing is reported instead of raised.
+    with patch("napari_phasors.fret_tab.show_error") as mock_error:
+        widget.plot_donor_trajectory()
+    assert ax_mock.plot.called
+    mock_error.assert_called_once()
+
+    # Make ax.plot() return a list-like object that can be subscripted
+    ax_mock.plot.return_value = [Mock()]
+    parent.canvas_widget.axes = ax_mock
+    histogram_mock = Mock()
+    histogram_mock.histogram = None
+    parent.canvas_widget.artists = {'HISTOGRAM2D': histogram_mock}
+
+    parent.harmonic = 1
+    widget.current_harmonic = 1
+    widget.plot_donor_trajectory()
+    assert ax_mock.plot.called
+    assert widget.current_harmonic == 1
+    assert widget.frequency == 80.0  # base_frequency * harmonic (80 * 1)
+
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+    assert widget.current_harmonic == 2
+    assert widget.frequency == 160.0
+
+    parent.harmonic = 3
+    widget._on_harmonic_changed()
+    assert widget.current_harmonic == 3
+    assert widget.frequency == 240.0
+
+    # An active FRET layer with colormap coloring enabled and no custom
+    # colormap set falls back to plt.cm.jet.
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    mock_fret_layer = Mock()
+    mock_fret_layer.contrast_limits = (0.0, 1.0)
+    widget.fret_layer = mock_fret_layer
+    widget.use_colormap = True
+    widget.fret_colormap = None
+    ax_mock.add_collection.reset_mock()
+    widget.plot_donor_trajectory()
+    assert widget.current_donor_circle is not None
+    assert widget.current_background_circle is not None
+    assert ax_mock.add_collection.called
+    widget.fret_layer = None
+
+
+def test_fret_trajectory_and_filters_without_an_analysis(
+    make_viewer_model, qtbot
+):
+    """Background positions per harmonic, the donor trajectory and its
+    artists, and the efficiency filter before any FRET map exists."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # With no usable donor lifetime there is nothing to freeze or refresh.
+    widget.donor_line_edit.setText("")
+    widget.frequency_input.setText("")
+    assert widget._fret_filter_params() == {}
+    assert widget._refresh_fret_filter_params([]) is False
+
+    # Nothing selected, nothing to filter.
+    widget._apply_filter_stack([])
+    assert widget.filter_list.filters() == []
+    widget._sync_filter_ui()
+    assert widget.filter_list.summary_label.text() == ""
+    assert widget._primary_filter_layer() is None
+
+    # Without a parent plotter there is nothing to filter, and no crash.
+    widget.parent_widget = None
+    try:
+        assert widget._filter_layers() == []
+        assert widget._layer_filter_params(object()) == {}
+        widget._apply_filter_stack([new_filter(FRET_EFFICIENCY, 0.0, 1.0)])
+    finally:
+        widget.parent_widget = parent
+
+    # A selector that has already been destroyed reads as "nothing selected".
+    widget.parent_widget = _BrokenSelector()
+    try:
+        assert widget._filter_layers() == []
+        assert widget._primary_filter_layer() is None
+    finally:
+        # The tab's own teardown still needs a real plotter behind it.
+        widget.parent_widget = parent
+
+    # The card says why it cannot be switched on yet.
+    widget._refresh_filter_enable_state()
+    card = _efficiency_card(widget)
+    assert not card.enabled_check.isEnabled()
+    assert "Select at least one" in card.enabled_check.toolTip()
+
+    # Artists: none until the trajectory is plotted; they follow the tab.
+    assert len(widget.get_all_artists()) == 0
+    widget.frequency_input.setText("80")
+    widget.donor_line_edit.setText("2.0")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    widget.plot_donor_trajectory()
+    assert len(widget.get_all_artists()) == 3
+    assert widget.current_donor_line is not None
+    assert widget.current_donor_line in widget.get_all_artists()
+    assert widget.current_donor_line.get_visible() is True
+    widget.set_artists_visible(False)
+    assert widget.current_donor_line.get_visible() is False
+    widget.set_artists_visible(True)
+    assert widget.current_donor_line.get_visible() is True
+
+    # Background positions are stored and retrieved by harmonic.
+    parent.harmonic = 1
+    widget.current_harmonic = 1
+    widget.background_real_edit.setText("0.2")
+    widget.background_imag_edit.setText("0.3")
+    widget._store_current_background_position()
+    assert 1 in widget.background_positions_by_harmonic
+    assert widget.background_positions_by_harmonic[1]['real'] == 0.2
+    assert widget.background_positions_by_harmonic[1]['imag'] == 0.3
+    # Harmonic 2 starts from the default position.
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+    assert widget.background_real_edit.text() == "0.000"
+    assert widget.background_imag_edit.text() == "0.000"
+    assert widget.current_harmonic == 2
+    widget.background_real_edit.setText("0.5")
+    widget.background_imag_edit.setText("0.6")
+    widget._store_current_background_position()
+    assert 2 in widget.background_positions_by_harmonic
+    assert widget.background_positions_by_harmonic[2]['real'] == 0.5
+    assert widget.background_positions_by_harmonic[2]['imag'] == 0.6
+    # Switching back restores harmonic 1's position.
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    assert widget.background_real_edit.text() == "0.200"
+    assert widget.background_imag_edit.text() == "0.300"
+    assert widget.current_harmonic == 1
+
+    # Manual background position changes are stored per harmonic too.
+    widget.background_real_edit.setText("0.15")
+    widget.background_imag_edit.setText("0.25")
+    widget._on_background_position_changed()
+    assert widget.background_positions_by_harmonic[1]['real'] == 0.15
+    assert widget.background_positions_by_harmonic[1]['imag'] == 0.25
+    parent.harmonic = 3
+    widget._on_harmonic_changed()
+    assert widget.background_real_edit.text() == "0.000"
+    assert widget.background_imag_edit.text() == "0.000"
+    widget.background_real_edit.setText("0.35")
+    widget.background_imag_edit.setText("0.45")
+    widget._on_background_position_changed()
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    assert float(widget.background_real_edit.text()) == 0.15
+    assert float(widget.background_imag_edit.text()) == 0.25
+
+    # Trajectory calculations use the effective frequency (base * harmonic).
+    base_frequency = 80.0
+    donor_lifetime = 2.0
+    widget.donor_line_edit.setText(str(donor_lifetime))
+    widget.frequency_input.setText(str(base_frequency))
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    trajectories = []
+    for harmonic in (1, 2, 3):
+        parent.harmonic = harmonic
+        widget._on_parameters_changed()
+        trajectories.append(
+            phasor_from_fret_donor(
+                base_frequency * harmonic,
+                donor_lifetime,
+                fret_efficiency=widget._fret_efficiencies,
+                donor_background=widget.donor_background,
+                background_imag=0.1,
+                background_real=0.1,
+                donor_fretting=widget.donor_fretting_proportion,
+            )[0]
+        )
+    assert not np.array_equal(trajectories[0], trajectories[1])
+    assert not np.array_equal(trajectories[0], trajectories[2])
+    assert not np.array_equal(trajectories[1], trajectories[2])
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    # Drawing the trajectory with a colormap adds a line collection.
+    ax_mock = Mock()
+    mock_layer = Mock()
+    mock_layer.contrast_limits = (0.0, 1.0)
+    widget.fret_layer = mock_layer
+    widget.colormap_contrast_limits = (0.0, 1.0)
+    widget._draw_colormap_trajectory(
+        ax_mock, np.linspace(0.1, 0.9, 100), np.linspace(0.1, 0.5, 100)
+    )
+    assert ax_mock.add_collection.called
+    widget.fret_layer = None
+
+    # With a layer but no donor trajectory, the card says so; a complete
+    # trajectory makes it available.
+    layer = create_image_layer_with_phasors()
+    layer.name = "no_donor"
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    widget._on_image_layer_changed()
+    widget.donor_line_edit.setText("")
+    widget.frequency_input.setText("")
+    widget._refresh_filter_enable_state()
+    card = _efficiency_card(widget)
+    assert not card.enabled_check.isEnabled()
+    assert "donor lifetime" in card.enabled_check.toolTip()
+    widget.frequency_input.setText("80.0")
+    widget.donor_line_edit.setText("4.2")
+    assert _efficiency_card(widget).enabled_check.isEnabled()
+
+    # When restoring saved colormap settings on the FRET layer raises, the
+    # except-handler still reconnects the colormap/contrast_limits/gamma
+    # events instead of leaving the layer without callbacks.
+    mock_layer = Mock()
+    mock_layer.events.colormap.disconnect.side_effect = RuntimeError("boom")
+    widget.fret_layer = mock_layer
+    widget._saved_colormap_name = "viridis"
+    widget._saved_colormap_colors = None
+    widget._saved_contrast_limits = [0.0, 1.0]
+    widget._saved_gamma = 1.0
+    widget._apply_saved_fret_colormap_settings()
+    assert mock_layer.events.colormap.connect.called
+    assert mock_layer.events.contrast_limits.connect.called
+    assert mock_layer.events.gamma.connect.called
+    widget.fret_layer = None
+
+
+def test_fret_layers_share_gamma_and_are_torn_down(make_viewer_model, qtbot):
+    """Changing gamma on one FRET layer syncs its siblings and the histogram,
+    and a layer change disconnects every FRET layer."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    layer_a = create_image_layer_with_phasors()
+    layer_a.name = "layer_a"
+    layer_b = create_image_layer_with_phasors()
+    layer_b.name = "layer_b"
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_a, layer_b]
+    ):
+        widget.calculate_fret_efficiency_button.click()
+
+    assert len(widget.fret_layers) == 2
+
+    # Gamma propagates to the sibling layer, the stored gamma, and the
+    # histogram widget.
+    widget.fret_layers[0].gamma = 0.7
+    assert widget.fret_layers[1].gamma == 0.7
+    assert widget.colormap_gamma == 0.7
+    assert widget.histogram_widget.gamma == 0.7
+
+    widget._teardown_on_layer_change()
+    assert widget.fret_layer is None
+    assert widget.fret_layers == []
+
+
+def test_fret_efficiency_calculation_single_harmonic_layer(
+    make_viewer_model, qtbot
+):
+    """A layer with a single harmonic (no leading harmonic axis in G/S)
+    should produce a FRET efficiency map matching the image shape, not a
+    malformed slice of G/S."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors(harmonic=1)
+    assert test_layer.metadata["G"].ndim == test_layer.data.ndim
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.calculate_fret_efficiency_button.click()
+
+    fret_layer_name = "test_layer [FRET efficiency]"
+    assert fret_layer_name in [layer.name for layer in viewer.layers]
+    assert viewer.layers[fret_layer_name].data.shape == test_layer.data.shape
+
+
+def test_fret_efficiency_rejects_bad_inputs_and_layers(
+    make_viewer_model, qtbot
+):
+    """Invalid inputs are reported without creating a layer; layers without
+    phasor arrays or the harmonic are skipped; a failing one is reported."""
+    viewer = make_viewer_model()
+    parent, widget = _ready_fret_widget(viewer)
+    layer = viewer.layers[0]
+
+    cases = [
+        # Empty values - these should be warnings
+        ("", "80", "Enter a Donor lifetime value.", "warning"),
+        ("2.0", "", "Enter a frequency value.", "warning"),
+        ("", "", "Enter a Donor lifetime value.", "warning"),
+        # Whitespace only values - these should be warnings
+        ("   ", "80", "Enter a Donor lifetime value.", "warning"),
+        ("2.0", "   ", "Enter a frequency value.", "warning"),
+        ("   ", "   ", "Enter a Donor lifetime value.", "warning"),
+        # Invalid numeric values - these should be errors
+        (
+            "not_a_number",
+            "80",
+            "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
+        ),
+        (
+            "2.0",
+            "invalid_frequency",
+            "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
+        ),
+        (
+            "invalid_lifetime",
+            "invalid_frequency",
+            "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
+        ),
+        (
+            "abc",
+            "xyz",
+            "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
+        ),
+        # Mixed invalid cases - empty/whitespace takes precedence, so warnings
+        ("", "invalid_frequency", "Enter a Donor lifetime value.", "warning"),
+        ("   ", "not_a_number", "Enter a Donor lifetime value.", "warning"),
+    ]
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    initial_layer_count = len(viewer.layers)
+    for donor_lifetime, frequency, expected_message, message_type in cases:
+        widget.donor_line_edit.setText(donor_lifetime)
+        widget.frequency_input.setText(frequency)
+        target = "show_warning" if message_type == "warning" else "show_error"
+        with patch(f'napari_phasors.fret_tab.{target}') as mock_show:
+            widget.calculate_fret_efficiency()
+            mock_show.assert_called_once_with(expected_message)
+        assert len(viewer.layers) == initial_layer_count
+        assert "layer_a [FRET efficiency]" not in [
+            lyr.name for lyr in viewer.layers
+        ]
+        assert widget.fret_layer is None
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+
+    def no_fret_output():
+        return not any(
+            lyr.name.startswith("FRET efficiency") for lyr in viewer.layers
+        )
+
+    # A layer whose G/S went missing is skipped, not treated as an error.
+    real = layer.metadata["G"]
+    layer.metadata["G"] = None
+    widget.calculate_fret_efficiency()
+    assert no_fret_output()
+    layer.metadata["G"] = real
+
+    # A layer that never computed the selected harmonic is skipped.
+    harmonics = layer.metadata["harmonics"]
+    layer.metadata["harmonics"] = np.array([97])
+    widget.calculate_fret_efficiency()
+    assert no_fret_output()
+    layer.metadata["harmonics"] = harmonics
+
+    # A layer whose computation raises is reported by name, not swallowed.
+    errors = []
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    with (
+        patch("napari_phasors.fret_tab.show_error", errors.append),
+        patch("napari_phasors.fret_tab.phasor_nearest_neighbor", explode),
+    ):
+        widget.calculate_fret_efficiency()
+    assert any("boom" in message for message in errors)
+    assert any("layer_a" in message for message in errors)
+    assert no_fret_output()
+
+
+def test_fret_settings_follow_layer_switches(make_viewer_model, qtbot):
+    """Each layer keeps its own settings, and the donor combobox keeps its
+    checked layers while layers come and go."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    layer1 = create_image_layer_with_phasors()
+    layer1.name = "layer1"
+    viewer.add_layer(layer1)
+    layer2 = create_image_layer_with_phasors()
+    layer2.name = "layer2"
+    viewer.add_layer(layer2)
+
+    # Configure layer 1, then layer 2 with different values.
+    for name, donor, frequency, background in (
+        ("layer1", "2.5", "80.0", 30),
+        ("layer2", "3.5", "90.0", 50),
+    ):
+        parent.image_layer_with_phasor_features_combobox.setCurrentText(name)
+        widget._on_image_layer_changed()
+        widget.donor_line_edit.setText(donor)
+        widget.frequency_input.setText(frequency)
+        widget.background_slider.setValue(background)
+        parent._broadcast_frequency_value_across_tabs(frequency)
+        widget._on_parameters_changed()
+        widget._on_background_slider_changed()
+
+    # Each layer's settings are restored when it is selected again.
+    for name, donor, frequency, background in (
+        ("layer1", "2.5", "80.0", 30),
+        ("layer2", "3.5", "90.0", 50),
+    ):
+        parent.image_layer_with_phasor_features_combobox.setCurrentText(name)
+        widget._on_image_layer_changed()
+        assert widget.donor_line_edit.text() == donor
+        assert widget.frequency_input.text() == frequency
+        assert widget.background_slider.value() == background
+
+    # The donor combobox's checked selection persists as layers change.
+    test_layer1 = create_image_layer_with_phasors()
+    test_layer1.name = "test_layer1"
+    viewer.add_layer(test_layer1)
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer1"])
+    assert widget.donor_lifetime_combobox.checkedItems() == ["test_layer1"]
+    test_layer2 = create_image_layer_with_phasors()
+    test_layer2.name = "test_layer2"
+    viewer.add_layer(test_layer2)
+    assert "test_layer1" in widget.donor_lifetime_combobox.checkedItems()
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer2"])
+    assert widget.donor_lifetime_combobox.checkedItems() == ["test_layer2"]
+    viewer.layers.remove(test_layer1)
+    assert widget.donor_lifetime_combobox.checkedItems() == ["test_layer2"]
+    viewer.layers.remove(test_layer2)
+    assert widget.donor_lifetime_combobox.checkedItems() == []
+    assert widget.donor_lifetime_combobox.currentText() == ""
+
+
+def test_fret_manual_settings_are_stored_and_restored(
+    make_viewer_model, qtbot
+):
+    """Manual values and per-harmonic background positions are unsaved
+    settings of the layer, restored when it is selected again."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+    widget._on_image_layer_changed()
+
+    def reselect():
+        parent.image_layer_with_phasor_features_combobox.setCurrentText("")
+        widget._on_image_layer_changed()
+        parent.image_layer_with_phasor_features_combobox.setCurrentText(
+            "test_layer"
+        )
+        widget._on_image_layer_changed()
+
+    # Manual values are stored as unsaved settings of the layer.
+    widget.donor_line_edit.setText("2.5")
+    widget.frequency_input.setText("85")
+    widget.background_real_edit.setText("0.15")
+    widget.background_imag_edit.setText("0.25")
+    widget.background_slider.setValue(30)  # 0.3
+    widget.fretting_slider.setValue(75)  # 0.75
+    widget.colormap_checkbox.setChecked(False)
+    parent._broadcast_frequency_value_across_tabs('85')
+    widget._on_parameters_changed()
+    widget._on_background_position_changed()
+    widget._on_background_slider_changed()
+    widget._on_fretting_slider_changed()
+    widget._on_colormap_checkbox_changed()
+    # Edits are unsaved settings of the layer until FRET is calculated.
+    assert 'fret' not in test_layer.metadata.get('settings', {})
+    settings = parent.layer_settings(test_layer)
+    fret_settings = settings['fret']
+    assert fret_settings['donor_lifetime'] == 2.5
+    assert settings['frequency'] == 85.0
+    assert fret_settings['donor_background'] == 0.3
+    assert fret_settings['donor_fretting_proportion'] == 0.75
+    assert fret_settings['use_colormap'] is False
+    assert 1 in fret_settings['background_positions_by_harmonic']
+    assert fret_settings['background_positions_by_harmonic'][1]['real'] == 0.15
+    assert fret_settings['background_positions_by_harmonic'][1]['imag'] == 0.25
+
+    # They are restored after switching away and back.
+    widget.donor_line_edit.setText("3.5")
+    widget.frequency_input.setText("90")
+    widget.background_slider.setValue(40)  # 0.4
+    widget.fretting_slider.setValue(85)  # 0.85
+    widget.colormap_checkbox.setChecked(False)
+    parent._broadcast_frequency_value_across_tabs('90')
+    widget._on_parameters_changed()
+    widget._on_background_slider_changed()
+    widget._on_fretting_slider_changed()
+    widget._on_colormap_checkbox_changed()
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.background_real_edit.setText("0.35")
+    widget.background_imag_edit.setText("0.45")
+    widget._on_background_position_changed()
+    reselect()
+    assert float(widget.donor_line_edit.text()) == 3.5
+    assert float(widget.frequency_input.text()) == 90.0
+    assert widget.background_slider.value() == 40
+    assert widget.background_label.text() == "0.40"
+    assert widget.fretting_slider.value() == 85
+    assert widget.fretting_label.text() == "0.85"
+    assert widget.colormap_checkbox.isChecked() is False
+    assert float(widget.background_real_edit.text()) == 0.35
+    assert float(widget.background_imag_edit.text()) == 0.45
+
+    # Background positions are stored per harmonic...
+    positions = {1: (0.1, 0.2), 2: (0.3, 0.4), 3: (0.5, 0.6)}
+    for harmonic, (real, imag) in positions.items():
+        parent.harmonic = harmonic
+        widget._on_harmonic_changed()
+        widget.background_real_edit.setText(str(real))
+        widget.background_imag_edit.setText(str(imag))
+        widget._on_background_position_changed()
+    bg_positions = parent.layer_settings(test_layer)['fret'][
+        'background_positions_by_harmonic'
+    ]
+    for harmonic, (real, imag) in positions.items():
+        assert harmonic in bg_positions
+        assert bg_positions[harmonic]['real'] == real
+        assert bg_positions[harmonic]['imag'] == imag
+
+    # ...and restored per harmonic.
+    reselect()
+    for harmonic, (real, imag) in positions.items():
+        parent.harmonic = harmonic
+        widget._on_harmonic_changed()
+        assert float(widget.background_real_edit.text()) == real
+        assert float(widget.background_imag_edit.text()) == imag
+
+
+def test_fret_from_layer_settings_are_stored_and_restored(
+    make_viewer_model, qtbot
+):
+    """'From layer(s)' sources are stored, restored, and fall back to Manual
+    when a referenced layer is gone."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    donor_layer = create_image_layer_with_phasors()
+    donor_layer.name = "donor_layer"
+    viewer.add_layer(donor_layer)
+    bg_layer = create_image_layer_with_phasors()
+    bg_layer.name = "bg_layer"
+    viewer.add_layer(bg_layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "donor_layer"
+    )
+    widget._on_image_layer_changed()
+    widget.frequency_input.setText("80")
+    widget.donor_line_edit.setText("2.5")
+
+    widget.donor_source_selector.setCurrentText("From layer(s)")
+    widget._on_donor_source_changed(1)
+    widget.donor_lifetime_combobox.setCheckedItems(["donor_layer"])
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget.bg_source_selector.setCurrentText("From layer(s)")
+    widget._on_bg_source_changed(1)
+    widget.background_image_combobox.setCheckedItems(["bg_layer"])
+
+    # The layer's (unsaved) settings record the sources.
+    fret_settings = parent.layer_settings(donor_layer)['fret']
+    assert fret_settings['donor_source'] == 'From layer(s)'
+    assert fret_settings['donor_layer_names'] == ['donor_layer']
+    assert fret_settings['donor_lifetime_type'] == 'Normal Lifetime'
+    assert fret_settings['background_source'] == 'From layer(s)'
+    assert fret_settings['background_layer_names'] == ['bg_layer']
+
+    def reselect():
+        parent.image_layer_with_phasor_features_combobox.setCurrentText("")
+        widget._on_image_layer_changed()
+        parent.image_layer_with_phasor_features_combobox.setCurrentText(
+            "donor_layer"
+        )
+        widget._on_image_layer_changed()
+
+    # They are restored after switching away and back.
+    widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Modulation Lifetime"
+    )
+    reselect()
+    assert widget.donor_source_selector.currentText() == "From layer(s)"
+    assert widget.donor_lifetime_combobox.checkedItems() == ["donor_layer"]
+    assert (
+        widget.lifetime_type_combobox.currentText()
+        == "Apparent Modulation Lifetime"
+    )
+    assert widget.bg_source_selector.currentText() == "From layer(s)"
+    assert widget.background_image_combobox.checkedItems() == ["bg_layer"]
+
+    # A missing background layer reverts the background to Manual; the donor
+    # stays From layer(s) since its layer exists.
+    viewer.layers.remove(bg_layer)
+    reselect()
+    assert widget.bg_source_selector.currentText() == "Manual"
+    assert widget.donor_source_selector.currentText() == "From layer(s)"
+
+
 def test_fret_recreate_restore_and_colormap_from_metadata(
     make_viewer_model, qtbot
 ):
@@ -2164,31 +1301,6 @@ def test_fret_recreate_restore_and_colormap_from_metadata(
 
     # Recreate the FRET analysis from metadata (re-runs the calculation).
     w._recreate_fret_from_metadata()
-
-
-def test_fret_calculate_donor_lifetime_from_layers(make_viewer_model, qtbot):
-    """Cover donor-lifetime computation from selected layers for each type."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    parent = PlotterWidget(viewer)
-    w = parent.fret_tab
-
-    w.frequency_input.setText("80")
-    w.donor_source_selector.setCurrentIndex(1)  # From layer(s)
-    w._update_donor_lifetime_combobox()
-    w.donor_lifetime_combobox.setCheckedItems([layer.name])
-
-    for lt in (
-        "Apparent Phase Lifetime",
-        "Apparent Modulation Lifetime",
-        "Normal Lifetime",
-    ):
-        w.lifetime_type_combobox.setCurrentText(lt)
-        w._calculate_donor_lifetime()
-        # A finite averaged lifetime is computed and shown in the UI.
-        assert w.donor_lifetime is not None and w.donor_lifetime > 0
-        assert w.donor_line_edit.text() != ""
 
 
 def test_fret_harmonics_none_fallback(make_viewer_model, qtbot):
@@ -2299,68 +1411,6 @@ def test_fret_widget_exceptions(make_viewer_model, qtbot):
     w.calculate_fret_efficiency()
 
 
-def test_plot_donor_trajectory_uses_jet_colormap_when_fret_colormap_unset(
-    make_viewer_model, qtbot
-):
-    """plot_donor_trajectory falls back to plt.cm.jet when a FRET layer is
-    active and colormap coloring is enabled but no custom fret_colormap has
-    been set (default state)."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    # Simulate an active FRET layer with colormap coloring enabled and no
-    # custom colormap set.
-    mock_fret_layer = Mock()
-    mock_fret_layer.contrast_limits = (0.0, 1.0)
-    widget.fret_layer = mock_fret_layer
-    widget.use_colormap = True
-    widget.fret_colormap = None
-
-    parent.canvas_widget = Mock()
-    parent.canvas_widget.figure = Mock()
-    ax_mock = Mock()
-    parent.canvas_widget.figure.gca.return_value = ax_mock
-    parent.canvas_widget.canvas = Mock()
-
-    widget.plot_donor_trajectory()
-
-    assert widget.current_donor_circle is not None
-    assert widget.current_background_circle is not None
-    assert ax_mock.add_collection.called
-
-
-def test_apply_saved_fret_colormap_settings_recovers_after_exception(
-    make_viewer_model, qtbot
-):
-    """When restoring saved colormap settings on the FRET layer raises, the
-    except-handler still reconnects the colormap/contrast_limits/gamma
-    events instead of leaving the layer without callbacks."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    mock_layer = Mock()
-    mock_layer.events.colormap.disconnect.side_effect = RuntimeError("boom")
-    widget.fret_layer = mock_layer
-    widget._saved_colormap_name = "viridis"
-    widget._saved_colormap_colors = None
-    widget._saved_contrast_limits = [0.0, 1.0]
-    widget._saved_gamma = 1.0
-
-    # Should not raise even though the initial disconnect attempt fails.
-    widget._apply_saved_fret_colormap_settings()
-
-    assert mock_layer.events.colormap.connect.called
-    assert mock_layer.events.contrast_limits.connect.called
-    assert mock_layer.events.gamma.connect.called
-
-
 def test_reconnect_existing_fret_layer_direct(make_viewer_model, qtbot):
     """_reconnect_existing_fret_layer connects events directly and caches
     the layer's current colormap/contrast_limits/gamma when there are no
@@ -2376,7 +1426,7 @@ def test_reconnect_existing_fret_layer_direct(make_viewer_model, qtbot):
     source_layer = create_image_layer_with_phasors()
     source_layer.name = layer_name
     viewer.add_layer(source_layer)
-    fret_layer_name = f"FRET efficiency: {layer_name}"
+    fret_layer_name = analysis_layer_name("FRET efficiency", layer_name)
     layer = Image(np.random.random((10, 10)), name=fret_layer_name)
     viewer.add_layer(layer)
 
@@ -2388,38 +1438,6 @@ def test_reconnect_existing_fret_layer_direct(make_viewer_model, qtbot):
     assert widget.colormap_gamma == layer.gamma
     assert widget.colormap_contrast_limits == layer.contrast_limits
     np.testing.assert_array_equal(widget.fret_colormap, layer.colormap.colors)
-
-
-def test_teardown_disconnects_real_fret_layer_events(make_viewer_model, qtbot):
-    """_teardown_on_layer_change disconnects colormap/contrast_limits/gamma
-    events from real FRET layers connected via the normal calculate flow."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    layer_a = create_image_layer_with_phasors()
-    layer_a.name = "layer_a"
-    layer_b = create_image_layer_with_phasors()
-    layer_b.name = "layer_b"
-    viewer.add_layer(layer_a)
-    viewer.add_layer(layer_b)
-
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    with patch.object(
-        parent, "get_selected_layers", return_value=[layer_a, layer_b]
-    ):
-        widget.calculate_fret_efficiency_button.click()
-
-    assert len(widget.fret_layers) == 2
-
-    widget._teardown_on_layer_change()
-
-    assert widget.fret_layer is None
-    assert widget.fret_layers == []
 
 
 def test_draw_fret_trajectory_overlay_uses_jet_colormap_by_default():
@@ -2445,32 +1463,6 @@ def test_draw_fret_trajectory_overlay_uses_jet_colormap_by_default():
         plt.close(fig)
 
 
-def test_single_layer_histogram_named_after_fret_layer(
-    make_viewer_model, qtbot
-):
-    """With one selected layer the histogram dataset is labelled with the
-    FRET output layer's name, not a generic 'Layer'."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.calculate_fret_efficiency_button.click()
-
-    fret_layer_name = "FRET efficiency: test_layer"
-    assert fret_layer_name in [layer.name for layer in viewer.layers]
-    assert list(widget.histogram_widget._datasets.keys()) == [fret_layer_name]
-
-    # The range-changed path re-labels the same way.
-    widget._on_fret_range_changed(0.1, 0.9)
-    assert list(widget.histogram_widget._datasets.keys()) == [fret_layer_name]
-
-
 def _ready_fret_widget(viewer, layer_names=("layer_a",)):
     """Return a FRET tab with valid inputs and *layer_names* selected."""
     parent = PlotterWidget(viewer)
@@ -2482,62 +1474,6 @@ def _ready_fret_widget(viewer, layer_names=("layer_a",)):
     widget.donor_line_edit.setText("2.0")
     widget.frequency_input.setText("80")
     return parent, widget
-
-
-def test_fret_efficiency_skips_a_layer_without_phasor_arrays(
-    make_viewer_model, qtbot
-):
-    """A layer whose G/S went missing is skipped, not treated as an error."""
-    viewer = make_viewer_model()
-    parent, widget = _ready_fret_widget(viewer)
-    viewer.layers[0].metadata["G"] = None
-
-    widget.calculate_fret_efficiency()
-
-    assert not any(
-        layer.name.startswith("FRET efficiency") for layer in viewer.layers
-    )
-
-
-def test_fret_efficiency_skips_a_layer_missing_the_harmonic(
-    make_viewer_model, qtbot
-):
-    """A layer that never computed the selected harmonic is skipped."""
-    viewer = make_viewer_model()
-    parent, widget = _ready_fret_widget(viewer)
-    viewer.layers[0].metadata["harmonics"] = np.array([97])
-
-    widget.calculate_fret_efficiency()
-
-    assert not any(
-        layer.name.startswith("FRET efficiency") for layer in viewer.layers
-    )
-
-
-def test_fret_efficiency_reports_a_failing_layer(
-    make_viewer_model, qtbot, monkeypatch
-):
-    """A layer whose computation raises is reported by name, not swallowed."""
-    viewer = make_viewer_model()
-    parent, widget = _ready_fret_widget(viewer)
-
-    errors = []
-    monkeypatch.setattr("napari_phasors.fret_tab.show_error", errors.append)
-
-    def explode(*args, **kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(
-        "napari_phasors.fret_tab.phasor_nearest_neighbor", explode
-    )
-
-    widget.calculate_fret_efficiency()
-
-    assert any("boom" in message for message in errors)
-    assert any("layer_a" in message for message in errors)
-    assert not any(
-        layer.name.startswith("FRET efficiency") for layer in viewer.layers
-    )
 
 
 def _setup_fret_selection_workflow(make_napari_viewer, qtbot):
@@ -2572,7 +1508,7 @@ def _click_fret_source(qtbot, parent, source_name):
     combo = parent.image_layers_checkable_combobox
     row = next(
         row
-        for row in range(combo._header_count, combo.model().rowCount())
+        for row in range(combo.model().rowCount())
         if combo.model().item(row).text() == source_name
     )
     combo.showPopup()
@@ -2581,17 +1517,17 @@ def _click_fret_source(qtbot, parent, source_name):
     point = rect.center()
     point.setX(rect.left() + 5)
     qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=point)
+    combo.hidePopup()
 
 
-def test_fret_histogram_follows_real_source_selection(
-    make_napari_viewer, qtbot
-):
-    """FRET curves, statistics, and outputs follow real popup clicks."""
+def test_fret_outputs_follow_real_source_selection(make_napari_viewer, qtbot):
+    """FRET curves, statistics, and outputs follow real popup clicks, and a
+    tagged output stays authoritative after a manual rename."""
     viewer, parent, fret, _ = _setup_fret_selection_workflow(
         make_napari_viewer, qtbot
     )
-    output_a = "FRET efficiency: fret_a"
-    output_b = "FRET efficiency: fret_b"
+    output_a = "fret_a [FRET efficiency]"
+    output_b = "fret_b [FRET efficiency]"
     stats = parent.fret_statistics_dock_widget.layer_stats_table
 
     assert list(fret.histogram_widget._datasets) == [output_a, output_b]
@@ -2607,7 +1543,6 @@ def test_fret_histogram_follows_real_source_selection(
         and list(fret.histogram_widget._datasets) == [output_a],
         timeout=5000,
     )
-
     assert len(fret.histogram_widget.ax.lines) == 1
     assert stats.rowCount() == 1
     assert viewer.layers[output_a].visible is True
@@ -2619,29 +1554,46 @@ def test_fret_histogram_follows_real_source_selection(
         and len(fret.histogram_widget._datasets) == 2,
         timeout=5000,
     )
-
     assert viewer.layers[output_b].visible is True
     assert len(fret.histogram_widget.ax.lines) == 2
     assert stats.rowCount() == 2
 
+    # Tagged FRET outputs remain authoritative after manual renaming.
+    output = viewer.layers[output_a]
+    output.name = "Custom FRET result"
+    output_id = id(output)
+    fret.calculate_fret_efficiency()
+    assert id(viewer.layers["Custom FRET result"]) == output_id
+    assert output_a not in viewer.layers
+    assert fret._fret_output_layers()['fret_a'] is output
+    fret.rename_layer("fret_a", "fret_a_renamed")
+    assert output.name == "Custom FRET result"
+    assert output.metadata['phasor_fret_output'] == {
+        'source_layer': 'fret_a_renamed'
+    }
 
-def test_fret_range_only_changes_selected_outputs(make_napari_viewer, qtbot):
-    """FRET range clipping leaves deselected output data untouched."""
+
+def test_fret_range_and_empty_source_selection(make_napari_viewer, qtbot):
+    """Range clipping leaves deselected outputs untouched, a disjoint prior
+    range resets to the new output's bounds, and clearing Phasor Layers
+    removes stale FRET statistics and curves."""
     viewer, parent, fret, _ = _setup_fret_selection_workflow(
         make_napari_viewer, qtbot
     )
-    output_a = viewer.layers["FRET efficiency: fret_a"]
-    output_b = viewer.layers["FRET efficiency: fret_b"]
+    output_a = viewer.layers["fret_a [FRET efficiency]"]
+    output_b = viewer.layers["fret_b [FRET efficiency]"]
     output_a_original = output_a.metadata['fret_data_original'].copy()
     output_b_before = output_b.data.copy()
     slider_max_before = fret.histogram_widget.range_slider.maximum()
 
-    parent.image_layers_checkable_combobox.setCheckedItems(["fret_a"])
-    parent._layer_selection_timer.stop()
-    parent._process_layer_selection_change()
+    def select(names):
+        parent.image_layers_checkable_combobox.setCheckedItems(names)
+        parent._layer_selection_timer.stop()
+        parent._process_layer_selection_change()
+
+    select(["fret_a"])
     fret.histogram_widget.set_range(0.2, 0.8)
     fret._on_fret_range_changed(0.2, 0.8)
-
     np.testing.assert_allclose(
         output_a.data,
         np.clip(output_a_original, 0.2, 0.8),
@@ -2650,12 +1602,7 @@ def test_fret_range_only_changes_selected_outputs(make_napari_viewer, qtbot):
     np.testing.assert_array_equal(output_b.data, output_b_before)
     assert fret.histogram_widget.range_slider.maximum() == slider_max_before
 
-    parent.image_layers_checkable_combobox.setCheckedItems(
-        ["fret_a", "fret_b"]
-    )
-    parent._layer_selection_timer.stop()
-    parent._process_layer_selection_change()
-
+    select(["fret_a", "fret_b"])
     np.testing.assert_allclose(
         output_b.data,
         np.clip(output_b.metadata['fret_data_original'], 0.2, 0.8),
@@ -2663,71 +1610,24 @@ def test_fret_range_only_changes_selected_outputs(make_napari_viewer, qtbot):
     )
     assert fret.histogram_widget.get_range() == (0.2, 0.8)
 
-
-def test_fret_empty_source_selection_clears_histogram(
-    make_napari_viewer, qtbot
-):
-    """Clearing Phasor Layers removes stale FRET statistics and curves."""
-    viewer, parent, fret, _ = _setup_fret_selection_workflow(
-        make_napari_viewer, qtbot
-    )
-    parent.image_layers_checkable_combobox.setCheckedItems([])
-    parent._layer_selection_timer.stop()
-    parent._process_layer_selection_change()
-
-    assert fret.histogram_widget.counts is None
-    assert fret.histogram_widget._datasets == {}
-    assert parent.fret_statistics_dock_widget.layer_stats_table.rowCount() == 0
-    assert viewer.layers["FRET efficiency: fret_a"].visible is False
-    assert viewer.layers["FRET efficiency: fret_b"].visible is False
-
-
-def test_fret_selection_clamps_disjoint_shared_range_to_new_output(
-    make_napari_viewer, qtbot
-):
-    """A disjoint prior range resets to the newly selected output bounds."""
-    viewer, parent, fret, _ = _setup_fret_selection_workflow(
-        make_napari_viewer, qtbot
-    )
-    output_b = viewer.layers["FRET efficiency: fret_b"]
+    # A disjoint prior range resets to the newly selected output bounds.
     replacement = np.linspace(0.6, 1.0, output_b.data.size).reshape(
         output_b.data.shape
     )
     output_b.metadata['fret_data_original'] = replacement.copy()
     output_b.data = replacement.copy()
     fret.histogram_widget.set_range(0.2, 0.4)
-
-    parent.image_layers_checkable_combobox.setCheckedItems(["fret_b"])
-    parent._layer_selection_timer.stop()
-    parent._process_layer_selection_change()
-
+    select(["fret_b"])
     assert fret.histogram_widget.get_range() == (0.6, 1.0)
     np.testing.assert_allclose(output_b.data, replacement)
 
-
-def test_fret_custom_output_name_survives_rerun_and_source_rename(
-    make_napari_viewer, qtbot
-):
-    """Tagged FRET outputs remain authoritative after manual renaming."""
-    viewer, _, fret, _ = _setup_fret_selection_workflow(
-        make_napari_viewer, qtbot
-    )
-    output = viewer.layers["FRET efficiency: fret_a"]
-    output.name = "Custom FRET result"
-    output_id = id(output)
-
-    fret.calculate_fret_efficiency()
-
-    assert id(viewer.layers["Custom FRET result"]) == output_id
-    assert "FRET efficiency: fret_a" not in viewer.layers
-    assert fret._fret_output_layers()['fret_a'] is output
-
-    fret.rename_layer("fret_a", "fret_a_renamed")
-
-    assert output.name == "Custom FRET result"
-    assert output.metadata['phasor_fret_output'] == {
-        'source_layer': 'fret_a_renamed'
-    }
+    # Clearing Phasor Layers removes stale FRET statistics and curves.
+    select([])
+    assert fret.histogram_widget.counts is None
+    assert fret.histogram_widget._datasets == {}
+    assert parent.fret_statistics_dock_widget.layer_stats_table.rowCount() == 0
+    assert output_a.visible is False
+    assert output_b.visible is False
 
 
 def test_existing_fret_output_initializes_full_range_before_clipping(
@@ -2755,43 +1655,29 @@ def test_existing_fret_output_initializes_full_range_before_clipping(
     assert parent.fret_tab.histogram_widget.get_range() == (0.0, 1.0)
 
 
-def test_reconnect_existing_fret_layer_registers_output_once(
+def test_fret_reconnects_an_existing_canonical_output(
     make_viewer_model, qtbot
 ):
-    """Direct reconnect uses the lifecycle-managed FRET registry."""
-    viewer = make_viewer_model()
-    source = create_image_layer_with_phasors()
-    source.name = "registered_source"
-    viewer.add_layer(source)
-    output = viewer.add_image(
-        np.linspace(0.0, 1.0, 10).reshape(2, 5),
-        name="FRET efficiency: registered_source",
-    )
-    parent = PlotterWidget(viewer)
-    fret = parent.fret_tab
-
-    fret._reconnect_existing_fret_layer(source.name)
-    fret._reconnect_existing_fret_layer(source.name)
-
-    assert fret.fret_layer is output
-    assert fret.fret_layers == [output]
-
-
-def test_fret_defensive_selection_saved_reconnect_and_canonical_rename(
-    make_viewer_model, qtbot
-):
-    """Cover defensive selection, saved restore, and canonical rename paths."""
+    """A canonical output found at start-up is registered once, reconnected
+    with its saved colormap, and renamed with its source."""
     viewer = make_viewer_model()
     source = create_image_layer_with_phasors()
     source.name = "legacy_fret_source"
     viewer.add_layer(source)
     output = viewer.add_image(
         np.linspace(0.0, 1.0, 10).reshape(2, 5),
-        name="FRET efficiency: legacy_fret_source",
+        name="legacy_fret_source [FRET efficiency]",
     )
     parent = PlotterWidget(viewer)
     fret = parent.fret_tab
 
+    # Direct reconnect uses the lifecycle-managed FRET registry.
+    fret._reconnect_existing_fret_layer(source.name)
+    fret._reconnect_existing_fret_layer(source.name)
+    assert fret.fret_layer is output
+    assert fret.fret_layers == [output]
+
+    # Defensive selection paths.
     with patch.object(fret, "parent_widget", None):
         assert fret._get_selected_source_names() == set()
     with patch.object(
@@ -2799,14 +1685,14 @@ def test_fret_defensive_selection_saved_reconnect_and_canonical_rename(
     ):
         assert fret._get_selected_source_names() == set()
 
+    # A saved colormap is applied on reconnect.
     fret._saved_colormap_name = "viridis"
     with patch.object(fret, "_apply_saved_fret_colormap_settings") as apply:
         fret._reconnect_existing_fret_layer(source.name)
     apply.assert_called_once()
 
     fret.rename_layer("legacy_fret_source", "renamed_fret_source")
-
-    assert output.name == "FRET efficiency: renamed_fret_source"
+    assert output.name == "renamed_fret_source [FRET efficiency]"
     assert output.metadata['phasor_fret_output'] == {
         'source_layer': 'renamed_fret_source'
     }
@@ -2847,51 +1733,6 @@ def _add_efficiency_filter(widget, low, high):
     return _efficiency_card(widget)
 
 
-def test_fret_filter_section_is_a_single_card(make_viewer_model, qtbot):
-    """One efficiency filter: always shown, nothing to add or remove."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    assert isinstance(widget.filter_list, MappingFilterList)
-    assert not widget.filter_list.add_button.isVisibleTo(widget.filter_list)
-    assert not hasattr(widget.filter_list, 'clear_button')
-    card = _efficiency_card(widget)
-    assert card.metric_label.text() == FRET_EFFICIENCY
-    assert not card.remove_button.isVisibleTo(card)
-    assert not card.entry['enabled']
-    assert widget.filter_list.filters() == []
-
-
-def test_fret_trajectory_style_button_sits_above_the_filter_section(
-    make_viewer_model, qtbot
-):
-    """The style button leads into the filter section; the toggle is in
-    its dialog."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-    content_layout = widget.filter_box.parentWidget().layout()
-    display_box = widget.trajectory_style_btn.parentWidget()
-    style = content_layout.indexOf(display_box)
-    assert style >= 0
-    assert content_layout.indexOf(widget.filter_box) > style
-    assert widget.colormap_checkbox.window() is widget.trajectory_style_dialog
-
-
-def test_fret_trajectory_style_dialog_opens_once(make_viewer_model, qtbot):
-    """Clicking the button twice keeps one dialog."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-    widget.trajectory_style_btn.click()
-    dialog = widget.trajectory_style_dialog
-    assert dialog.isVisible()
-    widget.trajectory_style_btn.click()
-    assert widget.trajectory_style_dialog is dialog
-    dialog.close()
-
-
 def _plotted_trajectory_widget(make_viewer_model):
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
@@ -2905,16 +1746,15 @@ def _plotted_trajectory_widget(make_viewer_model):
     return parent, widget, layer
 
 
-def test_fret_trajectory_style_is_applied_to_the_plot(
-    make_viewer_model, qtbot
-):
-    """Width, transparency and end-dot radius reach the drawn artists."""
-    _, widget, _ = _plotted_trajectory_widget(make_viewer_model)
+def test_fret_trajectory_style(make_viewer_model, qtbot):
+    """Width, transparency, dots and colour of the donor trajectory reach the
+    plot, are kept in the layer settings, and reset to their defaults."""
+    parent, widget, layer = _plotted_trajectory_widget(make_viewer_model)
 
+    # Width, transparency and end-dot radius reach the drawn artists.
     widget.trajectory_width_spin.setValue(6.5)
     widget.trajectory_transparency_spin.setValue(0.4)
     widget.trajectory_dot_spin.setValue(0.05)
-
     assert widget.trajectory_linewidth == 6.5
     assert widget.trajectory_alpha == pytest.approx(0.6)
     assert widget.trajectory_dot_radius == pytest.approx(0.05)
@@ -2930,66 +1770,47 @@ def test_fret_trajectory_style_is_applied_to_the_plot(
         assert circle.get_radius() == pytest.approx(0.05)
         assert circle.get_alpha() == pytest.approx(0.6)
 
-
-def test_fret_trajectory_style_is_kept_in_layer_settings(
-    make_viewer_model, qtbot
-):
-    """The style is a setting of the layer and is restored with it."""
-    parent, widget, layer = _plotted_trajectory_widget(make_viewer_model)
-
+    # The style is a setting of the layer and is restored with it.
     widget.trajectory_width_spin.setValue(5.0)
     widget.trajectory_transparency_spin.setValue(0.25)
     widget.trajectory_dot_spin.setValue(0.04)
-
     fret_settings = parent.layer_settings(layer)['fret']
     assert fret_settings['trajectory_linewidth'] == 5.0
     assert fret_settings['trajectory_alpha'] == pytest.approx(0.75)
     assert fret_settings['trajectory_dot_radius'] == pytest.approx(0.04)
-
     widget.trajectory_linewidth = 3.0
     widget.trajectory_alpha = 1.0
     widget.trajectory_dot_radius = 0.02
     widget._restore_fret_settings_from_metadata()
-
     assert widget.trajectory_linewidth == 5.0
     assert widget.trajectory_alpha == pytest.approx(0.75)
     assert widget.trajectory_dot_radius == pytest.approx(0.04)
     assert widget.trajectory_width_spin.value() == 5.0
     assert widget.trajectory_transparency_spin.value() == pytest.approx(0.25)
     assert widget.trajectory_dot_slider.value() == 40
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.plot_donor_trajectory()
 
-
-def test_fret_trajectory_color_picker_follows_colormap_toggle(
-    make_viewer_model, qtbot
-):
-    """The flat color is offered only while the colormap overlay is off."""
-    _, widget, layer = _plotted_trajectory_widget(make_viewer_model)
+    # The flat color is offered only while the colormap overlay is off.
     assert widget.trajectory_color_row.isHidden()
-
     widget.colormap_checkbox.setChecked(False)
     assert not widget.trajectory_color_row.isHidden()
-
     with patch(
         'napari_phasors.fret_tab.QColorDialog.getColor',
         return_value=QColor('#ff0000'),
     ):
         widget.trajectory_color_button.click()
-
     assert widget.trajectory_color == '#ff0000'
     assert widget.current_donor_line.get_color() == '#ff0000'
     assert widget.current_donor_circle.get_facecolor()[:3] == (1.0, 0.0, 0.0)
     settings = widget.parent_widget.layer_settings(layer)['fret']
     assert settings['trajectory_color'] == '#ff0000'
-
     widget.colormap_checkbox.setChecked(True)
     assert widget.trajectory_color_row.isHidden()
 
-
-def test_fret_trajectory_dots_can_be_hidden(make_viewer_model, qtbot):
-    """Unchecking the dots removes them and disables their radius."""
-    parent, widget, layer = _plotted_trajectory_widget(make_viewer_model)
+    # Unchecking the dots removes them and disables their radius.
     assert widget.current_donor_circle is not None
-
     widget.trajectory_dots_checkbox.setChecked(False)
     assert widget.current_donor_circle is None
     assert widget.current_background_circle is None
@@ -2997,24 +1818,18 @@ def test_fret_trajectory_dots_can_be_hidden(make_viewer_model, qtbot):
     assert (
         parent.layer_settings(layer)['fret']['show_trajectory_dots'] is False
     )
-
     widget.trajectory_dots_checkbox.setChecked(True)
     assert widget.current_donor_circle is not None
     assert widget.trajectory_dot_spin.isEnabled()
 
-
-def test_fret_trajectory_style_reset(make_viewer_model, qtbot):
-    """Reset restores every trajectory style default."""
-    parent, widget, layer = _plotted_trajectory_widget(make_viewer_model)
+    # Reset restores every trajectory style default.
     widget.colormap_checkbox.setChecked(False)
     widget.trajectory_width_spin.setValue(8.0)
     widget.trajectory_transparency_spin.setValue(0.5)
     widget.trajectory_dot_spin.setValue(0.07)
     widget.trajectory_dots_checkbox.setChecked(False)
     widget.trajectory_color = '#00ff00'
-
     widget.trajectory_style_reset_button.click()
-
     assert widget.use_colormap is True
     assert widget.colormap_checkbox.isChecked()
     assert widget.trajectory_color_row.isHidden()
@@ -3072,55 +1887,28 @@ def test_draw_fret_trajectory_overlay_uses_style_settings():
     plt.close(fig)
 
 
-def test_fret_calculate_button_is_pinned_under_the_scroll_area(
-    make_viewer_model, qtbot
-):
-    """The primary action stays reachable however long the settings get."""
+def test_fret_efficiency_filter(make_viewer_model, qtbot):
+    """The efficiency criterion: frozen parameters, pixels removed everywhere,
+    histogram, report, toggling, following the trajectory, other tabs'
+    criteria, and the layer's output name."""
     viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-    assert_run_row_is_pinned(
-        widget,
-        widget.calculate_fret_efficiency_button,
-        widget.autoupdate_container,
+    parent, widget, layer = _ready_fret_filter_widget(
+        viewer, name="sample Intensity [Phasor]"
     )
 
+    # The FRET map replaces the source's [Phasor] tag with [FRET efficiency].
+    assert "sample Intensity [FRET efficiency]" in viewer.layers
+    assert "FRET efficiency: sample Intensity [Phasor]" not in viewer.layers
+    output = viewer.layers["sample Intensity [FRET efficiency]"]
+    assert widget._fret_output_source(output) == layer.name
 
-def test_fret_filter_cannot_be_switched_on_without_a_trajectory(
-    make_viewer_model, qtbot
-):
-    """The card says why it cannot be switched on yet."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
+    baseline = layer.metadata['G'].copy()
+    before_points = sum(
+        len(values) for values in widget.histogram_widget._datasets.values()
+    )
+    median = float(np.nanmedian(output.metadata['fret_data_original']))
 
-    widget._refresh_filter_enable_state()
-    card = _efficiency_card(widget)
-    assert not card.enabled_check.isEnabled()
-    assert "Select at least one" in card.enabled_check.toolTip()
-
-    layer = create_image_layer_with_phasors()
-    layer.name = "no_donor"
-    viewer.add_layer(layer)
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
-    widget._on_image_layer_changed()
-    widget.donor_line_edit.setText("")
-    widget.frequency_input.setText("")
-    widget._refresh_filter_enable_state()
-    card = _efficiency_card(widget)
-    assert not card.enabled_check.isEnabled()
-    assert "donor lifetime" in card.enabled_check.toolTip()
-
-    widget.frequency_input.setText("80.0")
-    widget.donor_line_edit.setText("4.2")
-    assert _efficiency_card(widget).enabled_check.isEnabled()
-
-
-def test_fret_filter_params_are_frozen_from_the_tab(make_viewer_model, qtbot):
-    """A new criterion captures the donor trajectory it was created with."""
-    viewer = make_viewer_model()
-    parent, widget, layer = _ready_fret_filter_widget(viewer)
-
+    # A new criterion captures the donor trajectory it was created with.
     card = _add_efficiency_filter(widget, 0.0, 1.0)
     params = card.entry['params']
     assert params['frequency'] == 80.0
@@ -3128,214 +1916,56 @@ def test_fret_filter_params_are_frozen_from_the_tab(make_viewer_model, qtbot):
     assert params['donor_fretting'] == widget.donor_fretting_proportion
     assert params['donor_background'] == widget.donor_background
     assert card.entry['harmonic'] == parent.harmonic
-
     assert widget._positive_float("abc") is None
     assert widget._positive_float("-1") is None
     assert widget._positive_float("2.5") == 2.5
 
-
-def test_fret_filter_nans_the_phasor_coordinates_and_the_map(
-    make_viewer_model, qtbot
-):
-    """Filtering by efficiency removes the pixels everywhere at once."""
-    viewer = make_viewer_model()
-    parent, widget, layer = _ready_fret_filter_widget(viewer)
-
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
-    efficiency = output.metadata['fret_data_original']
-    median = float(np.nanmedian(efficiency))
+    # Filtering by efficiency removes the pixels everywhere at once.
     before = np.isnan(layer.metadata['G']).sum()
-
-    _add_efficiency_filter(widget, median, 1.0)
-
+    card = _add_efficiency_filter(widget, median, 1.0)
     assert np.isnan(layer.metadata['G']).sum() > before
     assert (
         np.isnan(layer.metadata['S']).sum()
         == np.isnan(layer.metadata['G']).sum()
     )
-
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
+    output = viewer.layers[analysis_layer_name("FRET efficiency", layer.name)]
     assert np.isnan(output.data).any()
     survivors = output.data[np.isfinite(output.data)]
     assert survivors.min() >= median - 1e-9
-
     (stored,) = get_filters(layer)
     assert stored['metric'] == FRET_EFFICIENCY
 
-
-def test_fret_filter_updates_the_histogram(make_viewer_model, qtbot):
-    """The efficiency histogram only shows what survives the filter."""
-    viewer = make_viewer_model()
-    parent, widget, layer = _ready_fret_filter_widget(viewer)
-    before = sum(
-        len(values) for values in widget.histogram_widget._datasets.values()
-    )
-
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
-    median = float(np.nanmedian(output.metadata['fret_data_original']))
-    _add_efficiency_filter(widget, median, 1.0)
-
+    # The efficiency histogram only shows what survives the filter.
     plotted = np.concatenate(list(widget.histogram_widget._datasets.values()))
-    assert 0 < len(plotted) < before
+    assert 0 < len(plotted) < before_points
     assert plotted.min() >= median - 1e-9
 
+    # The card and the summary say how much of the image survives; a single
+    # filter needs no stack summary.
+    assert "keeps" in card.stat_label.text()
+    assert not widget.filter_list.summary_label.isVisibleTo(widget.filter_list)
 
-def test_fret_filter_is_removable_and_reversible(make_viewer_model, qtbot):
-    """Clearing the criterion restores every pixel it had hidden."""
-    viewer = make_viewer_model()
-    parent, widget, layer = _ready_fret_filter_widget(viewer)
-    baseline = layer.metadata['G'].copy()
-
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
-    median = float(np.nanmedian(output.metadata['fret_data_original']))
-    card = _add_efficiency_filter(widget, median, 1.0)
-    assert np.isnan(layer.metadata['G']).any()
-
+    # Clearing the criterion restores every pixel it had hidden.
     card.enabled_check.setChecked(False)
     np.testing.assert_allclose(layer.metadata['G'], baseline)
-
     card.enabled_check.setChecked(True)
     assert np.isnan(layer.metadata['G']).any()
-
     card.enabled_check.setChecked(False)
     np.testing.assert_allclose(layer.metadata['G'], baseline)
     # Switched off, the criterion is kept (range and all) but hides nothing.
     (stored,) = get_filters(layer)
     assert stored['enabled'] is False
 
-
-def test_fret_filter_reports_what_it_keeps(make_viewer_model, qtbot):
-    """The card and the summary say how much of the image survives."""
-    viewer = make_viewer_model()
-    parent, widget, layer = _ready_fret_filter_widget(viewer)
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
-    median = float(np.nanmedian(output.metadata['fret_data_original']))
-
-    card = _add_efficiency_filter(widget, median, 1.0)
-    assert "keeps" in card.stat_label.text()
-    # A single filter needs no stack summary.
-    assert not widget.filter_list.summary_label.isVisibleTo(widget.filter_list)
-
-
-def test_fret_filter_follows_a_changed_donor_trajectory(
-    make_viewer_model, qtbot
-):
-    """Recalculating with a new donor lifetime re-points the criterion."""
-    viewer = make_viewer_model()
-    parent, widget, layer = _ready_fret_filter_widget(viewer)
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
-    median = float(np.nanmedian(output.metadata['fret_data_original']))
+    # Recalculating with a new donor lifetime re-points the criterion.
     _add_efficiency_filter(widget, median, 1.0)
-
     widget.donor_line_edit.setText("2.0")
     widget.calculate_fret_efficiency()
-
     (stored,) = get_filters(layer)
     assert stored['params']['donor_lifetime'] == 2.0
     # A criterion already pointing at the current trajectory is left alone.
     assert widget._refresh_fret_filter_params([layer]) is False
 
-
-def test_fret_filter_params_need_a_complete_trajectory(
-    make_viewer_model, qtbot
-):
-    """With no usable donor lifetime there is nothing to freeze or refresh."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-    widget.donor_line_edit.setText("")
-    widget.frequency_input.setText("")
-
-    assert widget._fret_filter_params() == {}
-    assert widget._refresh_fret_filter_params([]) is False
-
-
-def test_mapping_criteria_are_not_shown_but_kept_by_the_fret_tab(
-    make_viewer_model, qtbot
-):
-    """Phasor Mapping criteria stay out of this list, and out of its way."""
-    viewer = make_viewer_model()
-    parent, widget, layer = _ready_fret_filter_widget(viewer)
-    set_filters(
-        layer,
-        [new_filter("Normal Lifetime", 0.0, 1.0, params={'frequency': 80.0})],
-    )
-    widget._sync_filter_ui()
-    assert widget.filter_list.filters() == []
-    assert len(widget.filter_list._cards) == 1
-    assert _efficiency_card(widget).entry['metric'] == FRET_EFFICIENCY
-
-    _add_efficiency_filter(widget, 0.0, 1.0)
-    assert [f['metric'] for f in get_filters(layer)] == [
-        "Normal Lifetime",
-        FRET_EFFICIENCY,
-    ]
-
-
-def test_fret_filter_stack_without_a_selection_does_nothing(
-    make_viewer_model, qtbot
-):
-    """Nothing selected, nothing to filter."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-    widget._apply_filter_stack([])
-    assert widget.filter_list.filters() == []
-
-    widget._sync_filter_ui()
-    assert widget.filter_list.summary_label.text() == ""
-    assert widget._primary_filter_layer() is None
-
-
-def test_fret_filter_helpers_survive_a_detached_widget(
-    make_viewer_model, qtbot
-):
-    """Without a parent plotter there is nothing to filter, and no crash."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-    widget.parent_widget = None
-    try:
-        assert widget._filter_layers() == []
-        assert widget._layer_filter_params(object()) == {}
-        widget._apply_filter_stack([new_filter(FRET_EFFICIENCY, 0.0, 1.0)])
-    finally:
-        widget.parent_widget = parent
-
-
-class _BrokenSelector:
-    """Stands in for a plotter whose Qt selector has already been destroyed."""
-
-    def get_selected_layers(self):
-        """Raise the way a deleted Qt widget does when it is queried."""
-        raise RuntimeError("wrapped C/C++ object has been deleted")
-
-
-def test_fret_filter_layers_tolerates_a_torn_down_selector(
-    make_viewer_model, qtbot
-):
-    """A selector that has already been destroyed reads as "nothing selected"."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-    widget.parent_widget = _BrokenSelector()
-    try:
-        assert widget._filter_layers() == []
-        assert widget._primary_filter_layer() is None
-    finally:
-        # The tab's own teardown still needs a real plotter behind it.
-        widget.parent_widget = parent
-
-
-def test_fret_apply_filter_stack_defaults_to_the_cards_on_screen(
-    make_viewer_model, qtbot
-):
-    """Calling apply with no argument uses whatever the list currently holds."""
-    viewer = make_viewer_model()
-    parent, widget, layer = _ready_fret_filter_widget(viewer)
-    output = viewer.layers[f"FRET efficiency: {layer.name}"]
-    median = float(np.nanmedian(output.metadata['fret_data_original']))
-
+    # Calling apply with no argument uses whatever the list currently holds.
     widget.filter_list.set_filters(
         [
             new_filter(
@@ -3350,61 +1980,47 @@ def test_fret_apply_filter_stack_defaults_to_the_cards_on_screen(
     assert np.isnan(layer.metadata['G']).any()
     assert len(get_filters(layer)) == 1
 
-
-def test_fret_filter_warns_when_a_criterion_cannot_be_evaluated(
-    make_viewer_model, qtbot, monkeypatch
-):
-    """A criterion with no donor trajectory is reported, not applied."""
-    viewer = make_viewer_model()
-    parent, widget, layer = _ready_fret_filter_widget(viewer)
+    # A criterion with no donor trajectory is reported, not applied.
     warnings = []
-    monkeypatch.setattr(
-        "napari_phasors.fret_tab.show_warning", warnings.append
-    )
-
-    # No donor trajectory to fill in either.
     widget.donor_line_edit.setText("")
-    widget._apply_filter_stack(
-        [{'metric': FRET_EFFICIENCY, 'min': 0.2, 'max': 0.8}]
-    )
+    with patch("napari_phasors.fret_tab.show_warning", warnings.append):
+        widget._apply_filter_stack(
+            [{'metric': FRET_EFFICIENCY, 'min': 0.2, 'max': 0.8}]
+        )
     assert any(FRET_EFFICIENCY in message for message in warnings)
     assert not np.isnan(layer.metadata['G']).all()
+    widget.donor_line_edit.setText("4.2")
 
-
-def test_fret_rerun_keeps_layer_colormap(make_viewer_model, qtbot):
-    """Running FRET again keeps the colormap, limits and gamma of the layer."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
+    # Phasor Mapping criteria stay out of this list, and out of its way.
+    set_filters(
+        layer,
+        [new_filter("Normal Lifetime", 0.0, 1.0, params={'frequency': 80.0})],
     )
-    widget._on_image_layer_changed()
-
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-    widget.calculate_fret_efficiency()
-    assert widget.fret_layer.colormap.name == 'viridis'
-
-    widget.fret_layer.colormap = 'magma'
-    widget.fret_layer.contrast_limits = (0.1, 0.9)
-    widget.fret_layer.gamma = 0.8
-
-    widget.calculate_fret_efficiency()
-
-    assert widget.fret_layer.colormap.name == 'magma'
-    assert tuple(widget.fret_layer.contrast_limits) == pytest.approx(
-        (0.1, 0.9)
-    )
-    assert widget.fret_layer.gamma == pytest.approx(0.8)
-    colormap_settings = test_layer.metadata['settings']['fret'][
-        'colormap_settings'
+    widget._sync_filter_ui()
+    assert widget.filter_list.filters() == []
+    assert len(widget.filter_list._cards) == 1
+    assert _efficiency_card(widget).entry['metric'] == FRET_EFFICIENCY
+    _add_efficiency_filter(widget, 0.0, 1.0)
+    assert [f['metric'] for f in get_filters(layer)] == [
+        "Normal Lifetime",
+        FRET_EFFICIENCY,
     ]
-    assert colormap_settings['colormap_name'] == 'magma'
-    assert colormap_settings['gamma'] == pytest.approx(0.8)
+
+    # Renaming the source renames the output.
+    widget.rename_layer(layer.name, "renamed Intensity [Phasor]")
+    assert output.name == "renamed Intensity [FRET efficiency]"
+
+    # With the layer gone, the card falls back to a fresh, switched-off
+    # criterion measured on the current harmonic.
+    viewer.layers.remove(layer)
+    assert widget.filter_list.filters() == []
+    assert not _efficiency_card(widget).entry['enabled']
+    assert _efficiency_card(widget).entry['harmonic'] == parent.harmonic
+
+
+class _BrokenSelector:
+    """Stands in for a plotter whose Qt selector has already been destroyed."""
+
+    def get_selected_layers(self):
+        """Raise the way a deleted Qt widget does when it is queried."""
+        raise RuntimeError("wrapped C/C++ object has been deleted")

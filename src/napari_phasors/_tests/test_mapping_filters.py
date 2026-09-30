@@ -866,6 +866,27 @@ def test_card_rejects_unparsable_text_and_reorders_a_backwards_range(qtbot):
     assert (card.entry['min'], card.entry['max']) == (0.10, 0.90)
 
 
+def test_typed_range_moves_the_handles_and_keeps_the_slider_range(qtbot):
+    """Typing a range moves the handles; the slider widens only if needed."""
+    widget = ComponentFilterList()
+    qtbot.addWidget(widget)
+    widget.set_components([(0, "A", "#ff0000")])
+    widget.set_component_bounds(0, 0.0, 1.0)
+    card = widget._cards[0]
+    slider = card.range_slider
+
+    card.min_edit.setText("0.30")
+    card.max_edit.setText("0.60")
+    card.min_edit.editingFinished.emit()
+    assert (slider.minimum(), slider.maximum()) == (0, 1000)
+    assert slider.value() == (300, 600)
+
+    card.max_edit.setText("1.50")
+    card.max_edit.editingFinished.emit()
+    assert (slider.minimum(), slider.maximum()) == (0, 1500)
+    assert slider.value() == (300, 1500)
+
+
 def test_card_ignores_edits_while_the_list_is_writing_to_it(qtbot):
     """Programmatic updates do not echo back as user edits."""
     widget = MappingFilterList(MAPPING_METRICS)

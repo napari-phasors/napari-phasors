@@ -59,6 +59,10 @@ contributions:
       display_name: Export Layer as Image
       layer_types: ['image*','labels*']
       filename_extensions: ['.png', '.jpg', '.jpeg', '.tif']
+    - command: napari-phasors.export_layer_as_image
+      display_name: Export Labels Layer as SVG
+      layer_types: ['labels+']
+      filename_extensions: ['.svg']
   sample_data:
     - command: napari-phasors.convallaria_FLIM_sample_data
       display_name: Convallaria FLIM

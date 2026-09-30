@@ -21,14 +21,16 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from napari.layers import Image, Labels
 from napari.utils.notifications import show_error, show_info
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtGui import QDoubleValidator, QIntValidator
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QCompleter,
+    QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -62,6 +64,7 @@ from ._reader import (
     iter_index_mapping,
     list_h5_datasets,
     napari_get_reader,
+    physical_sizes_from_ome_tiff,
     probe_tile_axes,
     raw_file_stack_reader,
     resolve_h5_dataset,
@@ -73,7 +76,9 @@ from ._utils import (
     FileOrderDialog,
     PopoutWindowMixin,
     TileLayoutDialog,
+    emphasize_primary_button,
     natural_sort_key,
+    setup_primary_button,
     show_activity_progress,
 )
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
@@ -121,6 +126,10 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         self.main_layout = QVBoxLayout(self.content_widget)
         self.main_layout.setAlignment(Qt.AlignTop)
         self.scroll_area.setWidget(self.content_widget)
+
+        # Widgets currently offering a transform; each hides its own button
+        # in favour of the run button pinned under the scroll area.
+        self._transform_widgets = []
 
         self.search_button = QPushButton("Select file(s) to be read")
         self.search_button.clicked.connect(self._open_file_dialog)
@@ -178,8 +187,110 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         if BRIGHTEYES_MCS_AVAILABLE:
             self.reader_options[".h5"] = H5Widget
 
+        # Run button, pinned under the scroll area so it is always reachable,
+        # like the Run button of the analysis tabs.
+        self.run_button = QPushButton("Phasor Transform")
+        self.run_button.setMinimumHeight(34)
+        self._refresh_run_button = setup_primary_button(
+            self.run_button,
+            self._run_validation,
+            self._run_transforms,
+            ready_tooltip="Transform the selected file(s) into phasor "
+            "space.",
+        )
+        self.outer_layout.addWidget(self.run_button)
+
         # Unobtrusive, throttled check for a newer release (see module docs).
         maybe_check_for_update(parent=self)
+
+    def _run_validation(self):
+        """Return why no transform can run yet, or ``None`` when ready."""
+        if not self._transform_widgets:
+            return "Select file(s) to be read first."
+        return None
+
+    def _run_transforms(self):
+        """Run the transform of every option widget currently shown."""
+        for widget in list(self._transform_widgets):
+            widget.btn.click()
+
+    def _register_transform_widget(self, widget):
+        """Route ``widget``'s transform through the pinned run button."""
+        if hasattr(widget, 'btn'):
+            widget.btn.setVisible(False)
+            self._transform_widgets.append(widget)
+        self._update_run_button()
+
+    def _update_run_button(self):
+        """Label the run button after the shown widgets and refresh it."""
+        widgets = self._transform_widgets
+        if len(widgets) == 1:
+            self.run_button.setText(widgets[0].btn.text())
+        elif widgets:
+            self.run_button.setText(
+                f"Phasor Transform All Groups ({len(widgets)})"
+            )
+        else:
+            self.run_button.setText("Phasor Transform")
+        self._refresh_run_button()
+        self._schedule_fit_height()
+
+    def _schedule_fit_height(self):
+        """Fit the window height once the option widgets have been laid out.
+
+        Deferred (and coalesced) because files are cleared and added in
+        several steps. The timer is parented to the widget so Qt cancels it on
+        teardown.
+        """
+        timer = getattr(self, "_fit_height_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._fit_height_to_content)
+            self._fit_height_timer = timer
+        timer.start(0)
+
+    def _fit_height_to_content(self):
+        """Resize the window to the option widgets now shown.
+
+        Grows or shrinks to the content, up to the screen size. Only acts
+        once the widget is a window of its own (see ``PopoutWindowMixin``).
+        """
+        if not self.isVisible() or not self.isWindow():
+            return
+        self.content_widget.layout().activate()
+        margins = self.outer_layout.contentsMargins()
+        height = (
+            self.content_widget.sizeHint().height()
+            + self.run_button.sizeHint().height()
+            + self.outer_layout.spacing()
+            + margins.top()
+            + margins.bottom()
+            + 2 * self.scroll_area.frameWidth()
+        )
+        screen = self.screen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        height = max(300, min(height, avail.height() - 120))
+        width = (
+            self.content_widget.sizeHint().width()
+            + margins.left()
+            + margins.right()
+            + 2 * self.scroll_area.frameWidth()
+            + self.scroll_area.verticalScrollBar().sizeHint().width()
+        )
+        width = max(self.minimumWidth(), min(width, avail.width() - 80))
+        if (width, height) == (self.width(), self.height()):
+            return
+        self.resize(width, height)
+        # Keep the window on screen when it grows.
+        geo = self.frameGeometry()
+        if geo.bottom() > avail.bottom():
+            geo.moveBottom(avail.bottom())
+        if geo.right() > avail.right():
+            geo.moveRight(avail.right())
+        self.move(geo.topLeft())
 
     def _open_file_dialog(self):
         """Open a dialog to select one or many files for import.
@@ -212,6 +323,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
                 create_widget_class = self.reader_options[extension]
                 new_widget = create_widget_class(self.viewer, selected_file)
                 self.dynamic_widget_layout.addWidget(new_widget)
+                self._register_transform_widget(new_widget)
             else:
                 show_error(f"Extension {extension} is not supported.")
             return
@@ -255,6 +367,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             )
             group_container.add_widget(new_widget)
             self.dynamic_widget_layout.addWidget(group_container)
+            self._register_transform_widget(new_widget)
 
         self.dynamic_widget_layout.addStretch()
         self._show_path_list(selected_files)
@@ -378,6 +491,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         if hasattr(new_widget, '_update_signal_plot'):
             new_widget._update_signal_plot()
         self.dynamic_widget_layout.addWidget(new_widget)
+        self._register_transform_widget(new_widget)
 
     def _ask_tile_source(self):
         """Ask whether the tiles are picked individually or taken from a folder.
@@ -546,15 +660,18 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             sources, geometry, tile_axis=tile_axis, binning=binning
         )
         self.dynamic_widget_layout.addWidget(new_widget)
+        self._register_transform_widget(new_widget)
 
     def _clear_dynamic_widgets(self):
         """Remove all widgets from the dynamic widget layout."""
+        self._transform_widgets.clear()
         for i in reversed(range(self.dynamic_widget_layout.count())):
             widget = self.dynamic_widget_layout.takeAt(i).widget()
             if widget is not None:
                 with suppress(Exception):
                     widget.close()
                 widget.deleteLater()
+        self._update_run_button()
 
     def closeEvent(self, event):
         """Close any dynamic widgets before the parent is destroyed."""
@@ -597,6 +714,8 @@ class AdvancedOptionsWidget(QWidget):
         self.path = path
         self._stack_z_spacing_layout = None
         self._stack_z_spacing_edit = None
+        self._pixel_size_layout = None
+        self._pixel_size_edit = None
         self._tile_paths = None
         self._tile_axis = None
         self._tile_geometry = None
@@ -1252,8 +1371,50 @@ class AdvancedOptionsWidget(QWidget):
         axes_to_sum = tuple(i for i in range(array.ndim) if i != signal_axis)
         return np.sum(array, axis=axes_to_sum)
 
+    def _insert_calibration_row(self, layout):
+        """Put *layout* just above the shape preview, or at the end."""
+        if hasattr(self, 'shape_preview_label'):
+            index = self.mainLayout.indexOf(self.shape_preview_label)
+            if index >= 0:
+                self.mainLayout.insertLayout(index, layout)
+                return
+        self.mainLayout.addLayout(layout)
+
+    def _sync_pixel_size_widget(self):
+        """Build the XY pixel-size editor, once.
+
+        Formats such as FBD, SDT and the SimFCS referenced files carry no
+        pixel size at all, so typing one is the only way those imports get
+        calibrated. It stays empty by default, which means "use whatever the
+        file says".
+        """
+        if self._pixel_size_layout is not None:
+            return
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("XY pixel size (um): "))
+        self._pixel_size_edit = QLineEdit()
+        self._pixel_size_edit.setValidator(QDoubleValidator(0.0, 1e12, 8))
+        self._pixel_size_edit.setPlaceholderText("from file")
+        self._pixel_size_edit.setToolTip(
+            "Pixel size along Y and X in micrometers (um). Leave empty to "
+            "use the size stored in the file, if it has one."
+        )
+        row.addWidget(self._pixel_size_edit)
+        row.addStretch()
+
+        self._insert_calibration_row(row)
+        self._pixel_size_layout = row
+
+    def _get_pixel_size(self):
+        """Return the XY pixel size typed by the user, or ``None``."""
+        if self._pixel_size_edit is None:
+            return None
+        return _parse_optional(self._pixel_size_edit.text(), float)
+
     def _sync_stack_z_spacing_widget_visibility(self):
         """Show a z-spacing editor only for stacked multi-file imports."""
+        self._sync_pixel_size_widget()
         is_stack_mode = len(getattr(self, '_multi_file_paths', []) or []) > 1
 
         if is_stack_mode and self._stack_z_spacing_layout is None:
@@ -1278,15 +1439,7 @@ class AdvancedOptionsWidget(QWidget):
             z_layout.addWidget(self._stack_z_spacing_edit)
             z_layout.addStretch()
 
-            inserted = False
-            if hasattr(self, 'shape_preview_label'):
-                idx = self.mainLayout.indexOf(self.shape_preview_label)
-                if idx >= 0:
-                    self.mainLayout.insertLayout(idx, z_layout)
-                    inserted = True
-
-            if not inserted:
-                self.mainLayout.addLayout(z_layout)
+            self._insert_calibration_row(z_layout)
             self._stack_z_spacing_layout = z_layout
 
         if not is_stack_mode and self._stack_z_spacing_layout is not None:
@@ -1879,6 +2032,7 @@ class AdvancedOptionsWidget(QWidget):
         multi_paths = getattr(self, '_multi_file_paths', None)
         self._on_stack_z_spacing_changed()
         z_spacing = getattr(self, '_stack_z_spacing', None)
+        pixel_size = self._get_pixel_size()
         axis_order = getattr(self, '_stack_axis_order', None)
         axis_labels = getattr(self, '_stack_axis_labels', None)
         if grouped_paths and len(grouped_paths) > 1:
@@ -1900,7 +2054,9 @@ class AdvancedOptionsWidget(QWidget):
                         layer_data = self._apply_axis_transform(
                             add_kw, layer[0], axis_order, axis_labels
                         )
-                        self._set_layer_z_scale(add_kw, layer_data, z_spacing)
+                        self._set_layer_scale(
+                            add_kw, layer_data, z_spacing, pixel_size
+                        )
                         self.viewer.add_image(
                             layer_data,
                             name=add_kw.pop("name"),
@@ -1930,7 +2086,9 @@ class AdvancedOptionsWidget(QWidget):
                 layer_data = self._apply_axis_transform(
                     add_kw, layer[0], axis_order, axis_labels
                 )
-                self._set_layer_z_scale(add_kw, layer_data, z_spacing)
+                self._set_layer_scale(
+                    add_kw, layer_data, z_spacing, pixel_size
+                )
                 self.viewer.add_image(
                     layer_data,
                     name=add_kw.pop("name"),
@@ -1946,7 +2104,9 @@ class AdvancedOptionsWidget(QWidget):
                 layer_data = self._apply_axis_transform(
                     add_kw, layer[0], axis_order, axis_labels
                 )
-                self._set_layer_z_scale(add_kw, layer_data, z_spacing)
+                self._set_layer_scale(
+                    add_kw, layer_data, z_spacing, pixel_size
+                )
                 self.viewer.add_image(
                     layer_data,
                     name=add_kw.pop("name"),
@@ -2024,19 +2184,35 @@ class AdvancedOptionsWidget(QWidget):
         return transformed
 
     @staticmethod
-    def _set_layer_z_scale(add_kwargs, data, z_spacing):
-        """Set first-axis scale to z-spacing for 3D+ data."""
-        if z_spacing is None:
-            return
-        if not hasattr(data, 'ndim') or data.ndim < 3:
+    def _set_layer_scale(add_kwargs, data, z_spacing=None, pixel_size=None):
+        """Override the layer's spatial scale with values typed by the user.
+
+        *z_spacing* calibrates the first axis of 3D+ data, *pixel_size* the
+        trailing two. Either may be ``None``, which leaves whatever the file
+        itself provided.
+        """
+        if not hasattr(data, 'ndim'):
             return
 
-        try:
-            z_value = float(z_spacing)
-        except (TypeError, ValueError):
-            return
+        wanted = {}
+        if data.ndim >= 3:
+            wanted[0] = z_spacing
+        if data.ndim >= 2:
+            wanted[data.ndim - 2] = pixel_size
+            wanted[data.ndim - 1] = pixel_size
 
-        if z_value <= 0:
+        values = {}
+        for axis, raw in wanted.items():
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                values[axis] = value
+
+        if not values:
             return
 
         existing_scale = add_kwargs.get("scale")
@@ -2049,8 +2225,16 @@ class AdvancedOptionsWidget(QWidget):
             elif len(scale) > data.ndim:
                 scale = scale[: data.ndim]
 
-        scale[0] = z_value
+        units = list(add_kwargs.get("units") or ["pixel"] * data.ndim)
+        if len(units) != data.ndim:
+            units = ["pixel"] * data.ndim
+
+        for axis, value in values.items():
+            scale[axis] = value
+            units[axis] = "um"
+
         add_kwargs["scale"] = tuple(scale)
+        add_kwargs["units"] = tuple(units)
 
 
 def _try_get_z_spacing_from_ome_tiff(path):
@@ -2062,29 +2246,14 @@ def _try_get_z_spacing_from_ome_tiff(path):
     if extension != ".ome.tif":
         return None
 
+    z_value = physical_sizes_from_ome_tiff(path).get("Z")
+    if z_value is not None:
+        return z_value
+
     try:
         import tifffile
 
         with tifffile.TiffFile(path) as tif:
-            ome_xml = tif.ome_metadata
-            if ome_xml:
-                ome_dict = tifffile.xml2dict(ome_xml)
-                ome_root = ome_dict.get("OME", {})
-                images = ome_root.get("Image", [])
-                if isinstance(images, dict):
-                    images = [images]
-
-                if images:
-                    pixels = images[0].get("Pixels", {})
-                    z_value = pixels.get("@PhysicalSizeZ")
-                    if z_value is None:
-                        z_value = pixels.get("PhysicalSizeZ")
-
-                    if isinstance(z_value, dict):
-                        z_value = z_value.get("#text")
-                    if z_value is not None:
-                        return float(z_value)
-
             # Fallback to napari-phasors settings embedded in description.
             if not tif.pages:
                 return None
@@ -3948,13 +4117,55 @@ class IfliWidget(ProcessedOnlyWidget):
         super()._on_click(path, reader_options, harmonics)
 
 
+class FlimariExportDialog(QDialog):
+    """Dialog holding the "send to FLIMari" controls of the export widget."""
+
+    def __init__(self, parent=None):
+        """Build the dialog: an info text, the layers and the send button."""
+        super().__init__(parent)
+        self.setWindowTitle("Send to FLIMari")
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            "Send the selected phasor layer(s) directly to "
+            "<a href=\"https://github.com/GuangchenW/FLIMari\">FLIMari</a>. "
+            "FLIMari must be installed as a napari plugin. For layers loaded "
+            "from formats without the raw histogram (e.g. R64/REF), you'll be "
+            "prompted to point to the original raw file so the counts can be "
+            "recovered."
+        )
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.RichText)
+        info.setOpenExternalLinks(True)
+        layout.addWidget(info)
+
+        self.layers_label = QLabel()
+        self.layers_label.setWordWrap(True)
+        layout.addWidget(self.layers_label)
+
+        self.send_button = QPushButton("Export Phasor Layer to FLIMari")
+        self.send_button.setMinimumHeight(34)
+        self.send_button.setEnabled(False)
+        emphasize_primary_button(self.send_button)
+        layout.addWidget(self.send_button)
+
+    def set_layer_names(self, names):
+        """Show the names of the layers that would be sent."""
+        self.layers_label.setText(
+            "<b>Selected layer(s):</b> " + ", ".join(names) if names else ""
+        )
+
+
 class WriterWidget(PopoutWindowMixin, QWidget):
     """Widget to export phasor data to a OME-TIF or CSV file."""
 
     # Shown as a standalone (non-dockable) window; see ``PopoutWindowMixin``.
-    # Compact content with no scroll area, so use its natural height.
+    # The options live in a scroll area, so use a fixed height.
     _popout_title = "Export Phasor"
     _popout_max_width = 520
+    _popout_height = 560
 
     def __init__(self, viewer: "napari.viewer.Viewer"):
         """Initialize the widget."""
@@ -3962,7 +4173,17 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.viewer = viewer
         self._floated = False
 
-        self.main_layout = QVBoxLayout(self)
+        # Options scroll; the Export button stays pinned under them.
+        self.outer_layout = QVBoxLayout(self)
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.outer_layout.addWidget(self.scroll_area)
+
+        self.content_widget = QWidget()
+        self.main_layout = QVBoxLayout(self.content_widget)
+        self.main_layout.setAlignment(Qt.AlignTop)
+        self.scroll_area.setWidget(self.content_widget)
 
         # Add informational text at the top
         info_label = QLabel("<b>Export Options:</b>")
@@ -3986,7 +4207,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.main_layout.addWidget(csv_info)
 
         image_info = QLabel(
-            "• <b>Image (PNG/JPEG/TIFF):</b> Exports visual representation "
+            "• <b>Image (PNG/JPEG/TIFF/SVG):</b> Exports visual representation "
             "with applied colormap and contrast. Optional colorbar can be included"
         )
         image_info.setWordWrap(True)
@@ -3999,38 +4220,14 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             QLabel("Select Image/Labels Layer(s) to be Exported: ")
         )
 
-        # Create horizontal layout for combobox and All/None controls
+        # Create horizontal layout for combobox and bulk-selection buttons
         export_layer_layout = QHBoxLayout()
         self.export_layer_combobox = CheckableComboBox(
-            enable_primary_layer=False
+            enable_primary_layer=False, show_select_all_buttons=True
         )
         export_layer_layout.addWidget(self.export_layer_combobox, 1)
-
-        # "All | None" clickable labels for quick bulk selection
-        select_all_label = QLabel('<a href="all" style="color: gray;">All</a>')
-        select_all_label.setTextFormat(Qt.RichText)
-        select_all_label.setCursor(Qt.PointingHandCursor)
-        select_all_label.setToolTip("Select all layers")
-        export_layer_layout.addWidget(select_all_label)
-
-        separator_label = QLabel("|")
-        separator_label.setStyleSheet("color: gray;")
-        export_layer_layout.addWidget(separator_label)
-
-        deselect_all_label = QLabel(
-            '<a href="none" style="color: gray;">None</a>'
-        )
-        deselect_all_label.setTextFormat(Qt.RichText)
-        deselect_all_label.setCursor(Qt.PointingHandCursor)
-        deselect_all_label.setToolTip("Deselect all layers")
-        export_layer_layout.addWidget(deselect_all_label)
-
-        # Connect All/None labels (use lambdas to consume the href argument)
-        select_all_label.linkActivated.connect(
-            lambda _: self.export_layer_combobox.selectAll()
-        )
-        deselect_all_label.linkActivated.connect(
-            lambda _: self.export_layer_combobox.deselectAll()
+        export_layer_layout.addWidget(
+            self.export_layer_combobox.select_all_buttons
         )
 
         self.main_layout.addLayout(export_layer_layout)
@@ -4050,35 +4247,58 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             self._update_mask_checkbox_visibility
         )
 
+        # The FLIMari controls live in their own dialog; this button, at the
+        # bottom of the scrolling options, opens it.
+        self.main_layout.addStretch(1)
+        self.flimari_dialog = FlimariExportDialog(self)
+        self.flimari_button = self.flimari_dialog.send_button
+        self.flimari_button.clicked.connect(self._on_flimari_send_clicked)
+        self.flimari_open_button = QPushButton("Send to FLIMari...")
+        self.flimari_open_button.setEnabled(False)
+        self.flimari_open_button.setToolTip(
+            "Send the selected phasor layer(s) directly to FLIMari."
+        )
+        self.flimari_open_button.clicked.connect(self._open_flimari_dialog)
+        # A secondary action: compact, left-aligned and subdued so it does
+        # not compete with the pinned Export button.
+        self.flimari_open_button.setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid rgba(128, 128, 128, 0.25);"
+            "  border-radius: 4px;"
+            "  padding: 3px 10px;"
+            "  color: rgba(128, 128, 128, 0.8);"
+            "  background: transparent;"
+            "}"
+            "QPushButton:hover {"
+            "  background: rgba(255, 255, 255, 0.18);"
+            "  border-color: rgba(200, 200, 200, 0.6);"
+            "  color: rgba(210, 210, 210, 1);"
+            "}"
+            "QPushButton:disabled {"
+            "  border-color: rgba(128, 128, 128, 0.15);"
+            "  color: rgba(128, 128, 128, 0.45);"
+            "}"
+        )
+        self.main_layout.addWidget(self.flimari_open_button, 0, Qt.AlignLeft)
+
+        # Export button, pinned under the scroll area so it is always
+        # reachable, like the Run button of the analysis tabs.
         self.search_button = QPushButton("Select Export Location and Name")
-        self.search_button.clicked.connect(self._open_file_dialog)
-        self.main_layout.addWidget(self.search_button)
-
-        self.flimari_section = CollapsibleSection(
-            "Send to FLIMari",
-            initially_collapsed=True,
-            text_color="#c7c7c7",
+        self.search_button.setMinimumHeight(34)
+        self._refresh_export_button = setup_primary_button(
+            self.search_button,
+            self._export_validation,
+            self._open_file_dialog,
+            ready_tooltip="Choose where to save the selected layer(s) and "
+            "export them.",
         )
-        flimari_info = QLabel(
-            "Send the selected phasor layer(s) directly to "
-            "<a href=\"https://github.com/GuangchenW/FLIMari\">FLIMari</a>. "
-            "FLIMari must be installed as a napari plugin. For layers loaded "
-            "from formats without the raw histogram (e.g. R64/REF), you'll be "
-            "prompted to point to the original raw file so the counts can be recovered."
-        )
-        flimari_info.setWordWrap(True)
-        flimari_info.setOpenExternalLinks(True)
-        self.flimari_section.add_widget(flimari_info)
-
-        self.flimari_button = QPushButton("Export Phasor Layer to FLIMari")
-        self.flimari_button.setEnabled(False)
-        self.flimari_button.clicked.connect(self._send_to_flimari)
-        self.flimari_section.add_widget(self.flimari_button)
-
-        self.main_layout.addWidget(self.flimari_section)
+        self.outer_layout.addWidget(self.search_button)
 
         self.export_layer_combobox.selectionChanged.connect(
             self._update_flimari_button_state
+        )
+        self.export_layer_combobox.selectionChanged.connect(
+            self._refresh_export_button
         )
 
         self.viewer.layers.events.inserted.connect(self._populate_combobox)
@@ -4102,6 +4322,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             "Layer as PNG image (*.png)",
             "Layer as JPEG image (*.jpg)",
             "Layer as TIFF image (*.tif)",
+            "Layer as SVG image (*.svg)",
         ]
         # Join filters with ';;' for the native dialog format
         filter_str = ";;".join(filters)
@@ -4121,22 +4342,45 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 self.mask_checkbox.isVisible()
                 and self.mask_checkbox.isChecked()
             )
-            self._save_file(
+            exported = self._save_file(
                 file_path,
                 selected_filter,
                 include_colorbar,
                 selected_layers,
                 export_masked=export_masked,
             )
+            if exported:
+                self.close()
+
+    def _export_validation(self):
+        """Return why nothing can be exported yet, or ``None`` when ready."""
+        if not self.export_layer_combobox.checkedItems():
+            return "Select at least one layer to export."
+        return None
+
+    def _open_flimari_dialog(self):
+        """Open the dialog that sends the selected layer(s) to FLIMari."""
+        self.flimari_dialog.set_layer_names(
+            self.export_layer_combobox.checkedItems()
+        )
+        self.flimari_dialog.exec()
+
+    def _on_flimari_send_clicked(self):
+        """Send to FLIMari and close its dialog once the send went through."""
+        if self._send_to_flimari():
+            self.flimari_dialog.accept()
 
     def _send_to_flimari(self):
-        """Send the selected phasor layer(s) to FLIMari, opening its dock if needed."""
+        """Send the selected phasor layer(s) to FLIMari, opening its dock if needed.
+
+        Returns ``True`` when the layers were sent.
+        """
         from ._flimari import FlimariNotAvailable, send_layers_to_flimari
 
         selected_layers = self.export_layer_combobox.checkedItems()
         if not selected_layers:
             show_error("No layer selected")
-            return
+            return False
 
         layers = [
             self.viewer.layers[name]
@@ -4154,17 +4398,17 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             )
         except FlimariNotAvailable as exc:
             show_error(str(exc))
-            return
+            return False
         except ValueError as exc:
             show_error(str(exc))
-            return
+            return False
         except RuntimeError as exc:
             # Bridge still refused after we tried opening FLIMari's dock.
             show_error(str(exc))
-            return
+            return False
         except Exception as exc:  # noqa: BLE001
             show_error(f"Error sending to FLIMari: {exc}")
-            return
+            return False
 
         message = (
             f"Opened FLIMari and sent {len(sent)} layer(s) to it."
@@ -4180,6 +4424,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         if skipped:
             message += f" Skipped (no phasor data): {', '.join(skipped)}."
         show_info(message)
+        return True
 
     def _recover_missing_counts(self, layers):
         """Prompt for the original raw file of phasor layers lacking counts.
@@ -4252,6 +4497,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             for name in selected_layers
         )
         self.flimari_button.setEnabled(can_export)
+        self.flimari_open_button.setEnabled(can_export)
 
     def _update_mask_checkbox_visibility(self, event=None):
         """Show/hide the mask checkbox based on whether any selected layer has a mask."""
@@ -4305,6 +4551,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
         self._update_mask_checkbox_visibility()
         self._update_flimari_button_state()
+        self._refresh_export_button()
 
     def closeEvent(self, event):
         """Disconnect viewer signals before the widget is destroyed."""
@@ -4345,7 +4592,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
         if not selected_layers:
             show_error("No layers selected")
-            return
+            return False
 
         # Determine the extension based on selected filter
         if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
@@ -4358,6 +4605,8 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             ext = ".jpg"
         elif selected_filter == "Layer as TIFF image (*.tif)":
             ext = ".tif"
+        elif selected_filter == "Layer as SVG image (*.svg)":
+            ext = ".svg"
         else:
             ext = ""
 
@@ -4368,7 +4617,9 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         # Remove any existing extension to get the base name
         if full_basename.endswith('.ome.tif'):
             base_name = full_basename[:-8]
-        elif full_basename.endswith(('.tif', '.csv', '.png', '.jpg', '.jpeg')):
+        elif full_basename.endswith(
+            ('.tif', '.csv', '.png', '.jpg', '.jpeg', '.svg')
+        ):
             base_name = os.path.splitext(full_basename)[0]
         else:
             base_name = full_basename
@@ -4405,6 +4656,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                     "Layer as PNG image (*.png)",
                     "Layer as JPEG image (*.jpg)",
                     "Layer as TIFF image (*.tif)",
+                    "Layer as SVG image (*.svg)",
                 ]:
                     export_layer_as_image(
                         final_path,
@@ -4413,8 +4665,10 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                         current_step=self.viewer.dims.current_step,
                     )
                 show_info(f"Exported {export_layer.name} to {final_path}")
+                return True
             except Exception as e:  # noqa: BLE001
                 show_error(f"Error exporting {layer_name}: {str(e)}")
+                return False
         else:
             # Multiple layers export
             exported_count = 0
@@ -4443,6 +4697,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                         "Layer as PNG image (*.png)",
                         "Layer as JPEG image (*.jpg)",
                         "Layer as TIFF image (*.tif)",
+                        "Layer as SVG image (*.svg)",
                     ]:
                         export_layer_as_image(
                             layer_file_path,
@@ -4459,3 +4714,4 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 show_info(
                     f"Successfully exported {exported_count} layer(s) to {directory}"
                 )
+            return exported_count > 0

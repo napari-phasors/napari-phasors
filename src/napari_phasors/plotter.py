@@ -2,6 +2,7 @@ import contextlib
 import copy
 import math
 import warnings
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +13,14 @@ from matplotlib.colorbar import Colorbar
 from matplotlib.colors import ListedColormap, LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Patch
+from matplotlib.transforms import Bbox
 from napari.layers import Image, Labels, Shapes
 from napari.utils import notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from phasorpy.phasor import phasor_center as _phasor_center
 from phasorpy.phasor import phasor_to_polar
 from qtpy.QtCore import QEvent, Qt, QTimer
-from qtpy.QtGui import QColor
+from qtpy.QtGui import QColor, QFontMetrics
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -40,6 +42,8 @@ from qtpy.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
+    QStyle,
+    QStyleOptionButton,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -64,7 +68,6 @@ from ._parallel import (
     set_parallel_items_enabled,
 )
 from ._settings_store import (
-    ANALYSIS_LABELS,
     ANALYSIS_SETTINGS_KEYS,
     LayerSettingsStore,
     format_layer_list,
@@ -96,11 +99,12 @@ from ._utils import (
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     confirm_unassigned_layers,
-    create_settings_note_label,
     make_experimental_warning,
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
+    parse_component_analysis_label,
+    phasor_layer_base_name,
     phasor_storage_dtype,
     populate_colormap_combobox,
     rank_mask_candidates,
@@ -108,7 +112,7 @@ from ._utils import (
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
     set_phasor_storage_dtype,
-    set_settings_note,
+    split_analysis_layer_name,
     split_items_by_group,
     unassigned_layer_labels,
     update_frequency_in_metadata,
@@ -123,6 +127,37 @@ from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
 
 
+class _SameArrays:
+    """Cache-key part equal only while it names the very same G/S arrays.
+
+    A layer whose G or S array was replaced (or removed) no longer matches,
+    so the phasor caches recompute without anyone invalidating them. Weak
+    references keep the caches from holding replaced arrays alive, and
+    from mistaking a new array that reuses a freed one's ``id`` for it.
+    """
+
+    __slots__ = ("_refs",)
+
+    def __init__(self, layers):
+        self._refs = tuple(
+            None if array is None else weakref.ref(array)
+            for layer in layers
+            for array in (layer.metadata.get("G"), layer.metadata.get("S"))
+        )
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, _SameArrays)
+            and len(self._refs) == len(other._refs)
+            and all(
+                a is b or (a is not None and b is not None and a() is b())
+                for a, b in zip(self._refs, other._refs, strict=True)
+            )
+        )
+
+    __hash__ = None
+
+
 def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
     """Set foreground color and light background on each item in *combo*.
 
@@ -131,13 +166,12 @@ def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
     colored text stays readable against napari's dark theme.
     """
     bg = QColor(160, 160, 160, 160)
-    offset = combo.header_count
     for i, lbl in enumerate(lbl for lbl in unique_labels if lbl > 0):
         rgba = labels_layer.get_color(lbl)
         if rgba is None:
             continue
         r, g, b = (int(c * 255) for c in rgba[:3])
-        item = combo.model().item(offset + i)
+        item = combo.model().item(i)
         if item is None:
             continue
         item.setForeground(QColor(r, g, b))
@@ -179,6 +213,8 @@ class MaskAssignmentDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Assign Mask Layers")
         self.setMinimumWidth(560)
+
+        self._user_resized = False
 
         if current_assignments is None:
             current_assignments = {}
@@ -223,6 +259,8 @@ class MaskAssignmentDialog(QDialog):
         form_widget = QWidget()
         form_layout = QFormLayout(form_widget)
         form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self._scroll = scroll
+        self._form_widget = form_widget
 
         self._combos = {}  # image_layer_name -> QComboBox
         self._invert_checks = {}  # image_layer_name -> QCheckBox
@@ -254,40 +292,15 @@ class MaskAssignmentDialog(QDialog):
                 placeholder="All Labels",
                 enable_primary_layer=False,
                 unit="labels",
-                show_select_all_none=False,  # DO NOT show select all/none as items in checklist
                 no_selection_text="No labels",
+                show_select_all_buttons=True,
             )
             label_combo.setToolTip("Select specific labels for the mask.")
             self._label_combos[name] = label_combo
             label_container_layout.addWidget(label_combo, 1)
 
-            # Clickable All / None labels
-            select_all_lbl = QLabel(
-                '<a href="all" style="color: gray;">All</a>'
-            )
-            select_all_lbl.setTextFormat(Qt.RichText)
-            select_all_lbl.setCursor(Qt.PointingHandCursor)
-            select_all_lbl.setToolTip("Select all labels")
-            label_container_layout.addWidget(select_all_lbl)
-
-            sep_lbl = QLabel("|")
-            sep_lbl.setStyleSheet("color: gray;")
-            label_container_layout.addWidget(sep_lbl)
-
-            select_none_lbl = QLabel(
-                '<a href="none" style="color: gray;">None</a>'
-            )
-            select_none_lbl.setTextFormat(Qt.RichText)
-            select_none_lbl.setCursor(Qt.PointingHandCursor)
-            select_none_lbl.setToolTip("Deselect all labels")
-            label_container_layout.addWidget(select_none_lbl)
-
-            select_all_lbl.linkActivated.connect(
-                lambda _, lc=label_combo: lc.selectAll()
-            )
-            select_none_lbl.linkActivated.connect(
-                lambda _, lc=label_combo: lc.deselectAll()
-            )
+            # Segmented check-all / uncheck-all buttons
+            label_container_layout.addWidget(label_combo.select_all_buttons)
 
             label_container.setVisible(False)
             label_combo.setVisible(False)
@@ -341,6 +354,7 @@ class MaskAssignmentDialog(QDialog):
                     container.setVisible(False)
                     lc.setVisible(False)
                 self._sync_invert_all_check()
+                self._fit_width_to_content()
 
             combo.currentTextChanged.connect(_on_mask_changed)
             combo.currentTextChanged.connect(self._sync_apply_all_combo)
@@ -387,6 +401,54 @@ class MaskAssignmentDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _fit_width_to_content(self):
+        """Widen the dialog so every row is fully visible.
+
+        The width is capped at the available screen width. It is skipped
+        once the user has resized the dialog by hand.
+        """
+        if self._user_resized or not self.isVisible():
+            return
+        self._form_widget.layout().activate()
+        margins = self.layout().contentsMargins()
+        extra = (
+            self._scroll.frameWidth() * 2
+            + self._scroll.verticalScrollBar().sizeHint().width()
+            + margins.left()
+            + margins.right()
+        )
+        wanted = max(
+            self.minimumWidth(), self._form_widget.sizeHint().width() + extra
+        )
+        screen = self.screen()
+        if screen is not None:
+            frame = self.frameGeometry().width() - self.width()
+            wanted = min(wanted, screen.availableGeometry().width() - frame)
+        if wanted != self.width():
+            self.resize(wanted, self.height())
+            screen = self.screen()
+            if screen is not None:
+                geo = self.frameGeometry()
+                avail = screen.availableGeometry()
+                if geo.right() > avail.right() or geo.left() < avail.left():
+                    geo.moveLeft(
+                        max(avail.left(), avail.right() - geo.width())
+                    )
+                    self.move(geo.topLeft())
+
+    def showEvent(self, event):
+        """Fit the width to the content when first shown."""
+        super().showEvent(event)
+        self._fit_width_to_content()
+        # Combo boxes settle on their final size once shown; fit again.
+        QTimer.singleShot(0, self._fit_width_to_content)
+
+    def resizeEvent(self, event):
+        """Stop auto-fitting once the window system resizes the dialog."""
+        super().resizeEvent(event)
+        if event.spontaneous():
+            self._user_resized = True
 
     def _on_auto_assign(self):
         """Pair each image layer with the best matching mask layer by name.
@@ -490,7 +552,7 @@ class MaskAssignmentDialog(QDialog):
         for name, combo in self._label_combos.items():
             if not combo.isHidden():
                 checked = [int(lbl) for lbl in combo.checkedItems()]
-                all_count = combo.model().rowCount() - combo._header_count
+                all_count = combo.model().rowCount()
                 # Normalize: if all labels are checked, store None (= "all labels")
                 assignments[name] = (
                     None if len(checked) == all_count else checked
@@ -1709,6 +1771,8 @@ class PlotterWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         # Initialize data attributes
+        # Whether the plot currently shows no layer at all.
+        self._showing_no_layer = False
         self._g_array = None
         self._s_array = None
         self._g_original_array = None
@@ -1797,7 +1861,9 @@ class PlotterWidget(QWidget):
         image_layer_label = QLabel("Phasor Layers:")
         image_layer_label.setStyleSheet("font-weight: bold;")
         image_layer_layout.addWidget(image_layer_label)
-        self.image_layers_checkable_combobox = CheckableComboBox()
+        self.image_layers_checkable_combobox = CheckableComboBox(
+            show_select_all_buttons=True
+        )
         self.image_layers_checkable_combobox.setToolTip(
             "Select one or more layers to plot. Check multiple layers to merge their phasor data.\n"
             "Click 'Set as primary' next to a layer name to change the primary layer.\n"
@@ -1815,33 +1881,9 @@ class PlotterWidget(QWidget):
         )
         image_layer_layout.addWidget(self.image_layers_checkable_combobox, 1)
 
-        # "All | None" clickable labels for quick bulk selection
-        self._select_all_label = QLabel(
-            '<a href="all" style="color: gray;">All</a>'
-        )
-        self._select_all_label.setTextFormat(Qt.RichText)
-        self._select_all_label.setCursor(Qt.PointingHandCursor)
-        self._select_all_label.setToolTip("Select all layers")
-        image_layer_layout.addWidget(self._select_all_label)
-
-        separator_label = QLabel("|")
-        separator_label.setStyleSheet("color: gray;")
-        image_layer_layout.addWidget(separator_label)
-
-        self._deselect_all_label = QLabel(
-            '<a href="none" style="color: gray;">None</a>'
-        )
-        self._deselect_all_label.setTextFormat(Qt.RichText)
-        self._deselect_all_label.setCursor(Qt.PointingHandCursor)
-        self._deselect_all_label.setToolTip("Deselect all layers")
-        image_layer_layout.addWidget(self._deselect_all_label)
-
-        # Connect All/None labels (use lambdas to consume the href argument)
-        self._select_all_label.linkActivated.connect(
-            lambda _: self._on_select_all_clicked()
-        )
-        self._deselect_all_label.linkActivated.connect(
-            lambda _: self._on_deselect_all_clicked()
+        # Segmented check-all / uncheck-all buttons for bulk selection
+        image_layer_layout.addWidget(
+            self.image_layers_checkable_combobox.select_all_buttons
         )
 
         image_layer_widget = QWidget()
@@ -1862,7 +1904,10 @@ class PlotterWidget(QWidget):
         self.harmonic_spinbox = QSpinBox()
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
-        harmonics_and_mask_container.addWidget(self.harmonic_spinbox, 1)
+        # A small integer needs no more than this; the width it gives up
+        # goes to the mask summary, which has words to fit.
+        self.harmonic_spinbox.setMaximumWidth(50)
+        harmonics_and_mask_container.addWidget(self.harmonic_spinbox, 0)
 
         # Per-layer mask assignments: {image_layer_name: mask_layer_name}
         self._mask_assignments = {}
@@ -1882,9 +1927,27 @@ class PlotterWidget(QWidget):
         # bulk loads).
         self._connected_layer_ids = set()
 
-        # Mask label and combobox (shown when 0-1 layers selected)
-        self.mask_layer_label = QLabel("Mask Layer:")
-        harmonics_and_mask_container.addWidget(self.mask_layer_label)
+        # Mask summary button. It states the whole mask in words and opens
+        # the editor: the popover below for a single selected layer, the
+        # per-layer assignment dialog for several. One control for any
+        # selection count, so the row never reshapes itself.
+        self.mask_button_label = QLabel("Mask:")
+        harmonics_and_mask_container.addWidget(self.mask_button_label)
+        self.mask_summary_button = QPushButton("None")
+        # Enough room for a mask name plus one qualifier before eliding;
+        # the row squeezes the harmonic spinbox rather than this.
+        self.mask_summary_button.setMinimumWidth(130)
+        self.mask_summary_button.clicked.connect(self._open_mask_editor)
+        # Watch for resizes so the summary can be elided to fit (see
+        # ``_elide_mask_summary``) rather than clipped mid-word.
+        self.mask_summary_button.installEventFilter(self)
+        harmonics_and_mask_container.addWidget(self.mask_summary_button, 1)
+        self._mask_summary_full_text = "None"
+
+        # --- mask editor popover contents ---------------------------------
+        # These live in the popover, not in the row, so each one gets the
+        # full width of the editor instead of a slice of a 340px dock.
+        self.mask_layer_label = QLabel("Mask layer")
         self.mask_layer_combobox = QComboBox()
         self.mask_layer_combobox.setToolTip(
             "Create or select a Labels or Shapes layer with a "
@@ -1892,9 +1955,10 @@ class PlotterWidget(QWidget):
             "Selecting 'None' will disable masking."
         )
         self.mask_layer_combobox.addItem("None")
-        harmonics_and_mask_container.addWidget(self.mask_layer_combobox, 1)
 
-        # Mask labels container (combobox and its All/None buttons)
+        self.mask_labels_label = QLabel("Labels")
+
+        # Mask labels container (combobox and its select all/none buttons)
         self.mask_labels_container = QWidget()
         mask_labels_layout = QHBoxLayout(self.mask_labels_container)
         mask_labels_layout.setContentsMargins(0, 0, 0, 0)
@@ -1904,8 +1968,8 @@ class PlotterWidget(QWidget):
             placeholder="All Labels",
             enable_primary_layer=False,
             unit="labels",
-            show_select_all_none=False,  # DO NOT show select all/none as items in checklist
             no_selection_text="No labels",
+            show_select_all_buttons=True,
         )
         self.mask_labels_combobox.setToolTip(
             "Select specific labels to use as the mask. If none are selected, all are used."
@@ -1915,58 +1979,23 @@ class PlotterWidget(QWidget):
         )
         mask_labels_layout.addWidget(self.mask_labels_combobox, 1)
 
-        # Clickable All / None labels
-        self.mask_labels_select_all = QLabel(
-            '<a href="all" style="color: gray;">All</a>'
+        # Segmented check-all / uncheck-all buttons
+        self.mask_labels_select_buttons = (
+            self.mask_labels_combobox.select_all_buttons
         )
-        self.mask_labels_select_all.setTextFormat(Qt.RichText)
-        self.mask_labels_select_all.setCursor(Qt.PointingHandCursor)
-        self.mask_labels_select_all.setToolTip("Select all labels")
-        mask_labels_layout.addWidget(self.mask_labels_select_all)
+        mask_labels_layout.addWidget(self.mask_labels_select_buttons)
 
-        self.mask_labels_separator = QLabel("|")
-        self.mask_labels_separator.setStyleSheet("color: gray;")
-        mask_labels_layout.addWidget(self.mask_labels_separator)
-
-        self.mask_labels_select_none = QLabel(
-            '<a href="none" style="color: gray;">None</a>'
-        )
-        self.mask_labels_select_none.setTextFormat(Qt.RichText)
-        self.mask_labels_select_none.setCursor(Qt.PointingHandCursor)
-        self.mask_labels_select_none.setToolTip("Deselect all labels")
-        mask_labels_layout.addWidget(self.mask_labels_select_none)
-
-        self.mask_labels_select_all.linkActivated.connect(
-            lambda _: self.mask_labels_combobox.selectAll()
-        )
-        self.mask_labels_select_none.linkActivated.connect(
-            lambda _: self.mask_labels_combobox.deselectAll()
-        )
-
-        self.mask_labels_container.setVisible(False)
-        self.mask_labels_combobox.setVisible(False)
-        harmonics_and_mask_container.addWidget(self.mask_labels_container, 1)
-
-        # Invert mask checkbox (next to combobox)
-        self.mask_invert_checkbox = QCheckBox("Invert")
+        # Invert mask checkbox
+        self.mask_invert_checkbox = QCheckBox("Invert mask")
         self.mask_invert_checkbox.setToolTip(
             "Invert the mask: exclude pixels inside the mask "
             "instead of those outside."
         )
         self.mask_invert_checkbox.setEnabled(False)
         self.mask_invert_checkbox.toggled.connect(self._on_mask_invert_changed)
-        harmonics_and_mask_container.addWidget(self.mask_invert_checkbox)
 
-        # Mask assign button (shown when >1 layers selected)
-        self.mask_assign_button = QPushButton("Assign Masks...")
-        self.mask_assign_button.setToolTip(
-            "Assign different mask layers to each selected image layer."
-        )
-        self.mask_assign_button.clicked.connect(
-            self._open_mask_assignment_dialog
-        )
-        self.mask_assign_button.setVisible(False)
-        harmonics_and_mask_container.addWidget(self.mask_assign_button, 1)
+        self._build_mask_editor_popover()
+        self._set_mask_labels_visible(False)
 
         self.controls_container.layout().addLayout(
             harmonics_and_mask_container
@@ -2807,6 +2836,12 @@ class PlotterWidget(QWidget):
         }
         if obj in watched and event.type() in {QEvent.Resize, QEvent.Show}:
             self._resize_canvas_timer.start()
+        elif obj is getattr(
+            self, 'mask_summary_button', None
+        ) and event.type() in {QEvent.Resize, QEvent.Show}:
+            # Refit on show too: the first summary is set before the row has
+            # been laid out, when the button has no meaningful width yet.
+            self._elide_mask_summary()
         return super().eventFilter(obj, event)
 
     def resizeEvent(self, event):
@@ -3075,40 +3110,6 @@ class PlotterWidget(QWidget):
 
         self.canvas_widget.figure.canvas.draw_idle()
 
-    def _on_select_all_clicked(self):
-        """Select all layers, briefly flashing the "All" label bold green."""
-        # Highlight (and force an immediate repaint) before the selection work
-        # runs so the feedback is instant rather than lagging behind the
-        # synchronous plot update triggered by ``selectAll``.
-        self._select_all_label.setText(
-            '<a href="all" style="color: green; font-weight: bold;">All</a>'
-        )
-        self._select_all_label.repaint()
-        self.image_layers_checkable_combobox.selectAll()
-        QTimer.singleShot(
-            200,
-            lambda: self._select_all_label.setText(
-                '<a href="all" style="color: gray;">All</a>'
-            ),
-        )
-
-    def _on_deselect_all_clicked(self):
-        """Deselect all layers, briefly flashing the "None" label bold red."""
-        # Highlight (and force an immediate repaint) before the selection work
-        # runs so the feedback is instant rather than lagging behind the
-        # synchronous plot update triggered by ``deselectAll``.
-        self._deselect_all_label.setText(
-            '<a href="none" style="color: red; font-weight: bold;">None</a>'
-        )
-        self._deselect_all_label.repaint()
-        self.image_layers_checkable_combobox.deselectAll()
-        QTimer.singleShot(
-            200,
-            lambda: self._deselect_all_label.setText(
-                '<a href="none" style="color: gray;">None</a>'
-            ),
-        )
-
     def get_selected_layer_names(self):
         """Get the names of all selected (checked) layers.
 
@@ -3223,45 +3224,6 @@ class PlotterWidget(QWidget):
             if key in settings
         }
 
-    def settings_overwrite_message(
-        self,
-        group,
-        values=None,
-        merge=None,
-        action="Running this analysis",
-        keys=None,
-    ):
-        """Return the note naming the layers whose settings a run replaces.
-
-        Only the non-primary selected layers are considered: their stored
-        *group* settings (only *keys* of them, if given) are replaced by the
-        primary layer's when the analysis runs on all of them. Returns
-        ``None`` when nothing would be overwritten.
-        """
-        primary = self.get_primary_layer()
-        others = [
-            layer
-            for layer in self.get_selected_layers()
-            if layer is not primary
-        ]
-        if not others:
-            return None
-        if values is None:
-            values = self.pending_settings_values(group)
-        overwritten = self.settings_store.overwritten_layers(
-            others,
-            ANALYSIS_SETTINGS_KEYS[group] if keys is None else keys,
-            values,
-            merge,
-        )
-        if not overwritten:
-            return None
-        names = format_layer_list(layer.name for layer in overwritten)
-        return (
-            f"{action} will overwrite the {ANALYSIS_LABELS[group]} "
-            f"parameters stored in: {names}."
-        )
-
     @staticmethod
     def _as_frequency(value):
         """Return *value* as a valid frequency (MHz), or ``None``."""
@@ -3346,22 +3308,17 @@ class PlotterWidget(QWidget):
         return messages
 
     def _refresh_settings_notes(self):
-        """Update the notes about settings a run would overwrite, per tab."""
+        """Update the notes about the layers' frequencies, per tab."""
         if getattr(self, '_is_closing', False) or getattr(
             self, '_refreshing_settings_notes', False
         ):
             return
         self._refreshing_settings_notes = True
         try:
-            with contextlib.suppress(RuntimeError, AttributeError):
-                self._refresh_plot_settings_note()
             for tab_name in (
                 'calibration_tab',
-                'filter_tab',
                 'phasor_mapping_tab',
                 'fret_tab',
-                'components_tab',
-                'selection_tab',
             ):
                 tab = getattr(self, tab_name, None)
                 refresh = getattr(tab, '_refresh_settings_note', None)
@@ -3370,40 +3327,6 @@ class PlotterWidget(QWidget):
                         refresh()
         finally:
             self._refreshing_settings_notes = False
-
-    def _refresh_plot_settings_note(self):
-        """Name the selected layers storing other plot settings than shown."""
-        label = getattr(self, '_plot_settings_note', None)
-        if label is None:
-            return
-        primary = self.get_primary_layer()
-        others = [
-            layer
-            for layer in self.get_selected_layers()
-            if layer is not primary
-        ]
-        message = None
-        if others:
-            current = self._current_plot_settings()
-            differing = [
-                layer
-                for layer in others
-                if any(
-                    key in self.settings_store.committed(layer)
-                    and not settings_equal(
-                        self.settings_store.committed(layer)[key], value
-                    )
-                    for key, value in current.items()
-                )
-            ]
-            if differing:
-                names = format_layer_list(layer.name for layer in differing)
-                message = (
-                    f"The plot settings stored in {names} differ from the "
-                    "ones shown; changing a plot setting stores it in all "
-                    "selected layers."
-                )
-        set_settings_note(label, [message])
 
     def _get_default_plot_settings(self):
         """Get default settings dictionary for plot parameters."""
@@ -3569,10 +3492,20 @@ class PlotterWidget(QWidget):
                         image_layer.metadata['mask'],
                         name=matching_mask_layer_name,
                         scale=image_layer.scale,
+                        units=image_layer.units,
                     )
-                self.mask_layer_combobox.setCurrentText(
-                    matching_mask_layer_name
-                )
+                # With several layers selected each keeps its own mask,
+                # invert and labels; the editor change must not re-apply the
+                # primary layer's mask (with the checkbox's stale invert) to
+                # all of them.
+                multi_selection = len(self.get_selected_layer_names()) > 1
+                self.mask_layer_combobox.blockSignals(multi_selection)
+                try:
+                    self.mask_layer_combobox.setCurrentText(
+                        matching_mask_layer_name
+                    )
+                finally:
+                    self.mask_layer_combobox.blockSignals(False)
 
             # Keys the layer has no value for show their defaults.
             settings = {
@@ -5996,8 +5929,6 @@ class PlotterWidget(QWidget):
         sections_layout = QVBoxLayout(contents)
         sections_layout.setContentsMargins(0, 0, 0, 0)
         sections_layout.addWidget(self._import_settings_box)
-        self._plot_settings_note = create_settings_note_label(contents)
-        sections_layout.addWidget(self._plot_settings_note)
         sections_layout.addWidget(type_box)
         sections_layout.addWidget(appearance_box)
         sections_layout.addWidget(pc_box)
@@ -7438,10 +7369,23 @@ class PlotterWidget(QWidget):
 
             # If image layers were renamed, update selections and notify tabs
             old_image_layers_by_id = getattr(self, '_image_layers_by_id', {})
+            # Only phasor source images: renaming an analysis output (which
+            # the tabs do themselves when a component is renamed) is not a
+            # source rename.
+            phasor_layer_ids = {
+                id(layer)
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "G" in layer.metadata
+                and "S" in layer.metadata
+                and "G_original" in layer.metadata
+                and "S_original" in layer.metadata
+            }
             renamed_images = {
                 old_name: new_name
                 for layer_id, new_name in image_layers_by_id.items()
-                if layer_id in old_image_layers_by_id
+                if layer_id in phasor_layer_ids
+                and layer_id in old_image_layers_by_id
                 and (old_name := old_image_layers_by_id[layer_id]) != new_name
             }
             if renamed_images:
@@ -7519,10 +7463,14 @@ class PlotterWidget(QWidget):
 
             self.mask_layer_combobox.addItems(["None"] + mask_layer_names)
 
-            # Check if previously selected mask layer was deleted
+            # Check if a mask in use was deleted: the one the selector shows,
+            # or one assigned per layer through the assignment dialog.
             mask_layer_was_deleted = (
                 mask_layer_combobox_current_text != "None"
                 and mask_layer_combobox_current_text not in mask_layer_names
+            ) or any(
+                mask_name not in mask_layer_names
+                for mask_name in self._mask_assignments.values()
             )
 
             if mask_layer_combobox_current_text in mask_layer_names:
@@ -7630,14 +7578,12 @@ class PlotterWidget(QWidget):
             )
         ):
             return True
-        name = layer.name
-        if " fractions: " in name or " fraction: " in name:
-            return True
-        if name.startswith("FRET efficiency: "):
-            return True
-        return any(
-            name.startswith(f"{output_type}: ")
-            for output_type in (
+        analysis = split_analysis_layer_name(layer.name)[1]
+        return (
+            parse_component_analysis_label(analysis) is not None
+            or analysis == "FRET efficiency"
+            or analysis
+            in (
                 "Phase",
                 "Modulation",
                 "Apparent Phase Lifetime",
@@ -7714,6 +7660,11 @@ class PlotterWidget(QWidget):
         self._invalidate_features_cache()
 
         if not layer_name:
+            if self._showing_no_layer:
+                # Already torn down: the selection was emptied through the
+                # combobox and a caller re-applies it.
+                return
+            self._showing_no_layer = True
             self._g_array = None
             self._s_array = None
             self._g_original_array = None
@@ -7754,6 +7705,7 @@ class PlotterWidget(QWidget):
             self.canvas_widget.figure.canvas.draw_idle()
             return
 
+        self._showing_no_layer = False
         layer = self.viewer.layers[layer_name]
         layer_metadata = layer.metadata
 
@@ -7947,8 +7899,8 @@ class PlotterWidget(QWidget):
         their derived analysis layers.
 
         Association is determined by napari-phasors' layer naming
-        convention: analysis layers are named ``"<descriptor>: <intensity
-        layer name>"``. Layers that are not associated with any phasor
+        convention: analysis layers are named ``"<intensity layer name without
+        [Phasor]> [<analysis>]"``. Layers that are not associated with any phasor
         intensity layer (e.g. unrelated reference layers) are left
         untouched. Redundant writes to ``layer.visible`` are skipped so
         napari does not emit unnecessary redraw events.
@@ -7958,25 +7910,22 @@ class PlotterWidget(QWidget):
         selected_names : set of str
             Names of the currently selected intensity layers.
         """
-        # Intensity layer names sorted longest-first so the most specific
-        # suffix wins when one layer name is a suffix of another.
-        intensity_names = sorted(
-            (
-                layer.name
-                for layer in self.viewer.layers
-                if self._is_phasor_intensity_layer(layer)
-            ),
-            key=len,
-            reverse=True,
-        )
-        intensity_name_set = set(intensity_names)
+        intensity_name_set = {
+            layer.name
+            for layer in self.viewer.layers
+            if self._is_phasor_intensity_layer(layer)
+        }
+        intensity_by_base = {
+            phasor_layer_base_name(name): name
+            for name in sorted(intensity_name_set)
+        }
 
         def associated_intensity_name(layer_name):
             """Return the intensity layer this layer derives from, or None."""
-            for intensity_name in intensity_names:
-                if layer_name.endswith(f": {intensity_name}"):
-                    return intensity_name
-            return None
+            base, analysis = split_analysis_layer_name(layer_name)
+            if analysis is None:
+                return None
+            return intensity_by_base.get(base)
 
         for layer in self.viewer.layers:
             if layer.name in intensity_name_set:
@@ -8360,11 +8309,47 @@ class PlotterWidget(QWidget):
             np.asarray(mask_data).copy(),
             name=name,
             scale=reference_layer.scale,
+            units=reference_layer.units,
         )
         return name
 
+    def _build_mask_editor_popover(self):
+        """Build the popover that holds the single-layer mask controls."""
+        self.mask_editor_popover = QWidget(self, Qt.Popup)
+        layout = QVBoxLayout(self.mask_editor_popover)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+        layout.addWidget(self.mask_layer_label)
+        layout.addWidget(self.mask_layer_combobox)
+        layout.addWidget(self.mask_labels_label)
+        layout.addWidget(self.mask_labels_container)
+        layout.addWidget(self.mask_invert_checkbox)
+
+    def _open_mask_editor(self):
+        """Open the mask editor for the current selection.
+
+        One selected layer (or none) edits that layer's mask in the
+        popover; several open the per-layer assignment dialog.
+        """
+        if len(self.get_selected_layer_names()) > 1:
+            self._open_mask_assignment_dialog()
+        else:
+            self._show_mask_editor_popover()
+
+    def _show_mask_editor_popover(self):
+        """Show the mask editor popover under the summary button."""
+        popover = self.mask_editor_popover
+        popover.setMinimumWidth(
+            max(self.mask_summary_button.width(), popover.sizeHint().width())
+        )
+        popover.adjustSize()
+        below_button = self.mask_summary_button.rect().bottomLeft()
+        popover.move(self.mask_summary_button.mapToGlobal(below_button))
+        popover.show()
+
     def _set_mask_labels_visible(self, visible):
         """Set the visibility of the mask labels combobox and its container."""
+        self.mask_labels_label.setVisible(visible)
         self.mask_labels_container.setVisible(visible)
         self.mask_labels_combobox.setVisible(visible)
 
@@ -8422,10 +8407,7 @@ class PlotterWidget(QWidget):
             checked = [
                 int(lbl) for lbl in self.mask_labels_combobox.checkedItems()
             ]
-            all_count = (
-                self.mask_labels_combobox.model().rowCount()
-                - self.mask_labels_combobox._header_count
-            )
+            all_count = self.mask_labels_combobox.model().rowCount()
             # Normalize: all checked == "All Labels" == None
             labels = None if len(checked) == all_count else checked
         else:
@@ -8459,6 +8441,7 @@ class PlotterWidget(QWidget):
         if hasattr(self, 'filter_tab'):
             self._reapply_filter_and_threshold(selected_layers)
 
+        self._update_mask_summary_text()
         self.plot()
 
     def _on_mask_data_changed(self, event):
@@ -8543,10 +8526,7 @@ class PlotterWidget(QWidget):
         checked = [
             int(lbl) for lbl in self.mask_labels_combobox.checkedItems()
         ]
-        all_count = (
-            self.mask_labels_combobox.model().rowCount()
-            - self.mask_labels_combobox.header_count
-        )
+        all_count = self.mask_labels_combobox.model().rowCount()
         labels = None if len(checked) == all_count else checked
         for image_layer in self.get_selected_layers():
             self._mask_label_assignments[image_layer.name] = labels
@@ -8566,86 +8546,133 @@ class PlotterWidget(QWidget):
         self._on_mask_layer_changed(text, update_labels_list=False)
 
     def _update_mask_ui_mode(self):
-        """Switch between single combobox and assign-masks button based on selection count."""
+        """Sync the mask editor and summary button with the selection.
+
+        The row itself no longer changes shape with the selection count;
+        only the summary text and which editor the button opens do.
+        """
+        selected = self.get_selected_layer_names()
+        # Sync the editor with the single selected layer's assignment
+        if len(selected) == 1:
+            assigned_mask = self._mask_assignments.get(selected[0])
+            available_masks = {
+                self.mask_layer_combobox.itemText(i)
+                for i in range(self.mask_layer_combobox.count())
+            }
+            if assigned_mask in available_masks:
+                current_mask = assigned_mask
+            elif self.mask_layer_combobox.currentText() in available_masks:
+                current_mask = self.mask_layer_combobox.currentText()
+            else:
+                current_mask = "None"
+            self.mask_layer_combobox.blockSignals(True)
+            self.mask_layer_combobox.setCurrentText(current_mask)
+            self.mask_layer_combobox.blockSignals(False)
+            # Sync invert checkbox and labels
+            invert = self._mask_invert_assignments.get(selected[0], False)
+            self.mask_invert_checkbox.setChecked(invert)
+            self.mask_invert_checkbox.setEnabled(current_mask != "None")
+
+            if (
+                current_mask != "None"
+                and current_mask in self.viewer.layers
+                and isinstance(self.viewer.layers[current_mask], Labels)
+            ):
+                self._set_mask_labels_visible(True)
+                self.mask_labels_combobox.blockSignals(True)
+                self.mask_labels_combobox.clear()
+                layer = self.viewer.layers[current_mask]
+                unique_labels = np.unique(layer.data)
+                valid_labels = [str(lbl) for lbl in unique_labels if lbl > 0]
+                self.mask_labels_combobox.addItems(valid_labels)
+                labels = self._mask_label_assignments.get(selected[0], None)
+                if labels is None:
+                    # No specific labels stored — default to all checked
+                    self.mask_labels_combobox.selectAll()
+                else:
+                    self.mask_labels_combobox.setCheckedItems(
+                        [str(lbl) for lbl in labels]
+                    )
+                self.mask_labels_combobox.blockSignals(False)
+            else:
+                self._set_mask_labels_visible(False)
+
+        self._update_mask_summary_text()
+
+    def _mask_summary_for_selection(self):
+        """Return (summary, tooltip) describing the current mask state."""
         selected = self.get_selected_layer_names()
         if len(selected) > 1:
-            # Multi-layer mode: show button, hide combobox
-            self.mask_layer_label.setVisible(False)
-            self.mask_layer_combobox.setVisible(False)
-            self._set_mask_labels_visible(False)
-            self.mask_invert_checkbox.setVisible(False)
-            self.mask_assign_button.setVisible(True)
-            self._update_mask_assign_button_text()
-        else:
-            # Single-layer mode: show combobox, hide button
-            self.mask_layer_label.setVisible(True)
-            self.mask_layer_combobox.setVisible(True)
-            # mask_labels_combobox visibility is managed by _on_mask_layer_changed
-            self.mask_invert_checkbox.setVisible(True)
-            self.mask_assign_button.setVisible(False)
-            # Sync the combobox with current assignment for the single selected layer
-            if selected:
-                assigned_mask = self._mask_assignments.get(selected[0])
-                available_masks = {
-                    self.mask_layer_combobox.itemText(i)
-                    for i in range(self.mask_layer_combobox.count())
-                }
-                if assigned_mask in available_masks:
-                    current_mask = assigned_mask
-                elif self.mask_layer_combobox.currentText() in available_masks:
-                    current_mask = self.mask_layer_combobox.currentText()
-                else:
-                    current_mask = "None"
-                self.mask_layer_combobox.blockSignals(True)
-                self.mask_layer_combobox.setCurrentText(current_mask)
-                self.mask_layer_combobox.blockSignals(False)
-                # Sync invert checkbox and labels
-                invert = self._mask_invert_assignments.get(selected[0], False)
-                self.mask_invert_checkbox.setChecked(invert)
-                self.mask_invert_checkbox.setEnabled(current_mask != "None")
-
-                if (
-                    current_mask != "None"
-                    and current_mask in self.viewer.layers
-                    and isinstance(self.viewer.layers[current_mask], Labels)
-                ):
-                    self._set_mask_labels_visible(True)
-                    self.mask_labels_combobox.blockSignals(True)
-                    self.mask_labels_combobox.clear()
-                    layer = self.viewer.layers[current_mask]
-                    unique_labels = np.unique(layer.data)
-                    valid_labels = [
-                        str(lbl) for lbl in unique_labels if lbl > 0
-                    ]
-                    self.mask_labels_combobox.addItems(valid_labels)
-                    labels = self._mask_label_assignments.get(
-                        selected[0], None
-                    )
-                    if labels is None:
-                        # No specific labels stored — default to all checked
-                        self.mask_labels_combobox.selectAll()
-                    else:
-                        self.mask_labels_combobox.setCheckedItems(
-                            [str(lbl) for lbl in labels]
-                        )
-                    self.mask_labels_combobox.blockSignals(False)
-                else:
-                    self._set_mask_labels_visible(False)
-
-    def _update_mask_assign_button_text(self):
-        """Update the mask assign button text to show assignment summary."""
-        selected = self.get_selected_layer_names()
-        assigned = [
-            name
-            for name in selected
-            if self._mask_assignments.get(name, "None") != "None"
-        ]
-        if assigned:
-            self.mask_assign_button.setText(
-                f"({len(assigned)}/{len(selected)} layers masked)"
+            assigned = [
+                name
+                for name in selected
+                if self._mask_assignments.get(name, "None") != "None"
+            ]
+            # The "Mask:" caption beside the button already supplies the
+            # noun, so the summary only has to carry the count.
+            summary = (
+                f"{len(assigned)} of {len(selected)} layers"
+                if assigned
+                else "None"
             )
-        else:
-            self.mask_assign_button.setText("Assign Masks...")
+            return summary, (
+                f"{len(assigned)} of {len(selected)} selected layers masked. "
+                "Click to assign a mask to each one."
+            )
+
+        mask = self.mask_layer_combobox.currentText()
+        if mask == "None":
+            return (
+                "None",
+                "No mask. Click to restrict the analysis to a region.",
+            )
+
+        # Only mention labels when they actually narrow the mask; "all of
+        # them" is the same mask as "no label filter" and just adds noise.
+        parts = [mask]
+        checked = self.mask_labels_combobox.checkedItems()
+        total = len(self.mask_labels_combobox.allItems())
+        if total and 0 < len(checked) < total:
+            noun = "label" if len(checked) == 1 else "labels"
+            parts.append(f"{len(checked)} {noun}")
+        if self.mask_invert_checkbox.isChecked():
+            parts.append("inverted")
+        summary = " \u00b7 ".join(parts)
+        return summary, f"Masked by {summary}. Click to edit."
+
+    def _update_mask_summary_text(self):
+        """Refresh the mask summary button's text and tooltip."""
+        summary, tooltip = self._mask_summary_for_selection()
+        self._mask_summary_full_text = summary
+        self.mask_summary_button.setToolTip(tooltip)
+        self._elide_mask_summary()
+
+    def _elide_mask_summary(self):
+        """Fit the summary to the button, eliding the tail if needed.
+
+        The head identifies the mask ("cells", "2 of 3"); the tail only
+        qualifies it, so the tail is what can be dropped. The full text
+        stays available in the tooltip.
+        """
+        button = self.mask_summary_button
+        # Ask the style for the button's real text area rather than
+        # guessing at its frame and padding, which the napari theme sets.
+        option = QStyleOptionButton()
+        option.initFrom(button)
+        available = max(
+            0,
+            button.style()
+            .subElementRect(QStyle.SE_PushButtonContents, option, button)
+            .width(),
+        )
+        metrics = QFontMetrics(button.font())
+        button.setText(
+            metrics.elidedText(
+                self._mask_summary_full_text, Qt.ElideRight, available
+            )
+            if available
+            else self._mask_summary_full_text
+        )
 
     def _open_mask_assignment_dialog(self):
         """Open the mask assignment dialog for multi-layer mode."""
@@ -8731,7 +8758,7 @@ class PlotterWidget(QWidget):
         if hasattr(self, 'filter_tab'):
             self._reapply_filter_and_threshold(selected_layers)
 
-        self._update_mask_assign_button_text()
+        self._update_mask_summary_text()
         self.plot()
 
     def get_mask_for_layer(self, layer_name):
@@ -8753,7 +8780,11 @@ class PlotterWidget(QWidget):
         return self._mask_assignments.get(layer_name, "None")
 
     def refresh_phasor_data(self):
-        """Reload phasor data from the current layer metadata and replot."""
+        """Reload phasor data from the current layer metadata and replot.
+
+        Needed after editing a layer's G/S arrays in place; arrays that were
+        replaced are picked up by the next plot anyway.
+        """
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -8976,8 +9007,8 @@ class PlotterWidget(QWidget):
         layer) keeps frames directly comparable, which is the point of
         stepping through them.
 
-        The result is cached; it only depends on the selected layers, the
-        harmonic, the bin count and the frame axis.
+        The result is cached; it only depends on the selected layers and
+        their G/S arrays, the harmonic, the bin count and the frame axis.
 
         Returns
         -------
@@ -8999,6 +9030,7 @@ class PlotterWidget(QWidget):
             self.histogram_bins,
             ctx.axis,
             ctx.n_frames,
+            _SameArrays(selected_layers),
         )
         if self._frame_histogram_cache_key == cache_key:
             return self._frame_histogram_cache
@@ -9074,10 +9106,9 @@ class PlotterWidget(QWidget):
     def _invalidate_features_cache(self):
         """Invalidate the merged-features cache.
 
-        Call this whenever a layer's G/S arrays are mutated (filter,
-        threshold, calibration, mask application/restoration, etc.) so
-        that the next call to :meth:`get_merged_features` recomputes
-        from the layer metadata instead of returning stale data.
+        Replacing a layer's G/S arrays is noticed without it (the caches are
+        keyed on the arrays themselves); call this when they are edited in
+        place, as :meth:`refresh_phasor_data` does.
         """
         self._features_cache = None
         self._features_cache_key = None
@@ -9104,9 +9135,9 @@ class PlotterWidget(QWidget):
         for unified plotting. Each layer's data is extracted at the current
         harmonic and merged together.
 
-        Results are cached and reused when the selected layers and harmonic
-        haven't changed (e.g. when only visual parameters like bins or
-        colormap are modified).
+        Results are cached and reused while the selected layers, their G/S
+        arrays and the harmonic are unchanged (e.g. when only visual
+        parameters like bins or colormap are modified).
 
         Returns
         -------
@@ -9120,6 +9151,7 @@ class PlotterWidget(QWidget):
         cache_key = (
             tuple(layer.name for layer in selected_layers),
             self.harmonic,
+            _SameArrays(selected_layers),
             self.frame_context.state_key(),
         )
         if (
@@ -10036,6 +10068,7 @@ class PlotterWidget(QWidget):
         # Determine which axes to use for inset
         ax = self.canvas_widget.axes
         self.cax = ax.inset_axes([1.05, 0, 0.05, 1])
+        self.cax.set_axes_locator(self._colorbar_locator(ax))
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -10104,10 +10137,12 @@ class PlotterWidget(QWidget):
             return
 
         ax = self.canvas_widget.axes
-        # Position mapping colorbar to the right at 1.35 for compact right-hand labels.
         try:
-            # Create an inset axes for the mapping colorbar to match the density colorbar's dimensions exactly
+            # Same size as the density colorbar, placed just past its labels.
             self.mapping_cax = ax.inset_axes([1.35, 0, 0.05, 1])
+            self.mapping_cax.set_axes_locator(
+                self._colorbar_locator(ax, after=lambda: self.cax)
+            )
             self.mapping_colorbar = self.canvas_widget.figure.colorbar(
                 mappable, cax=self.mapping_cax, orientation='vertical'
             )
@@ -10130,6 +10165,35 @@ class PlotterWidget(QWidget):
             self.canvas_widget.figure.canvas.draw_idle()
         except ValueError:
             self._remove_mapping_colorbar()
+
+    #: Gap (pt) between a colorbar and whatever sits to its left.
+    _COLORBAR_GAP_PT = 8
+
+    @classmethod
+    def _colorbar_locator(cls, ax, after=None):
+        """Return an axes locator that places a colorbar right of *ax*.
+
+        The colorbar keeps the height of the plot and 5 % of its width, and
+        sits a fixed ``_COLORBAR_GAP_PT`` past the plot, or past the ticks and
+        label of the colorbar returned by *after* when that one is shown.
+        Fixed gaps, unlike offsets in axes fractions, do not grow and shrink
+        with the plot, so the layout engine can reserve room for them in one
+        pass instead of pushing the outer colorbar's labels off the figure.
+        """
+
+        def locate(cax, renderer):
+            fig = ax.figure
+            ax.apply_aspect()
+            pos = ax.get_position(original=False)
+            fig_w = fig.bbox.width
+            gap = cls._COLORBAR_GAP_PT * fig.dpi / 72 / fig_w
+            x0 = pos.x1 + gap
+            left_bar = after() if after is not None else None
+            if left_bar is not None and left_bar.get_visible():
+                x0 = left_bar.get_tightbbox(renderer).x1 / fig_w + gap
+            return Bbox.from_bounds(x0, pos.y0, 0.05 * pos.width, pos.height)
+
+        return locate
 
     def _remove_colorbar(self):
         """Remove colorbar if it exists."""
@@ -10523,6 +10587,13 @@ class PlotterWidget(QWidget):
                 combo.primaryLayerChanged.disconnect(
                     self._sync_frequency_inputs_from_metadata
                 )
+
+        # Destroying the tab widget removes its pages one by one, and each
+        # removal emits ``currentChanged``; left connected, that re-ran the
+        # tab-switch handler (and the analysis redraws behind it) on tabs
+        # that were already being deleted.
+        with contextlib.suppress(TypeError, RuntimeError, AttributeError):
+            self.tab_widget.currentChanged.disconnect(self._on_tab_changed)
 
         # Ensure child tabs run their own cleanup.
         for tab_name in (
