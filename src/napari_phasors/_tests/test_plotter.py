@@ -1264,3 +1264,22 @@ def assert_run_row_is_pinned(tab, button, autoupdate=None):
         node = node.parentWidget()
     assert node is not None
     assert tab_layout.indexOf(node) > tab_layout.indexOf(scroll)
+
+
+def test_closed_plotter_ignores_tab_changes(make_viewer_model, qtbot):
+    """Closing disconnects the tab switch, which Qt emits while it deletes
+    the tab pages, so the analysis redraws behind it cannot run then."""
+    plotter = PlotterWidget(make_viewer_model())
+    qtbot.addWidget(plotter)
+    visibility_changes = []
+    plotter.phasor_mapping_tab.on_tab_visibility_changed = (
+        visibility_changes.append
+    )
+    tabs = plotter.tab_widget
+
+    tabs.setCurrentIndex((tabs.currentIndex() + 1) % tabs.count())
+    assert len(visibility_changes) == 1
+
+    plotter.close()
+    tabs.setCurrentIndex((tabs.currentIndex() + 1) % tabs.count())
+    assert len(visibility_changes) == 1

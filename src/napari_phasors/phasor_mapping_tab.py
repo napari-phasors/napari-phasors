@@ -2170,26 +2170,17 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         return layers
 
     def _refresh_settings_note(self):
-        """Caution about settings and frequencies a Calculate would change."""
+        """Caution about the frequencies the selected layers are analysed at."""
         note = getattr(self, '_settings_note', None)
         if note is None or self.parent_widget is None:
             return
         if getattr(self, '_needs_update', False):
             # The controls still show another layer; refreshed on restore.
             return
+        messages = []
         block = self._collect_mapping_settings()
-        rule = self._mapping_merge_rule(block['output_type'])
-        messages = [
-            self.parent_widget.settings_overwrite_message(
-                'phasor_mapping_tab',
-                values={'phasor_mapping': block, 'lifetime': block},
-                merge={'phasor_mapping': rule, 'lifetime': rule},
-                keys=['phasor_mapping', 'lifetime'],
-                action="Calculating",
-            )
-        ]
         if self._output_requires_frequency(block['output_type']):
-            messages += self.parent_widget.frequency_note_messages(
+            messages = self.parent_widget.frequency_note_messages(
                 self.frequency_input.text()
             )
         set_settings_note(note, messages)

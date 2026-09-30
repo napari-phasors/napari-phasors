@@ -3329,6 +3329,7 @@ def _click_phasor_layer(qtbot, parent, layer_name):
     position = rect.center()
     position.setX(rect.left() + 5)
     qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=position)
+    combo.hidePopup()
 
 
 def _histogram_legend_labels(histogram):

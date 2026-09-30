@@ -68,7 +68,6 @@ from ._parallel import (
     set_parallel_items_enabled,
 )
 from ._settings_store import (
-    ANALYSIS_LABELS,
     ANALYSIS_SETTINGS_KEYS,
     LayerSettingsStore,
     format_layer_list,
@@ -100,7 +99,6 @@ from ._utils import (
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     confirm_unassigned_layers,
-    create_settings_note_label,
     make_experimental_warning,
     make_section,
     make_solid_contour_cmap,
@@ -114,7 +112,6 @@ from ._utils import (
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
     set_phasor_storage_dtype,
-    set_settings_note,
     split_analysis_layer_name,
     split_items_by_group,
     unassigned_layer_labels,
@@ -3167,45 +3164,6 @@ class PlotterWidget(QWidget):
             if key in settings
         }
 
-    def settings_overwrite_message(
-        self,
-        group,
-        values=None,
-        merge=None,
-        action="Running this analysis",
-        keys=None,
-    ):
-        """Return the note naming the layers whose settings a run replaces.
-
-        Only the non-primary selected layers are considered: their stored
-        *group* settings (only *keys* of them, if given) are replaced by the
-        primary layer's when the analysis runs on all of them. Returns
-        ``None`` when nothing would be overwritten.
-        """
-        primary = self.get_primary_layer()
-        others = [
-            layer
-            for layer in self.get_selected_layers()
-            if layer is not primary
-        ]
-        if not others:
-            return None
-        if values is None:
-            values = self.pending_settings_values(group)
-        overwritten = self.settings_store.overwritten_layers(
-            others,
-            ANALYSIS_SETTINGS_KEYS[group] if keys is None else keys,
-            values,
-            merge,
-        )
-        if not overwritten:
-            return None
-        names = format_layer_list(layer.name for layer in overwritten)
-        return (
-            f"{action} will overwrite the {ANALYSIS_LABELS[group]} "
-            f"parameters stored in: {names}."
-        )
-
     @staticmethod
     def _as_frequency(value):
         """Return *value* as a valid frequency (MHz), or ``None``."""
@@ -3290,22 +3248,17 @@ class PlotterWidget(QWidget):
         return messages
 
     def _refresh_settings_notes(self):
-        """Update the notes about settings a run would overwrite, per tab."""
+        """Update the notes about the layers' frequencies, per tab."""
         if getattr(self, '_is_closing', False) or getattr(
             self, '_refreshing_settings_notes', False
         ):
             return
         self._refreshing_settings_notes = True
         try:
-            with contextlib.suppress(RuntimeError, AttributeError):
-                self._refresh_plot_settings_note()
             for tab_name in (
                 'calibration_tab',
-                'filter_tab',
                 'phasor_mapping_tab',
                 'fret_tab',
-                'components_tab',
-                'selection_tab',
             ):
                 tab = getattr(self, tab_name, None)
                 refresh = getattr(tab, '_refresh_settings_note', None)
@@ -3314,40 +3267,6 @@ class PlotterWidget(QWidget):
                         refresh()
         finally:
             self._refreshing_settings_notes = False
-
-    def _refresh_plot_settings_note(self):
-        """Name the selected layers storing other plot settings than shown."""
-        label = getattr(self, '_plot_settings_note', None)
-        if label is None:
-            return
-        primary = self.get_primary_layer()
-        others = [
-            layer
-            for layer in self.get_selected_layers()
-            if layer is not primary
-        ]
-        message = None
-        if others:
-            current = self._current_plot_settings()
-            differing = [
-                layer
-                for layer in others
-                if any(
-                    key in self.settings_store.committed(layer)
-                    and not settings_equal(
-                        self.settings_store.committed(layer)[key], value
-                    )
-                    for key, value in current.items()
-                )
-            ]
-            if differing:
-                names = format_layer_list(layer.name for layer in differing)
-                message = (
-                    f"The plot settings stored in {names} differ from the "
-                    "ones shown; changing a plot setting stores it in all "
-                    "selected layers."
-                )
-        set_settings_note(label, [message])
 
     def _get_default_plot_settings(self):
         """Get default settings dictionary for plot parameters."""
@@ -3515,9 +3434,18 @@ class PlotterWidget(QWidget):
                         scale=image_layer.scale,
                         units=image_layer.units,
                     )
-                self.mask_layer_combobox.setCurrentText(
-                    matching_mask_layer_name
-                )
+                # With several layers selected each keeps its own mask,
+                # invert and labels; the editor change must not re-apply the
+                # primary layer's mask (with the checkbox's stale invert) to
+                # all of them.
+                multi_selection = len(self.get_selected_layer_names()) > 1
+                self.mask_layer_combobox.blockSignals(multi_selection)
+                try:
+                    self.mask_layer_combobox.setCurrentText(
+                        matching_mask_layer_name
+                    )
+                finally:
+                    self.mask_layer_combobox.blockSignals(False)
 
             # Keys the layer has no value for show their defaults.
             settings = {
@@ -5939,8 +5867,6 @@ class PlotterWidget(QWidget):
         sections_layout = QVBoxLayout(contents)
         sections_layout.setContentsMargins(0, 0, 0, 0)
         sections_layout.addWidget(self._import_settings_box)
-        self._plot_settings_note = create_settings_note_label(contents)
-        sections_layout.addWidget(self._plot_settings_note)
         sections_layout.addWidget(type_box)
         sections_layout.addWidget(appearance_box)
         sections_layout.addWidget(pc_box)
@@ -10495,6 +10421,13 @@ class PlotterWidget(QWidget):
                 combo.primaryLayerChanged.disconnect(
                     self._sync_frequency_inputs_from_metadata
                 )
+
+        # Destroying the tab widget removes its pages one by one, and each
+        # removal emits ``currentChanged``; left connected, that re-ran the
+        # tab-switch handler (and the analysis redraws behind it) on tabs
+        # that were already being deleted.
+        with contextlib.suppress(TypeError, RuntimeError, AttributeError):
+            self.tab_widget.currentChanged.disconnect(self._on_tab_changed)
 
         # Ensure child tabs run their own cleanup.
         for tab_name in (
