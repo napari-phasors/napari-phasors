@@ -489,15 +489,20 @@ def test_docked_plotter_layout(make_napari_viewer, qtbot):
     )
 
     # Laid out in a shown window, a plot entitled to more height than its
-    # dock has takes it from the analysis tabs below.
+    # dock has takes it from the analysis tabs below. The re-split itself is
+    # mocked: really resizing docks in a shown window crashed Windows CI.
     plotter_dock = plotter._find_plotter_dock()
-    plotter._update_useful_height_limit(plotter.canvas_container.width() * 2)
-    with patch.object(
-        qt_window, 'resizeDocks', wraps=qt_window.resizeDocks
-    ) as resize_docks:
+    wanted_height = plotter_dock.height() + 100
+    with (
+        patch.object(plotter, 'maximumHeight', return_value=wanted_height),
+        patch.object(qt_window, 'resizeDocks') as resize_docks,
+    ):
         plotter._claim_useful_height()
-    if plotter.maximumHeight() > plotter_dock.height():
-        resize_docks.assert_called_once()
+    resize_docks.assert_called_once()
+    docks, sizes, orientation = resize_docks.call_args[0]
+    assert docks == [plotter_dock, plotter._analysis_dock]
+    assert sizes[0] >= wanted_height
+    assert orientation == Qt.Vertical
     # A plot already as tall as it can use leaves the split alone.
     with (
         patch.object(plotter, 'maximumHeight', return_value=0),

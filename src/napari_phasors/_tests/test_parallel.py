@@ -374,21 +374,44 @@ def test_parallel_filter_median_without_a_halo_is_passed_through():
     assert np.asarray(mean).shape == data.shape
 
 
-def test_parallel_filter_median_is_sequential_inside_a_pool(small_split):
-    """A nested call must not multiply the thread count."""
+def test_parallel_filter_median_is_sequential_inside_a_pool(
+    small_split, monkeypatch
+):
+    """A nested call must not multiply the thread count.
+
+    Which outer worker picks up which item is up to the scheduler (on a
+    slow runner one worker may take both), so the test checks where the
+    bands are filtered rather than how many outer workers ran.
+    """
+    import phasorpy.filter
+
     rng = np.random.default_rng(4)
     data = rng.random((240, 240)).astype(np.float32)
 
-    names = set()
+    band_threads = []
+    original = phasorpy.filter.phasor_filter_median
+
+    def recording(*args, **kwargs):
+        band_threads.append(threading.current_thread().name)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(phasorpy.filter, "phasor_filter_median", recording)
+
+    # On its own the call does split into bands on pool threads...
+    parallel_filter_median(data, data, data, repeat=1, size=3)
+    assert set(band_threads) - {threading.current_thread().name}
+
+    # ...but inside a pool every band stays on the outer worker's thread.
+    band_threads.clear()
+    outer_threads = set()
 
     def work(_):
-        names.add(threading.current_thread().name)
+        outer_threads.add(threading.current_thread().name)
         parallel_filter_median(data, data, data, repeat=1, size=3)
-        return threading.current_thread().name
 
     parallel_map(work, [0, 1], workers=2)
-    # Two outer workers and no inner ones: the band split stood down.
-    assert len(names) == 2
+    assert band_threads
+    assert set(band_threads) <= outer_threads
 
 
 def test_parallel_phasor_from_signal_matches_the_unsplit_call():
