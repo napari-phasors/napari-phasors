@@ -21,6 +21,7 @@ import numpy as np
 import phasorpy.io as io
 import tifffile
 import xarray as xr
+from napari import current_viewer
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 
@@ -37,6 +38,7 @@ from ._utils import (
     cast_phasor_storage,
     extract_channel_label,
     format_phasor_layer_name,
+    keep_layer_units_consistent,
     show_activity_progress,
 )
 
@@ -332,6 +334,10 @@ def napari_get_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    # Whatever this reads lands in the open viewer, beside layers whose units
+    # may not match its own.
+    keep_layer_units_consistent(current_viewer())
+
     if isinstance(path, list):
         if len(path) == 0:
             show_error("No files selected.")
@@ -772,13 +778,14 @@ def _set_scale_and_units(add_kwargs, ndim, axis_names, sizes):
     *axis_names* names the layer's axes and is aligned to the right, so a
     signal whose histogram and channel axes were consumed by the phasor
     transform still lands its Y and X sizes on the right axes. Axes with no
-    known size stay one dimensionless pixel wide, and a layer that gained no
-    size at all keeps napari's defaults rather than an all-ones scale.
+    known size stay one pixel wide in napari's ``pixel`` unit, and a layer
+    that gained no size at all keeps napari's defaults rather than an
+    all-ones scale.
     """
     if not sizes or ndim < 1:
         return
     scale = [1.0] * ndim
-    units = [""] * ndim
+    units = ["pixel"] * ndim
     for offset, name in enumerate(reversed(list(axis_names or ()))):
         if offset >= ndim:
             break

@@ -263,7 +263,7 @@ def test_set_scale_aligns_axis_names_to_the_right():
         add_kwargs, 4, ("Y", "X"), {"Y": 0.5, "X": 0.25}
     )
     assert add_kwargs["scale"] == (1.0, 1.0, 0.5, 0.25)
-    assert add_kwargs["units"] == ("", "", "um", "um")
+    assert add_kwargs["units"] == ("pixel", "pixel", "um", "um")
 
 
 def test_set_scale_ignores_names_beyond_the_data():
@@ -397,7 +397,7 @@ def test_processed_reader_falls_back_to_settings_z_spacing(monkeypatch):
     )
     layers = reader_module.processed_file_reader("missing.ome.tif")
     assert layers[0][1]["scale"] == (2.5, 1.0, 1.0)
-    assert layers[0][1]["units"] == ("um", "", "")
+    assert layers[0][1]["units"] == ("um", "pixel", "pixel")
 
 
 def test_processed_reader_without_dims_assumes_trailing_zyx(monkeypatch):
@@ -864,3 +864,178 @@ def test_batch_results_loaded_into_viewer_keep_calibration(
         assert tuple(layer.scale) == (0.5, 0.5)
         assert tuple(str(u) for u in layer.units) == ("micrometer",) * 2
     assert viewer.layers.extent.units is not None
+
+
+# --- unit harmonization: no "Inconsistent units" warning --------------
+
+
+def _image(shape=(4, 4), units=None, scale=None):
+    from napari.layers import Image
+
+    return Image(np.zeros(shape), units=units, scale=scale)
+
+
+def _unit_names(layer):
+    return tuple(str(unit) for unit in layer.units)
+
+
+def test_harmonize_gives_unitless_layers_the_calibrated_units():
+    """A mask or uncalibrated image takes the unit a calibrated layer uses."""
+    from napari_phasors._utils import harmonize_layer_units
+
+    calibrated = _image(units=("um", "um"), scale=(0.5, 0.5))
+    mask = _image()
+    harmonize_layer_units([calibrated, mask])
+    assert _unit_names(mask) == ("micrometer", "micrometer")
+    # Only the unit is named: the geometry napari draws is unchanged.
+    assert tuple(mask.scale) == (1.0, 1.0)
+
+
+def test_harmonize_aligns_axes_from_the_right():
+    """A 3D layer beside a 2D one shares only the trailing two axes."""
+    from napari_phasors._utils import harmonize_layer_units
+
+    calibrated = _image(units=("um", "um"))
+    stack = _image(shape=(3, 4, 4))
+    harmonize_layer_units([calibrated, stack])
+    assert _unit_names(stack) == ("pixel", "micrometer", "micrometer")
+
+
+def test_harmonize_turns_dimensionless_axes_into_pixel():
+    """Dimensionless and pixel both mean no unit, but napari keeps them
+    apart, so a dimensionless axis with nothing to inherit becomes pixel."""
+    from napari_phasors._utils import harmonize_layer_units
+
+    stack = _image(shape=(3, 4, 4), units=("", "um", "um"))
+    other = _image(shape=(3, 4, 4))
+    harmonize_layer_units([stack, other])
+    assert _unit_names(stack) == ("pixel", "micrometer", "micrometer")
+    assert _unit_names(other) == _unit_names(stack)
+
+
+def test_harmonize_leaves_conflicting_physical_units_alone():
+    """Micrometers and seconds on one axis are a real conflict, not a gap."""
+    from napari_phasors._utils import harmonize_layer_units
+
+    length = _image(units=("um", "um"))
+    time = _image(units=("s", "s"))
+    harmonize_layer_units([length, time])
+    assert _unit_names(time) == ("second", "second")
+
+
+def test_harmonize_without_calibration_changes_nothing():
+    """With no physical unit anywhere, every layer stays in pixels."""
+    from napari_phasors._utils import harmonize_layer_units
+
+    layers = [_image(), _image(shape=(2, 4, 4))]
+    harmonize_layer_units(layers)
+    assert all(set(_unit_names(layer)) == {"pixel"} for layer in layers)
+
+
+def test_keep_units_consistent_runs_before_other_insert_handlers():
+    """napari's canvas checks units while an insertion is still handled,
+    so the fix has to land before any earlier-connected callback runs."""
+    from napari.components import ViewerModel
+
+    from napari_phasors._utils import keep_layer_units_consistent
+
+    viewer = ViewerModel()
+    seen = []
+    viewer.layers.events.inserted.connect(
+        lambda event: seen.append(_unit_names(event.value))
+    )
+    keep_layer_units_consistent(viewer)
+    viewer.add_layer(_image(units=("um", "um")))
+    viewer.add_layer(_image())
+    assert seen[-1] == ("micrometer", "micrometer")
+    assert viewer.layers.extent.units is not None
+
+
+def test_keep_units_consistent_connects_once_and_accepts_none():
+    """Repeated calls do not stack handlers, and no viewer is a no-op."""
+    from napari.components import ViewerModel
+
+    from napari_phasors._utils import keep_layer_units_consistent
+
+    keep_layer_units_consistent(None)
+    viewer = ViewerModel()
+    keep_layer_units_consistent(viewer)
+    connected = len(viewer.layers.events.inserted.callbacks)
+    keep_layer_units_consistent(viewer)
+    assert len(viewer.layers.events.inserted.callbacks) == connected
+
+
+def test_keep_units_consistent_fixes_layers_already_in_the_viewer():
+    """Layers added before the hook was installed are harmonized too."""
+    from napari.components import ViewerModel
+
+    from napari_phasors._utils import keep_layer_units_consistent
+
+    viewer = ViewerModel()
+    viewer.add_layer(_image(units=("um", "um")))
+    viewer.add_layer(_image())
+    assert viewer.layers.extent.units is None
+    keep_layer_units_consistent(viewer)
+    assert viewer.layers.extent.units is not None
+
+
+def test_mixed_files_and_napari_mask_buttons_stay_consistent():
+    """Every case that used to warn: an uncalibrated file beside a
+    calibrated one, a plain new image, and napari's own mask buttons."""
+    from napari._app_model.actions._file import new_points, new_shapes
+    from napari.components import ViewerModel
+
+    from napari_phasors._utils import keep_layer_units_consistent
+
+    viewer = ViewerModel()
+    keep_layer_units_consistent(viewer)
+    ptu = get_test_file_path("test_file.ptu")
+    for data, kwargs in reader_module.raw_file_reader(ptu):
+        viewer.add_image(data, **kwargs)
+    fbd = get_test_file_path("test_file$EI0S.fbd")
+    for data, kwargs in reader_module.raw_file_reader(
+        fbd, {"frame": -1, "channel": 0}
+    ):
+        viewer.add_image(data, **kwargs)
+    assert viewer.layers.extent.units is not None
+
+    viewer.add_image(np.zeros((3, 8, 8)))
+    viewer.layers.selection.active = viewer.layers[0]
+    new_shapes(viewer)
+    new_points(viewer)
+    viewer._new_labels()
+    viewer.add_labels(np.zeros((8, 8), dtype=int))
+    assert viewer.layers.extent.units is not None
+
+
+def test_reader_connects_the_open_viewer(monkeypatch):
+    """Opening a file hooks whichever viewer it will land in."""
+    from napari.components import ViewerModel
+
+    from napari_phasors._utils import _UNIT_CONSISTENT_VIEWERS
+
+    viewer = ViewerModel()
+    monkeypatch.setattr(reader_module, "current_viewer", lambda: viewer)
+    reader_module.napari_get_reader(get_test_file_path("test_file.ptu"))
+    assert viewer in _UNIT_CONSISTENT_VIEWERS
+
+
+@pytest.mark.parametrize(
+    "widget_path",
+    [
+        "napari_phasors.plotter:PlotterWidget",
+        "napari_phasors._widget:PhasorTransform",
+        "napari_phasors._batch_analysis:BatchAnalysisWidget",
+    ],
+)
+def test_widgets_connect_their_viewer(make_viewer_model, qtbot, widget_path):
+    """Layers the plugin's widgets create stay consistent with the rest."""
+    import importlib
+
+    from napari_phasors._utils import _UNIT_CONSISTENT_VIEWERS
+
+    module, name = widget_path.split(":")
+    viewer = make_viewer_model()
+    widget = getattr(importlib.import_module(module), name)(viewer)
+    qtbot.addWidget(widget)
+    assert viewer in _UNIT_CONSISTENT_VIEWERS

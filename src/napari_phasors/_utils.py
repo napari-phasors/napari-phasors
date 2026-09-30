@@ -8,6 +8,7 @@ import io
 import os
 import re
 import warnings
+import weakref
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -169,6 +170,60 @@ def cast_phasor_storage(*arrays):
         return array.astype(target)
 
     return tuple(cast(array) for array in arrays)
+
+
+def _has_no_physical_unit(unit):
+    """Return whether *unit* is napari's ``pixel`` default or dimensionless."""
+    return unit.dimensionless or str(unit) == "pixel"
+
+
+def harmonize_layer_units(layers):
+    """Give every axis without a physical unit the one other layers use.
+
+    napari renders in physical units only when every layer agrees, and it
+    counts a layer that was never given units (``pixel``) as disagreeing
+    with a calibrated one. A mask drawn by hand, a layer from another plugin
+    or a file that stores no pixel size would then make napari warn and drop
+    units for the whole viewer. Such an axis already lives in the same world
+    coordinates as the calibrated ones, so taking their unit only names what
+    napari draws anyway.
+
+    Axes are aligned from the right, as napari aligns them. Two physical
+    units that genuinely conflict on one axis are left alone.
+    """
+    reference = {}
+    for layer in layers:
+        for offset, unit in enumerate(reversed(layer.units)):
+            if offset not in reference and not _has_no_physical_unit(unit):
+                reference[offset] = unit
+
+    for layer in layers:
+        units = list(layer.units)
+        for offset, unit in enumerate(reversed(layer.units)):
+            if _has_no_physical_unit(unit):
+                units[-1 - offset] = reference.get(offset, "pixel")
+        if [str(u) for u in units] != [str(u) for u in layer.units]:
+            layer.units = tuple(units)
+
+
+_UNIT_CONSISTENT_VIEWERS = weakref.WeakSet()
+"""Viewers already connected by :func:`keep_layer_units_consistent`."""
+
+
+def keep_layer_units_consistent(viewer):
+    """Harmonize *viewer*'s layer units now and whenever a layer is added.
+
+    Safe to call repeatedly: a viewer is connected at most once.
+    """
+    if viewer is None or viewer in _UNIT_CONSISTENT_VIEWERS:
+        return
+    _UNIT_CONSISTENT_VIEWERS.add(viewer)
+    # First, because the canvas checks units while the same insertion is
+    # still being handled, before a callback connected last would run.
+    viewer.layers.events.inserted.connect(
+        lambda event: harmonize_layer_units(viewer.layers), position="first"
+    )
+    harmonize_layer_units(viewer.layers)
 
 
 def analysis_section_stylesheet():

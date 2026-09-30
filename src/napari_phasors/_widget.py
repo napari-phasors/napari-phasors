@@ -74,6 +74,7 @@ from ._utils import (
     FileOrderDialog,
     PopoutWindowMixin,
     TileLayoutDialog,
+    keep_layer_units_consistent,
     natural_sort_key,
     show_activity_progress,
 )
@@ -109,6 +110,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         """Initialize the widget."""
         super().__init__()
         self.viewer = viewer
+        keep_layer_units_consistent(self.viewer)
         self._floated = False
 
         self.setMinimumWidth(400)
@@ -2109,9 +2111,9 @@ class AdvancedOptionsWidget(QWidget):
             elif len(scale) > data.ndim:
                 scale = scale[: data.ndim]
 
-        units = list(add_kwargs.get("units") or [""] * data.ndim)
+        units = list(add_kwargs.get("units") or ["pixel"] * data.ndim)
         if len(units) != data.ndim:
-            units = [""] * data.ndim
+            units = ["pixel"] * data.ndim
 
         for axis, value in values.items():
             scale[axis] = value

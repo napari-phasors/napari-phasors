@@ -99,6 +99,7 @@ from ._utils import (
     build_groups_from_layer_metadata,
     confirm_unassigned_layers,
     create_settings_note_label,
+    keep_layer_units_consistent,
     make_experimental_warning,
     make_section,
     make_solid_contour_cmap,
@@ -1669,6 +1670,7 @@ class PlotterWidget(QWidget):
         #: Last QDockWidget seen hosting this widget (see ``changeEvent``).
         self._plotter_dock_ref = None
         self.viewer = napari_viewer
+        keep_layer_units_consistent(self.viewer)
         #: Unsaved per-layer edits and per-analysis commits of the settings
         #: stored in ``layer.metadata['settings']`` (see ``_settings_store``).
         self.settings_store = LayerSettingsStore(

@@ -2476,7 +2476,7 @@ def test_widget_pure_helpers(tmp_path):
     kw = {}
     AdvancedOptionsWidget._set_layer_scale(kw, np.ones((3, 4, 4)), 2.5)
     assert kw["scale"] == (2.5, 1.0, 1.0)
-    assert kw["units"] == ("um", "", "")
+    assert kw["units"] == ("um", "pixel", "pixel")
     # Existing scale shorter than ndim is padded; longer is truncated.
     kw = {"scale": (1.0,)}
     AdvancedOptionsWidget._set_layer_scale(kw, np.ones((3, 4, 4)), 2.0)
