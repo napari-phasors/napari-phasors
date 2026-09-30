@@ -79,16 +79,21 @@ from ._utils import (
     HistogramSettingsDialog,
     HistogramWidget,
     PopoutWindowMixin,
+    analysis_layer_name,
     apply_calibration_correction,
     apply_filter_and_threshold,
+    component_analysis_label,
     compute_calibration_parameters,
     make_solid_contour_cmap,
+    normalize_legend_location,
     normalize_rgb,
+    parse_component_analysis_label,
     populate_colormap_combobox,
     rank_mask_candidates,
     read_ome_tiff_settings,
     required_component_harmonics,
     resolve_colormap_by_name,
+    split_analysis_layer_name,
 )
 from ._writer import (
     export_layer_as_csv,
@@ -387,18 +392,27 @@ def _apply_image_mask(layer, mask, invert=False):
 
 
 def _select_harmonic_arrays(layer, harmonic):
-    """Return ``(real, imag)`` for ``harmonic`` from a layer's phasor data."""
+    """Return ``(real, imag)`` for ``harmonic`` from a layer's phasor data.
+
+    A single-harmonic layout (``G``/``S`` shaped like the image) is returned
+    as is. A multi-harmonic layout (``G``/``S`` stacked along a leading
+    harmonic axis) yields that harmonic's plane, or ``(None, None)`` when the
+    layer never computed it, so callers skip the file instead of computing on
+    the whole stack.
+    """
     g_array = layer.metadata.get("G")
     s_array = layer.metadata.get("S")
     if g_array is None or s_array is None:
         return None, None
+    if g_array.ndim <= layer.data.ndim:
+        return g_array, s_array
     harmonics = layer.metadata.get("harmonics")
-    if harmonics is not None:
-        harmonics_array = np.atleast_1d(harmonics)
-        idx = np.where(harmonics_array == harmonic)[0]
-        if g_array.ndim == layer.data.ndim + 1 and idx.size > 0:
-            return g_array[idx[0]], s_array[idx[0]]
-    return g_array, s_array
+    if harmonics is None:
+        return None, None
+    idx = np.where(np.atleast_1d(harmonics) == harmonic)[0]
+    if idx.size == 0 or idx[0] >= g_array.shape[0]:
+        return None, None
+    return g_array[idx[0]], s_array[idx[0]]
 
 
 def _apply_component_fraction(layer, components):
@@ -457,7 +471,9 @@ def _apply_component_fraction(layer, components):
         outputs = [
             _make_output_image(
                 fraction,
-                f"{names[0]} fraction: {layer.name}",
+                analysis_layer_name(
+                    component_analysis_label(names[0]), layer.name
+                ),
                 colormap=_cmap(0),
                 contrast_limits=contrast,
             )
@@ -468,7 +484,10 @@ def _apply_component_fraction(layer, components):
             outputs.append(
                 _make_output_image(
                     1.0 - np.asarray(fraction),
-                    f"{names[1]} fraction: {layer.name}",
+                    analysis_layer_name(
+                        component_analysis_label(names[1]),
+                        layer.name,
+                    ),
                     colormap=_reversed_colormap(_cmap(0)),
                     contrast_limits=contrast,
                 )
@@ -488,7 +507,10 @@ def _apply_component_fraction(layer, components):
         layers.append(
             _make_output_image(
                 fraction,
-                f"{name} fraction: {layer.name}",
+                analysis_layer_name(
+                    component_analysis_label(name, fit=True),
+                    layer.name,
+                ),
                 colormap=_cmap(index),
                 contrast_limits=contrast,
             )
@@ -578,7 +600,7 @@ def _apply_phasor_mapping(layer, mapping):
         layers.append(
             _make_output_image(
                 values,
-                f"{output_type}: {layer.name}",
+                analysis_layer_name(output_type, layer.name),
                 colormap=mapping.get("colormap"),
                 contrast_limits=mapping.get("contrast_limits"),
             )
@@ -614,7 +636,7 @@ def _apply_fret(layer, fret):
     fret_efficiency = phasor_nearest_neighbor(
         real, imag, neighbor_real, neighbor_imag, values=efficiencies
     )
-    name = f"FRET efficiency: {layer.name}"
+    name = analysis_layer_name("FRET efficiency", layer.name)
     return [
         _make_output_image(
             fret_efficiency,
@@ -669,7 +691,7 @@ def _apply_selection(layer, selection):
             color_dict[idx + 1] = _cursor_rgba(
                 None, idx, cluster.get("colors")
             )
-        name = f"Cluster selection: {layer.name}"
+        name = analysis_layer_name("Cluster selection", layer.name)
         return [_make_selection_labels(selection_map, name, color_dict)]
 
     cursors = selection["cursors"]
@@ -678,7 +700,7 @@ def _apply_selection(layer, selection):
         selection_map[_cursor_mask(real, imag, cursor)] = idx + 1
         color_dict[idx + 1] = _cursor_rgba(cursor.get("color"), idx)
 
-    name = f"Cursor selection: {layer.name}"
+    name = analysis_layer_name("Cursor selection", layer.name)
     return [_make_selection_labels(selection_map, name, color_dict)]
 
 
@@ -1055,6 +1077,8 @@ def default_group_config():
         "normalize": False,
         "central_tendency": "None",
         "show_legend": True,
+        "legend_placement": "inside",
+        "legend_position": "upper right",
         "white_background": False,
         "smooth_curves": True,
         "log_scale": False,
@@ -3752,6 +3776,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "central_tendency", "None"
             ),
             show_legend=self._group_config.get("show_legend", True),
+            legend_placement=self._group_config.get(
+                "legend_placement", "inside"
+            ),
+            legend_position=self._group_config.get(
+                "legend_position", "upper right"
+            ),
             log_scale=self._group_config.get("log_scale", False),
             bins=self._group_config.get("bins", 150),
             layer_labels=names,
@@ -3782,6 +3812,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                         dialog.central_tendency_combo.currentText()
                     ),
                     "show_legend": dialog.legend_checkbox.isChecked(),
+                    "legend_placement": dialog.get_legend_placement(),
+                    "legend_position": dialog.get_legend_position(),
                     "white_background": dialog.white_bg_checkbox.isChecked(),
                     "smooth_curves": dialog.smooth_checkbox.isChecked(),
                     "log_scale": dialog.log_scale_checkbox.isChecked(),
@@ -4749,6 +4781,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "normalize": stored.get("normalize", False),
             "central_tendency": stored.get("central_tendency", "None"),
             "show_legend": stored.get("show_legend", True),
+            "legend_placement": stored.get("legend_placement", "inside"),
+            "legend_position": stored.get("legend_position", "upper right"),
             "log_scale": stored.get("log_scale", False),
             "bins": int(stored.get("bins") or 150),
         }
@@ -5556,32 +5590,35 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _subfolder_for_layer(self, layer_name):
         """Return the analysis-tab *key* that produced ``layer_name``."""
-        if "fraction: " in layer_name:
+        analysis = split_analysis_layer_name(layer_name)[1]
+        if parse_component_analysis_label(analysis) is not None:
             return "components"
-        elif any(
-            layer_name.startswith(f"{t}: ")
-            for t in [
-                "Phase",
-                "Modulation",
-                "Normal Lifetime",
-                "Apparent Phase Lifetime",
-                "Apparent Modulation Lifetime",
-            ]
+        if analysis in (
+            "Phase",
+            "Modulation",
+            "Normal Lifetime",
+            "Apparent Phase Lifetime",
+            "Apparent Modulation Lifetime",
         ):
             return "phasor_mapping"
-        elif layer_name.startswith("FRET efficiency: "):
+        if analysis == "FRET efficiency":
             return "fret"
-        elif layer_name.startswith(
-            ("Cursor selection: ", "Cluster selection: ")
-        ):
+        if analysis in ("Cursor selection", "Cluster selection"):
             return "selection"
         return None
 
     def _clean_layer_name(self, layer_name):
-        """Return *layer_name* without its trailing ``": <source>"`` suffix."""
-        if ": " in layer_name:
-            return layer_name.split(": ", 1)[0]
-        return layer_name
+        """Return the analysis label of *layer_name* (its bracketed tag).
+
+        A component-analysis layer yields ``"<component> fraction"``.
+        """
+        analysis = split_analysis_layer_name(layer_name)[1]
+        if analysis is None:
+            return layer_name
+        parsed = parse_component_analysis_label(analysis)
+        if parsed is not None:
+            return f"{parsed[1]} fraction"
+        return analysis
 
     def _emit_file_outputs(
         self,
@@ -8175,6 +8212,9 @@ def _new_export_histogram(config, label):
     hw._normalize = config.get("normalize", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)
+    hw._legend_placement, hw._legend_position = normalize_legend_location(
+        config.get("legend_placement"), config.get("legend_position")
+    )
     hw._log_scale = config.get("log_scale", False)
     hw.bins = int(config.get("bins") or hw.bins)
     hw.xlabel = label
@@ -8390,6 +8430,10 @@ def _store_plot_settings(layer, plot_settings, group_config=None):
             "normalize": group_config.get("normalize"),
             "central_tendency": group_config.get("central_tendency"),
             "show_legend": group_config.get("show_legend"),
+            "legend_placement": group_config.get("legend_placement", "inside"),
+            "legend_position": group_config.get(
+                "legend_position", "upper right"
+            ),
             "log_scale": group_config.get("log_scale", False),
             "bins": group_config.get("bins", 150),
         }

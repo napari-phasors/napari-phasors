@@ -106,13 +106,13 @@ label, including the per-timepoint rows of a time-lapse.
 - **Normalize to maximum**: Divides every curve by its own peak so it reaches 1. Distributions whose pixel counts differ by orders of magnitude can then be compared in the same plot; the y axis is labelled *(normalized)* and the CSV export is scaled the same way.
 - **Logarithmic y axis**: Draws the counts on a log scale so sparse tails stay visible next to a tall peak. Empty bins are drawn on the zero baseline rather than leaving gaps in the curves.
 - **Number of bins**: How many bins the value range is divided into. Changing it recomputes the histogram, its CSV export and the bin-based statistics (center of mass).
-- **Show line**: Overlays a vertical line at the *Center of mass*, *Mean*, or *Median*.
-- **Show legend**: Toggles the curve legend.
+- **Show statistics line**: Overlays a vertical line at the *Center of mass*, *Mean*, or *Median*.
+- **Show legend**: Toggles the curve legend. **Legend location** places it *inside* the plot at a corner or edge (upper right by default), or *outside*, to the right of, above or below the plot, where it never covers a curve.
 - **White background**: Switches to a white plot background for figures.
 - **Smooth curves**: Applies Gaussian smoothing to improve curve readability.
 - **Layer/group colours**: Picker for per-layer or per-group histogram colours.
 - **Curve colours**: In Merged mode with several quantities on screen, draws each curve either as a gradient in its own layers' colormap or in a solid colour, with a colour picker per curve.
-- **Save Histogram**: Exports the histogram, either as a PNG image (at 300 DPI) or as a CSV of the underlying bin centers and counts (per layer or per group, depending on the current display mode).
+- **Save Histogram**: Opens a dialog to export the histogram as a **PNG**, **SVG** or **JPG** image, or as a **CSV** of the underlying bin centers and counts (per layer or per group, depending on the current display mode). For the image formats the dialog sets the **aspect ratio** (as shown, square, 4:3, 3:2, 16:9, 2:1 or custom), the **size** (width and height in cm, inches or directly in pixels) and the **DPI**. It also sets the **text size** (axis labels and legend) and **tick size**, a **white background** and the **legend location** (inside the plot or outside it, when the histogram shows a legend). These choices apply to the saved file only, not to the plot on screen. A preview shows the histogram exactly as it will be saved.
 
 ## Statistics Table
 

@@ -93,3 +93,7 @@ installer/LICENSE.ascii.txt
 installer/napari_is_bundled_constructor
 installer/icon.ico
 installer/app.icns
+
+# Test data folder
+
+test_data/

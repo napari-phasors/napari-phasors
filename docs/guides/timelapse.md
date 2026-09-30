@@ -34,8 +34,8 @@ looking at.
 
 The display mode and the chosen axis are stored in the layer's settings
 alongside every other plot setting, so they are restored when you switch back
-to a layer or reload an exported OME-TIF. The frame index itself is not stored
-— it always comes from the viewer.
+to a layer or reload an exported OME-TIF. The frame index itself is not stored,
+it always comes from the viewer.
 
 ## What follows the frame
 
@@ -48,6 +48,10 @@ In `Current timepoint` mode:
   analysis, FRET) summarises only that frame;
 - the **statistics table** switches to one row per timepoint (see below).
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/timelapse.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/timelapse.mp4" type="video/mp4">
+</video>
+
 ## Statistics table
 
 In `All timepoints` mode the table keeps its usual layout: one row per layer,
@@ -56,7 +60,7 @@ pooled over the whole acquisition.
 In `Current timepoint` mode it gains a **Frame** column and lists every
 timepoint at once, so you can read the trend down the column instead of
 scrubbing. The row for the frame on screen is **bold and highlighted**, and it
-follows along as you move the slider or play the acquisition — the table also
+follows along as you move the slider or play the acquisition. The table also
 scrolls to keep it in view. With several layers selected there is one row per
 frame per layer, grouped by frame.
 
@@ -67,18 +71,12 @@ frame rather than being rebinned on each frame's own extent.
 Group statistics stay a pooled, per-layer concept and are hidden while the
 per-frame rows are shown.
 
-Range sliders keep using the whole acquisition's extent, so the colormap
-contrast limits do not jump around while playing. If a frame has no valid
-pixels — because a threshold or a mask removed them all — the plot is blanked
-rather than left showing the previous frame.
 
-### A colour scale that means the same thing on every frame
+### A color scale that means the same thing on every frame
 
-The 2-D phasor histogram would otherwise re-bin and re-normalise on each
-frame, so a given colour — and the colorbar beside it — would stand for a
-different number of pixels at every timepoint. Instead, both the bin grid and
-the colour range are computed once over the **whole acquisition**, across
-**every selected layer**, and then applied unchanged to each frame:
+Both the bin grid and the colour range are computed once over the
+**whole acquisition**, across **every selected layer**, and then applied
+unchanged to each frame:
 
 - the bin grid is the one the `All timepoints` plot would draw, so the
   histogram does not shift under you while stepping;

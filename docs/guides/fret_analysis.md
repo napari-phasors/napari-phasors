@@ -100,6 +100,10 @@ The filter combines with the lifetime, phase and modulation filters of the
 filters are not listed here — they are edited, and shown, in that tab; see
 {doc}`phasor_mapping` for how the criteria combine.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/fret%20filter.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/fret%20filter.mp4" type="video/mp4">
+</video>
+
 ## Results
 
 FRET efficiency values are computed per-pixel and can be visualized as a colormapped image layer. The results can also be explored quantitatively in the **Histogram and Statistics Table** widget, allowing you to analyze the distribution and summary statistics of FRET efficiency across your data. Results can be exported to CSV.
