@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from matplotlib.collections import LineCollection
 from napari.layers import Image, Labels
+from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
 from phasorpy.component import phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy.QtCore import Qt
@@ -23,7 +24,13 @@ from napari_phasors._tests.test_plotter import (
     assert_run_row_is_pinned,
     create_image_layer_with_phasors,
 )
-from napari_phasors._utils import StatisticsTableWidget
+from napari_phasors._utils import (
+    StatisticsTableWidget,
+    analysis_layer_name,
+    component_analysis_label,
+    is_component_fit_label,
+    split_analysis_layer_name,
+)
 from napari_phasors.components_tab import (
     COMPONENT_LABELS_TAG,
     LABELS_DOMINANT,
@@ -38,6 +45,18 @@ from napari_phasors.components_tab import (
     draw_fraction_histogram_overlay,
 )
 from napari_phasors.plotter import PlotterWidget
+
+
+def _lp_name(component, source):
+    """Default name of a Linear Projection fraction layer."""
+    return analysis_layer_name(component_analysis_label(component), source)
+
+
+def _fit_name(component, source):
+    """Default name of a Component Fit fraction layer."""
+    return analysis_layer_name(
+        component_analysis_label(component, fit=True), source
+    )
 
 
 def _setup_linear_projection(comp_widget):
@@ -93,44 +112,191 @@ def _check_histogram_components(comp_widget, names):
         toggle.setChecked(True)
 
 
-def test_components_widget_initialization_values(make_viewer_model, qtbot):
+def test_components_widget_initial_state(make_viewer_model, qtbot):
+    """A fresh Components tab: its state, layout and docks, then the edits a
+    tab without any layer has to cope with."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QComboBox, QLabel, QScrollArea
+
+    from napari_phasors.components_tab import COMPONENT_CARD_STYLE
+
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
+
+    # Internal flags and dialogs start unset.
+    assert comp_widget._updating_from_lifetime is False
+    assert comp_widget._updating_settings is False
+    assert comp_widget._analysis_attempted is False
+    assert comp_widget.drag_events_connected is False
+    assert comp_widget.dragging_component_idx is None
+    assert comp_widget.dragging_label_idx is None
+    assert comp_widget.plot_dialog is None
+    assert comp_widget.style_dialog is None
+
+    # Label and line styles.
+    assert comp_widget.label_fontsize == 10
+    assert comp_widget.label_bold is False
+    assert comp_widget.label_italic is False
+    assert comp_widget.label_color == 'black'
+    assert comp_widget.show_colormap_line is True
+    assert comp_widget.show_component_dots is True
+    assert comp_widget.line_offset == 0.0
+    assert comp_widget.line_width == 3.0
+    assert comp_widget.line_alpha == 1
+    assert comp_widget.default_component_color == 'dimgray'
+
+    # Component colours and colormaps.
+    assert len(comp_widget.component_colors) == 9
+    assert comp_widget.component_colors[0] == 'magenta'
+    assert comp_widget.component_colors[1] == 'cyan'
+    assert len(comp_widget.component_colormap_names) == 9
+    assert comp_widget.component_colormap_names[0] == 'magenta'
+    assert comp_widget.component_colormap_names[1] == 'cyan'
+
+    # ComponentState objects.
+    for idx in (0, 1):
+        state = comp_widget.components[idx]
+        assert state.idx == idx
+        assert state.dot is None
+        assert state.text is None
+        assert state.label == f"Component {idx + 1}"
+        assert state.text_offset == (0.02, 0.02)
+    comp = comp_widget.components[0]
+    assert hasattr(comp, 'ui_elements')
+    assert 'lifetime_label' in comp.ui_elements
+    assert 'comp_layout' in comp.ui_elements
+    assert comp.ui_elements['lifetime_label'] is not None
+    assert comp.ui_elements['comp_layout'] is not None
+
+    # Default settings structure.
+    default_settings = comp_widget._get_default_components_settings()
+    assert 'analysis_type' in default_settings
+    assert default_settings['analysis_type'] == 'Linear Projection'
+    assert 'components' in default_settings
+    assert isinstance(default_settings['components'], dict)
+    # The default keys must match the ones edits are persisted under, so the
+    # restore path re-applies them (see ``_restore_line_and_label_settings``).
+    line_key = 'two_component_line_settings'
+    assert line_key in default_settings
+    assert 'show_colormap_line' in default_settings[line_key]
+    assert 'show_component_dots' in default_settings[line_key]
+    assert 'line_offset' in default_settings[line_key]
+    assert 'line_width' in default_settings[line_key]
+    assert 'line_alpha' in default_settings[line_key]
+    assert 'default_component_color' in default_settings[line_key]
+    assert 'show_fraction_histogram' in default_settings[line_key]
+    assert 'histogram_overlay_height' in default_settings[line_key]
+    assert 'histogram_offset' in default_settings[line_key]
+    assert 'histogram_alpha' in default_settings[line_key]
+    label_key = 'two_components_label_settings'
+    assert label_key in default_settings
+    assert 'fontsize' in default_settings[label_key]
+    assert 'bold' in default_settings[label_key]
+    assert 'italic' in default_settings[label_key]
+    assert 'color' in default_settings[label_key]
+
+    # The layout holds a scroll area whose horizontal scrollbar only appears
+    # once the content genuinely can't shrink further.
+    assert comp_widget.layout() is not None
+    assert comp_widget.layout().count() > 0
+    scroll_area = comp_widget.findChild(QScrollArea)
+    assert scroll_area is not None
+    assert scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+
+    # The primary action stays reachable however long the settings get.
+    assert_run_row_is_pinned(
+        comp_widget,
+        comp_widget.calculate_button,
+        comp_widget.autoupdate_container,
+    )
+
+    # The histogram dock is sized like every other tab's dock: components are
+    # picked with the toggle on each card, so there is no selector row.
+    components_min = parent.components_histogram_dock_widget.minimumHeight()
+    mapping_min = parent.phasor_map_histogram_dock_widget.minimumHeight()
+    assert components_min == mapping_min
+    for dock in (
+        parent.components_histogram_dock_widget,
+        parent.components_statistics_dock_widget,
+    ):
+        labels = [
+            widget.text()
+            for widget in dock.findChildren(QLabel)
+            if widget.text() == "Component:"
+        ]
+        assert labels == []
+        assert dock.findChild(QComboBox) is None
+
     parent.tab_widget.setCurrentWidget(comp_widget)
 
     assert comp_widget.viewer is viewer
     assert comp_widget.parent_widget is parent
     assert len(comp_widget.components) == 2
-    # Initial state
     assert comp_widget.component_line is None
     assert comp_widget.component_polygon is None
     assert comp_widget.comp1_fractions_layer is None
-    assert comp_widget.comp2_fractions_layer is None
     assert comp_widget.fraction_layers == []
     assert comp_widget.fractions_colormap is None
     assert comp_widget.colormap_contrast_limits is None
     assert comp_widget.analysis_type == "Linear Projection"
     assert comp_widget.current_harmonic == 1
-    # UI elements exist - updated for new structure
     assert comp_widget.analysis_type_combo is not None
     assert comp_widget.add_component_btn is not None
     assert comp_widget.calculate_button is not None
-    # Check first component exists
-    assert comp_widget.components[0] is not None
-    assert comp_widget.components[0].name_edit is not None
-    assert comp_widget.components[0].g_edit is not None
-    assert comp_widget.components[0].s_edit is not None
-    assert comp_widget.components[0].select_button is not None
-    assert comp_widget.components[0].lifetime_edit is not None
-    # Check second component exists
-    assert comp_widget.components[1] is not None
-    assert comp_widget.components[1].name_edit is not None
-    assert comp_widget.components[1].g_edit is not None
-    assert comp_widget.components[1].s_edit is not None
-    assert comp_widget.components[1].select_button is not None
-    assert comp_widget.components[1].lifetime_edit is not None
+    for comp in comp_widget.components:
+        assert comp is not None
+        assert comp.name_edit is not None
+        assert comp.g_edit is not None
+        assert comp.s_edit is not None
+        assert comp.select_button is not None
+        assert comp.lifetime_edit is not None
     assert not comp_widget.histogram_widget.isHidden()
+
+    # The selected card is highlighted in dodgerblue, rgb(30, 144, 255); the
+    # old green must be gone.
+    assert "rgba(30, 144, 255, 0.85)" in COMPONENT_CARD_STYLE
+    assert "rgba(30, 144, 255, 0.06)" in COMPONENT_CARD_STYLE
+    assert "0, 193, 140" not in COMPONENT_CARD_STYLE
+    comp_widget._select_component_item(0)
+    assert comp_widget.components[0].card_frame.property("selected") is True
+    assert (
+        comp_widget.components[1].card_frame.property("selected") is not True
+    )
+    comp_widget._select_component_item(1)
+    assert comp_widget.components[1].card_frame.property("selected") is True
+
+    # The harmonic spinbox is connected to the tab.
+    parent.harmonic_spinbox.setValue(2)
+    assert comp_widget.current_harmonic == 2
+
+    # With no primary layer, restore clears the component input fields.
+    comp_widget.components[0].g_edit.setText("0.5")
+    comp_widget.components[0].name_edit.setText("stale")
+    comp_widget._restore_on_layer_change()
+    assert comp_widget.components[0].g_edit.text() == ""
+    assert comp_widget.components[0].name_edit.text() == ""
+
+    # A selected component without fraction layers cannot retain old data.
+    comp_widget.histogram_widget.update_data(np.array([0.1, 0.2]))
+    comp_widget._histogram_components = ["Missing component"]
+    comp_widget.update_component_histogram()
+    assert comp_widget.histogram_widget.counts is None
+    assert comp_widget.histogram_widget._datasets == {}
+    assert not comp_widget.histogram_widget.isHidden()
+
+    # Every card's text fields are bold, including cards added later.
+    comp_widget._add_component()
+    assert len(comp_widget.components) >= 3
+    for comp in comp_widget.components:
+        for edit in (
+            comp.name_edit,
+            comp.g_edit,
+            comp.s_edit,
+            comp.lifetime_edit,
+        ):
+            edit.ensurePolished()
+            assert edit.font().weight() >= QFont.DemiBold
 
 
 def test_components_widget_lifetime_inputs_visibility_no_frequency(
@@ -152,74 +318,16 @@ def test_components_widget_lifetime_inputs_visibility_no_frequency(
     assert not comp.lifetime_edit.isVisible()
 
 
-def test_components_widget_lifetime_inputs_visibility_with_frequency(
-    make_viewer_model,
-    qtbot,
-):
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    layer.metadata["settings"] = {"frequency": 80.0}
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    # Lifetime widgets visible - check first component
-    comp = comp_widget.components[0]
-    assert not comp.ui_elements['lifetime_label'].isHidden()
-    assert not comp.lifetime_edit.isHidden()
-
-    # Enter lifetime and verify G,S updated
-    comp.lifetime_edit.setText("3.0")
-    comp_widget._update_component_from_lifetime(0)
-    g_val = float(comp.g_edit.text())
-    s_val = float(comp.s_edit.text())
-    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
-    assert abs(g_val - expected_g) < 1e-3
-    assert abs(s_val - expected_s) < 1e-3
-
-
-def test_components_lifetime_moves_component_on_plot(make_viewer_model, qtbot):
-    """Typing a lifetime places the component dot on the universal circle."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    layer.metadata["settings"] = {"frequency": 80.0}
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-    comp = comp_widget.components[0]
-
-    canvas = parent.canvas_widget.canvas
-    with patch.object(canvas, "draw", wraps=canvas.draw) as forced_draw:
-        _type_lifetime(comp, "3.0")
-
-    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
-    x, y = comp.dot.get_data()
-    assert abs(x[0] - expected_g) < 1e-3
-    assert abs(y[0] - expected_s) < 1e-3
-    # A dot moved only with ``draw_idle`` can be repainted from a stale blit
-    # background, leaving it visually at its old position.
-    assert forced_draw.call_count >= 1
-
-    # Moving it again keeps it on the circle and leaves the guard flag clear.
-    _type_lifetime(comp, "1.0")
-    expected_g, expected_s = phasor_from_lifetime(80.0, 1.0)
-    x, y = comp.dot.get_data()
-    assert abs(x[0] - expected_g) < 1e-3
-    assert abs(y[0] - expected_s) < 1e-3
-    assert comp_widget._updating_from_lifetime is False
-
-
-def test_components_lifetime_lands_on_universal_circle(
+def test_components_lifetime_input_places_the_component(
     make_viewer_model, qtbot
 ):
-    """A typed lifetime places the component exactly on the universal circle.
+    """With a frequency, a typed lifetime sets G/S and moves the dot.
 
-    The G/S boxes show three decimals; placing the component from those
-    strings left it up to ~5e-4 off the circle, which is visible once the
-    plot is zoomed in.
+    The dot lands exactly on the universal circle for every harmonic: the G/S
+    boxes show three decimals, and placing the component from those strings
+    left it up to ~5e-4 off the circle, visible once the plot is zoomed in.
+    A component placed by typing its lifetime moves with the frequency;
+    moving it by other means pins it, after which it stays put.
     """
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
@@ -228,8 +336,67 @@ def test_components_lifetime_lands_on_universal_circle(
 
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
     comp = comp_widget.components[0]
+
+    # Lifetime widgets visible - check first component
+    assert not comp.ui_elements['lifetime_label'].isHidden()
+    assert not comp.lifetime_edit.isHidden()
+
+    # Enter lifetime and verify G,S updated
+    comp.lifetime_edit.setText("3.0")
+    comp_widget._update_component_from_lifetime(0)
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    assert abs(float(comp.g_edit.text()) - expected_g) < 1e-3
+    assert abs(float(comp.s_edit.text()) - expected_s) < 1e-3
+
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    # Typing a lifetime places the component dot on the universal circle.
+    canvas = parent.canvas_widget.canvas
+    with patch.object(canvas, "draw", wraps=canvas.draw) as forced_draw:
+        _type_lifetime(comp, "1.0")
+    expected_g, expected_s = phasor_from_lifetime(80.0, 1.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-3
+    assert abs(y[0] - expected_s) < 1e-3
+    # A dot moved only with ``draw_idle`` can be repainted from a stale blit
+    # background, leaving it visually at its old position.
+    assert forced_draw.call_count >= 1
+
+    # Moving it again keeps it on the circle and leaves the guard flag clear.
+    _type_lifetime(comp, "3.0")
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-3
+    assert abs(y[0] - expected_s) < 1e-3
+    assert comp_widget._updating_from_lifetime is False
+
+    # The typed component follows a frequency change.
+    parent._broadcast_frequency_value_across_tabs("40")
+    expected_g, expected_s = phasor_from_lifetime(40.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-12
+    assert abs(y[0] - expected_s) < 1e-12
+
+    # The run keeps the mark, so it still follows after being stored.
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.2")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+    parent._broadcast_frequency_value_across_tabs("80")
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-12
+    assert abs(y[0] - expected_s) < 1e-12
+
+    # Typing coordinates pins the component.
+    comp.g_edit.setText("0.3")
+    comp.s_edit.setText("0.2")
+    comp_widget._on_component_coords_changed(0)
+    parent._broadcast_frequency_value_across_tabs("40")
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - 0.3) < 1e-9
+    assert abs(y[0] - 0.2) < 1e-9
 
     for harmonic in (1, 2, 3):
         parent.harmonic = harmonic
@@ -278,9 +445,8 @@ def test_components_lifetime_without_harmonics_metadata(
     assert comp.dot is not None
 
 
-def test_components_widget_component_creation_and_line(
-    make_viewer_model, qtbot
-):
+def test_components_widget_dots_lines_and_labels(make_viewer_model, qtbot):
+    """Placed components draw dots, a line and name labels on the plot."""
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -289,7 +455,8 @@ def test_components_widget_component_creation_and_line(
     comp_widget = parent.components_tab
     parent.tab_widget.setCurrentWidget(parent.components_tab)
 
-    # Set component coordinates
+    # Set component coordinates; a component with a name gets a label.
+    comp_widget.components[0].name_edit.setText("A")
     comp_widget.components[0].g_edit.setText("0.25")
     comp_widget.components[0].s_edit.setText("0.15")
     comp_widget._on_component_coords_changed(0)
@@ -310,12 +477,94 @@ def test_components_widget_component_creation_and_line(
     assert abs(x0[0] - 0.25) < 1e-9 and abs(y0[0] - 0.15) < 1e-9
     assert abs(x1[0] - 0.75) < 1e-9 and abs(y1[0] - 0.45) < 1e-9
 
+    # The dots are only shown while the Components tab is active.
+    assert comp_widget.components[0].dot.get_visible() is True
+    parent.tab_widget.setCurrentIndex(
+        parent.tab_widget.indexOf(parent.fret_tab)
+    )
+    assert comp_widget.components[0].dot.get_visible() is False
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    assert comp_widget.components[0].dot.get_visible() is True
 
-def test_components_widget_fraction_calculation_creates_both_layers(
+    # The label is styled from the label dialog.
+    assert comp_widget.components[0].text is not None
+
+    comp_widget._open_label_style_dialog()
+    assert comp_widget.style_dialog.isVisible()
+
+    comp_widget.fontsize_spin.setValue(14)
+    comp_widget.bold_checkbox.setChecked(True)
+    comp_widget.italic_checkbox.setChecked(True)
+    comp_widget._on_label_style_changed()
+
+    txt = comp_widget.components[0].text
+    assert txt.get_fontsize() == 14
+    assert txt.get_fontweight() == 'bold'
+    assert txt.get_fontstyle() == 'italic'
+
+    # Setting/clearing a name creates, repositions and removes the label.
+    assert comp_widget.components[1].text is None
+    comp_widget.components[1].name_edit.setText("Alpha")
+    comp_widget._on_component_name_changed(1)
+    assert comp_widget.components[1].text is not None
+    # Renaming again exercises the previous-position branch.
+    comp_widget.components[1].name_edit.setText("Beta")
+    comp_widget._on_component_name_changed(1)
+    assert comp_widget.components[1].text is not None
+    # Clearing the name removes the label.
+    comp_widget.components[1].name_edit.setText("")
+    comp_widget._on_component_name_changed(1)
+
+    # Components are stored per harmonic.
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    _rename_component(comp_widget, 0, "Test Component 1")
+    comp_widget._on_component_coords_changed(0)
+
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    _rename_component(comp_widget, 1, "Test Component 2")
+    comp_widget._on_component_coords_changed(1)
+
+    # Switch to harmonic 2: components are cleared in the UI...
+    comp_widget._on_harmonic_changed(2)
+    assert comp_widget.components[0].g_edit.text() == ""
+    assert comp_widget.components[1].g_edit.text() == ""
+
+    # ...but kept (unsaved until the analysis runs) under harmonic 1
+    components_settings = parent.layer_settings(layer)['component_analysis']
+    assert '0' in components_settings['components']
+    stored_comp1 = components_settings['components']['0']
+    assert '1' in stored_comp1['gs_harmonics']
+    harmonic_1_data = stored_comp1['gs_harmonics']['1']
+    assert abs(harmonic_1_data['g'] - 0.2) < 1e-6
+    assert abs(harmonic_1_data['s'] - 0.1) < 1e-6
+    assert stored_comp1['name'] == "Test Component 1"
+
+    # Switch back to harmonic 1: components are restored.
+    comp_widget._on_harmonic_changed(1)
+    assert abs(float(comp_widget.components[0].g_edit.text()) - 0.2) < 1e-6
+    assert abs(float(comp_widget.components[0].s_edit.text()) - 0.1) < 1e-6
+    assert comp_widget.components[0].name_edit.text() == "Test Component 1"
+
+    # Clearing all components removes the dots and empties every field.
+    assert comp_widget.components[0].dot is not None
+    assert comp_widget.components[1].dot is not None
+    comp_widget._clear_components()
+    assert comp_widget.components[0].dot is None
+    assert comp_widget.components[1].dot is None
+    assert comp_widget.components[0].g_edit.text() == ""
+    assert comp_widget.components[0].name_edit.text() == ""
+    assert comp_widget.components[1].g_edit.text() == ""
+    assert comp_widget.components[1].name_edit.text() == ""
+
+
+def test_components_linear_projection_fractions_and_colormap(
     make_viewer_model,
     qtbot,
 ):
-    """Test that fraction calculation creates both comp1 and comp2 layers."""
+    """Linear Projection writes the expected fraction layer, whose colormap
+    and contrast edits are followed by the tab."""
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -378,7 +627,6 @@ def test_components_widget_fraction_calculation_creates_both_layers(
 
     # Only comp1 fractions layer should be created (comp2 is no longer created)
     assert comp_widget.comp1_fractions_layer in viewer.layers
-    assert comp_widget.comp2_fractions_layer is None
 
     # Check data
     comp1_data = comp_widget.comp1_fractions_layer.data
@@ -395,170 +643,115 @@ def test_components_widget_fraction_calculation_creates_both_layers(
 
     assert isinstance(comp_widget.component_line, LineCollection)
 
-
-def test_components_widget_colormap_change(make_viewer_model, qtbot):
-    """Test that changing colormap on comp1 layer works correctly."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-
-    # Ensure Linear Projection is selected
-    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
-
-    # Create components and calculate fractions
-    comp_widget.components[0].g_edit.setText("0.3")
-    comp_widget.components[0].s_edit.setText("0.2")
-    comp_widget._on_component_coords_changed(0)
-    comp_widget.components[1].g_edit.setText("0.9")
-    comp_widget.components[1].s_edit.setText("0.6")
-    comp_widget._on_component_coords_changed(1)
-    comp_widget._run_analysis()
-
-    # Store original colormap
+    # Changing the colormap on the comp1 layer updates the stored gradient.
     orig_comp1_colors = (
         comp_widget.comp1_fractions_layer.colormap.colors.copy()
     )
-
-    # Change colormap on comp1 layer
-    comp_widget.comp1_fractions_layer.colormap = 'viridis'
-
-    # comp1 should have new colormap
-    comp1_colors = comp_widget.comp1_fractions_layer.colormap.colors
-
-    # Should be different from original
-    assert not np.allclose(orig_comp1_colors, comp1_colors)
-
-    # comp2_fractions_layer should not exist
-    assert comp_widget.comp2_fractions_layer is None
-
-
-def test_components_widget_colormap_update_legacy(make_viewer_model, qtbot):
-    """Legacy test updated for new dual-layer structure."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-
-    # Ensure Linear Projection is selected
-    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
-
-    # Create components
-    comp_widget.components[0].g_edit.setText("0.3")
-    comp_widget.components[0].s_edit.setText("0.2")
-    comp_widget._on_component_coords_changed(0)
-    comp_widget.components[1].g_edit.setText("0.9")
-    comp_widget.components[1].s_edit.setText("0.6")
-    comp_widget._on_component_coords_changed(1)
-    comp_widget._run_analysis()
-
-    # Original colormap snapshot
     orig_colors = comp_widget.fractions_colormap.copy()
-
-    # Change colormap on comp1 layer
     comp_widget.comp1_fractions_layer.colormap = 'viridis'
-
-    # Ensure updated
+    comp1_colors = comp_widget.comp1_fractions_layer.colormap.colors
+    assert not np.allclose(orig_comp1_colors, comp1_colors)
     assert comp_widget.fractions_colormap is not None
     assert comp_widget.comp1_fractions_layer.colormap.name == 'viridis'
-    # Colors changed
     assert not np.array_equal(orig_colors, comp_widget.fractions_colormap)
 
-
-def test_components_widget_colormap_fallback_handling(
-    make_viewer_model, qtbot
-):
-    """Test that colormap sync handles colormaps without colors attribute gracefully."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-
-    # Ensure Linear Projection is selected
-    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
-
-    # Create components and calculate fractions
-    comp_widget.components[0].g_edit.setText("0.5")
-    comp_widget.components[0].s_edit.setText("0.3")
-    comp_widget._on_component_coords_changed(0)
-    comp_widget.components[1].g_edit.setText("0.8")
-    comp_widget.components[1].s_edit.setText("0.6")
-    comp_widget._on_component_coords_changed(1)
-    comp_widget._run_analysis()
-
-    # Use a built-in colormap name (these might not have colors attribute)
+    # A built-in colormap name (which might not have a colors attribute)
+    # falls back to default colormaps without crashing.
     comp_widget.comp1_fractions_layer.colormap = 'gray'
-
-    # Should fall back to default colormaps without crashing
     assert comp_widget.comp1_fractions_layer.colormap is not None
-    assert comp_widget.comp2_fractions_layer is None
+
+    # Changing the fraction layer's colormap/contrast triggers handlers.
+    fl = comp_widget.comp1_fractions_layer
+    fl.contrast_limits = (0.1, 0.9)
+    fl.colormap = "viridis"
+    assert comp_widget.colormap_contrast_limits is not None
 
 
-def test_components_widget_visibility_toggle(make_viewer_model, qtbot):
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    # Create components
-    comp_widget.components[0].g_edit.setText("0.4")
-    comp_widget.components[0].s_edit.setText("0.25")
-    comp_widget._on_component_coords_changed(0)
-    comp_widget.components[1].g_edit.setText("0.7")
-    comp_widget.components[1].s_edit.setText("0.45")
-    comp_widget._on_component_coords_changed(1)
-
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    assert comp_widget.components[0].dot.get_visible() is True
-
-    # Switch to another tab
-    parent.tab_widget.setCurrentIndex(
-        parent.tab_widget.indexOf(parent.fret_tab)
-    )
-    assert comp_widget.components[0].dot.get_visible() is False
-
-    # Back to components
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    assert comp_widget.components[0].dot.get_visible() is True
-
-
-def test_components_widget_line_settings_dialog_effects(
-    make_viewer_model, qtbot
+def test_components_fraction_histogram_overlay_and_line_settings(
+    make_viewer_model,
+    qtbot,
 ):
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    """The fraction histogram overlay drawn along the line, and the line
+    settings dialog."""
+    from matplotlib.image import AxesImage
 
-    # Ensure Linear Projection is selected
-    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+    viewer, layer, parent, comp_widget = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp_widget)
 
-    # Create components
-    comp_widget.components[0].g_edit.setText("0.2")
-    comp_widget.components[0].s_edit.setText("0.15")
-    comp_widget._on_component_coords_changed(0)
-    comp_widget.components[1].g_edit.setText("0.6")
-    comp_widget.components[1].s_edit.setText("0.45")
-    comp_widget._on_component_coords_changed(1)
-    comp_widget._run_analysis()
+    # No overlay by default.
+    assert comp_widget.show_fraction_histogram is False
+    assert comp_widget.component_histogram is None
 
+    # Enable the overlay and redraw.
+    comp_widget.show_fraction_histogram = True
+    comp_widget.draw_line_between_components()
+    assert comp_widget.component_histogram is not None
+    # The overlay is a single seamless gradient image (no outline).
+    assert len(comp_widget.component_histogram) == 1
+    fill = comp_widget.component_histogram[0]
+    assert isinstance(fill, AxesImage)
+    assert fill in comp_widget.get_all_artists()
+    assert fill.get_alpha() == comp_widget.histogram_alpha
+
+    # Disable again -> overlay removed on next draw.
+    comp_widget.show_fraction_histogram = False
+    comp_widget.draw_line_between_components()
+    assert comp_widget.component_histogram is None
+
+    comp_widget.show_fraction_histogram = True
+
+    # Overlay height scales the histogram profile.
+    def _profile_height():
+        comp_widget.draw_line_between_components()
+        # The gradient image extent is in the local (u, v) frame; its top edge
+        # (v_max) scales linearly with the height setting.
+        im = comp_widget.component_histogram[0]
+        return im.get_extent()[3]
+
+    comp_widget.histogram_overlay_height = 0.1
+    small = _profile_height()
+    comp_widget.histogram_overlay_height = 0.6
+    large = _profile_height()
+    assert large > small
+    assert np.isclose(large / small, 6.0, rtol=1e-3)
+
+    # A negative histogram offset mirrors the overlay to the other side.
+    def _apex_display():
+        comp_widget.draw_line_between_components()
+        im = comp_widget.component_histogram[0]
+        # Map the local apex (u=0, top of the profile) through the image
+        # transform to display coordinates.
+        v_max = im.get_extent()[3]
+        return im.get_transform().transform((0.0, v_max))
+
+    comp_widget.histogram_offset = 0.1
+    pos_apex = _apex_display()
+    comp_widget.histogram_offset = -0.1
+    neg_apex = _apex_display()
+    assert not np.allclose(pos_apex, neg_apex)
+
+    # Offset and transparency edits are stored (unsaved until the analysis
+    # runs again) and redrawn.
+    comp_widget._on_histogram_offset_changed(0.3)
+    assert comp_widget.histogram_offset == 0.3
+    settings = parent.layer_settings(layer)["component_analysis"]
+    assert settings["two_component_line_settings"]["histogram_offset"] == 0.3
+
+    comp_widget._on_histogram_transparency_changed(0.4)
+    assert abs(comp_widget.histogram_alpha - 0.6) < 1e-9
+    settings = parent.layer_settings(layer)["component_analysis"]
+    assert (
+        abs(settings["two_component_line_settings"]["histogram_alpha"] - 0.6)
+        < 1e-9
+    )
+
+    # The line settings dialog.
     comp_widget._open_plot_settings_dialog()
     assert comp_widget.plot_dialog.isVisible()
 
-    # Toggle settings
     comp_widget.colormap_line_checkbox.setChecked(False)
     comp_widget._on_plot_setting_changed()
     assert not comp_widget.show_colormap_line
-
     comp_widget.colormap_line_checkbox.setChecked(True)
     comp_widget._on_plot_setting_changed()
     assert comp_widget.show_colormap_line
@@ -566,13 +759,12 @@ def test_components_widget_line_settings_dialog_effects(
     # Change offset (slider uses 3-decimal factor: 120 -> 0.120)
     comp_widget.line_offset_slider.setValue(120)
     assert abs(comp_widget.line_offset - 0.12) < 1e-6
-
-    # Values can also be typed directly via the spinbox, which drives the slider.
+    # Values can also be typed directly via the spinbox, which drives the
+    # slider.
     comp_widget.line_offset_spin.setValue(-0.25)
     assert abs(comp_widget.line_offset + 0.25) < 1e-6
     assert comp_widget.line_offset_slider.value() == -250
 
-    # Change width
     comp_widget.line_width_spin.setValue(5.0)
     assert comp_widget.line_width == 5.0
 
@@ -581,102 +773,109 @@ def test_components_widget_line_settings_dialog_effects(
     assert abs(comp_widget.line_alpha - 0.55) < 1e-6
 
 
-def test_components_widget_label_style_dialog(make_viewer_model, qtbot):
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-
-    # Create a component with a name (label drawn)
-    comp_widget.components[0].name_edit.setText("A")
-    comp_widget.components[0].g_edit.setText("0.3")
-    comp_widget.components[0].s_edit.setText("0.2")
-    comp_widget._on_component_coords_changed(0)
-
-    assert comp_widget.components[0].text is not None
-
-    comp_widget._open_label_style_dialog()
-    assert comp_widget.style_dialog.isVisible()
-
-    comp_widget.fontsize_spin.setValue(14)
-    comp_widget.bold_checkbox.setChecked(True)
-    comp_widget.italic_checkbox.setChecked(True)
-    comp_widget._on_label_style_changed()
-
-    txt = comp_widget.components[0].text
-    assert txt.get_fontsize() == 14
-    assert txt.get_fontweight() == 'bold'
-    assert txt.get_fontstyle() == 'italic'
-
-
-def test_components_widget_add_remove_components(make_viewer_model, qtbot):
-    """Test adding and removing components."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
+def test_components_adding_and_removing_components(make_viewer_model, qtbot):
+    """Component count drives the remove buttons, numbering and methods."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
 
     # Initially should have 2 components
-    assert len(comp_widget.components) == 2
-    assert comp_widget.add_component_btn.isEnabled()
-    assert not comp_widget.components[
-        0
-    ].remove_button.isEnabled()  # Can't remove when only 2
+    assert len(comp.components) == 2
+    assert comp.add_component_btn.isEnabled()
+    assert not comp.components[0].remove_button.isEnabled()
 
-    # Add a component
-    comp_widget._add_component()
-    assert len(comp_widget.components) == 3
-    assert comp_widget.components[
-        0
-    ].remove_button.isEnabled()  # Now can remove
-
-    # Remove a component
-    comp_widget._remove_component()
-    assert len(comp_widget.components) == 2
-    assert not comp_widget.components[
-        0
-    ].remove_button.isEnabled()  # Back to minimum
-
-
-def test_components_widget_analysis_type_changes(make_viewer_model, qtbot):
-    """Test analysis type changes based on component count."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    # With 2 components, both options available
-    assert comp_widget.analysis_type_combo.count() == 2
-    assert "Linear Projection" in [
-        comp_widget.analysis_type_combo.itemText(i)
-        for i in range(comp_widget.analysis_type_combo.count())
+    # With 2 components, both analyses are available.
+    assert comp.analysis_type_combo.count() == 2
+    items = [
+        comp.analysis_type_combo.itemText(i)
+        for i in range(comp.analysis_type_combo.count())
     ]
-    assert "Component Fit" in [
-        comp_widget.analysis_type_combo.itemText(i)
-        for i in range(comp_widget.analysis_type_combo.count())
-    ]
+    assert "Linear Projection" in items
+    assert "Component Fit" in items
 
-    # Add third component
-    comp_widget._add_component()
-    # Should only have Component Fit available
-    assert comp_widget.analysis_type_combo.count() == 1
-    assert comp_widget.analysis_type_combo.itemText(0) == "Component Fit"
+    # The run button's text follows the analysis type.
+    assert comp.calculate_button.text() == "Display Component Fraction Images"
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    assert comp.calculate_button.text() == "Run Multi-Component Analysis"
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    assert comp.calculate_button.text() == "Display Component Fraction Images"
+
+    # Adding a component enables removal and leaves only Component Fit.
+    comp._add_component()
+    assert len(comp.components) == 3
+    assert comp.components[0].remove_button.isEnabled()
+    assert comp.analysis_type_combo.count() == 1
+    assert comp.analysis_type_combo.itemText(0) == "Component Fit"
+
+    # Removing brings it back to the minimum.
+    comp._remove_component()
+    assert len(comp.components) == 2
+    assert not comp.components[0].remove_button.isEnabled()
+
+    # Clicking the remove button on a specific component removes it and
+    # renumbers the remaining ones.
+    comp._add_component()
+    assert len(comp.components) == 3
+    comp.components[0].name_edit.setText("Comp A")
+    comp.components[1].name_edit.setText("Comp B")
+    comp.components[2].name_edit.setText("Comp C")
+    for c in comp.components:
+        assert c.remove_button.isEnabled()
+    comp.components[1].remove_button.click()
+    assert len(comp.components) == 2
+    assert comp.components[0].name_edit.text() == "Comp A"
+    assert comp.components[0].idx == 0
+    assert comp.components[0].number_label.text() == "1."
+    assert comp.components[1].name_edit.text() == "Comp C"
+    assert comp.components[1].idx == 1
+    assert comp.components[1].number_label.text() == "2."
+    assert not comp.components[0].remove_button.isEnabled()
+    assert not comp.components[1].remove_button.isEnabled()
+
+    # Cannot remove when count <= 2
+    comp._remove_component()
+    assert len(comp.components) == 2
+
+    comp._add_component()
+    comp._add_component()
+    assert len(comp.components) == 4
+
+    # Remove with invalid indices (no-ops)
+    comp._remove_component(-1)
+    comp._remove_component(100)
+    assert len(comp.components) == 4
+
+    # Select component 0, remove component 2 (was_selected is False)
+    comp._select_component_item(0)
+    comp._remove_component(2)
+    assert len(comp.components) == 3
+    assert comp._selected_component is comp.components[0]
+    assert comp.components[0].card_frame.property("selected")
+
+    # Remove passing ComponentState instance
+    comp_to_remove = comp.components[2]
+    comp._remove_component(comp_to_remove)
+    assert len(comp.components) == 2
+
+    # Add back to 3 and remove with idx=None (removes last component)
+    comp._add_component()
+    assert len(comp.components) == 3
+    comp._select_component_item(2)  # last component selected
+    comp._remove_component(None)
+    assert len(comp.components) == 2
+    # Since was_selected was True on index 2, new selection is
+    # min(2, len - 1) = 1
+    assert comp._selected_component is comp.components[1]
+    assert comp.components[1].card_frame.property("selected")
+
+    # Backward compatibility stubs execute without raising.
+    comp._refresh_editor_title()
+    comp._update_row_coords_label(0)
+    comp._update_all_row_coords_labels()
 
 
-def test_components_widget_multi_component_analysis(make_viewer_model, qtbot):
-    """Test multi-component analysis with component fit."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
+def test_components_three_component_fit(make_viewer_model, qtbot):
+    """Three components draw a polygon, and the fit writes one fraction
+    layer each; re-displaying keeps manual colormap/contrast/gamma."""
+    viewer, layer, parent, comp_widget = _setup_components(make_viewer_model)
 
     # Add third component
     comp_widget._add_component()
@@ -704,374 +903,105 @@ def test_components_widget_multi_component_analysis(make_viewer_model, qtbot):
 
     # Run analysis - this should create fraction layers using component fit
     comp_widget._run_analysis()
-
-    # Should create multiple fraction layers
     assert len(comp_widget.fraction_layers) == 3
 
-
-def test_components_widget_polygon_visualization(make_viewer_model, qtbot):
-    """Test that 3+ components create a polygon instead of a line."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-
-    # Add third component
-    comp_widget._add_component()
-
-    # Set three component coordinates
-    comp_widget.components[0].g_edit.setText("0.2")
-    comp_widget.components[0].s_edit.setText("0.1")
-    comp_widget._on_component_coords_changed(0)
-
-    comp_widget.components[1].g_edit.setText("0.5")
-    comp_widget.components[1].s_edit.setText("0.3")
-    comp_widget._on_component_coords_changed(1)
-
-    comp_widget.components[2].g_edit.setText("0.8")
-    comp_widget.components[2].s_edit.setText("0.5")
-    comp_widget._on_component_coords_changed(2)
-
-    # Should have polygon, not line
-    assert comp_widget.component_polygon is not None
-    assert comp_widget.component_line is None
-
-
-def test_components_widget_harmonic_storage_and_switching(
-    make_viewer_model, qtbot
-):
-    """Test component storage across harmonic changes."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    # Set components for harmonic 1
-    comp_widget.components[0].g_edit.setText("0.2")
-    comp_widget.components[0].s_edit.setText("0.1")
-    comp_widget.components[0].name_edit.setText("Test Component 1")
-    comp_widget._on_component_coords_changed(0)
-
-    comp_widget.components[1].g_edit.setText("0.8")
-    comp_widget.components[1].s_edit.setText("0.5")
-    comp_widget.components[1].name_edit.setText("Test Component 2")
-    comp_widget._on_component_coords_changed(1)
-
-    # Switch to harmonic 2
-    comp_widget._on_harmonic_changed(2)
-
-    # Components should be cleared in UI
-    assert comp_widget.components[0].g_edit.text() == ""
-    assert comp_widget.components[1].g_edit.text() == ""
-
-    # But kept (unsaved until the analysis runs) under harmonic 1
-    components_settings = parent.layer_settings(layer)['component_analysis']
-    assert '0' in components_settings['components']  # Changed from 1 to '0'
-    stored_comp1 = components_settings['components'][
-        '0'
-    ]  # Changed from [1][0] to ['0']
-
-    # Access the gs_harmonics for harmonic 1
-    assert '1' in stored_comp1['gs_harmonics']
-    harmonic_1_data = stored_comp1['gs_harmonics']['1']
-
-    assert abs(harmonic_1_data['g'] - 0.2) < 1e-6
-    assert abs(harmonic_1_data['s'] - 0.1) < 1e-6
-    assert stored_comp1['name'] == "Test Component 1"
-
-    # Switch back to harmonic 1
-    comp_widget._on_harmonic_changed(1)
-
-    # Components should be restored
-    assert abs(float(comp_widget.components[0].g_edit.text()) - 0.2) < 1e-6
-    assert abs(float(comp_widget.components[0].s_edit.text()) - 0.1) < 1e-6
-    assert comp_widget.components[0].name_edit.text() == "Test Component 1"
-
-
-def test_components_widget_clear_all_components(make_viewer_model, qtbot):
-    """Test clearing all components."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(
-        parent.components_tab
-    )  # Make sure tab is active
-
-    # Set components
-    comp_widget.components[0].g_edit.setText("0.3")
-    comp_widget.components[0].s_edit.setText("0.2")
-    comp_widget.components[0].name_edit.setText("Test")
-    comp_widget._on_component_coords_changed(0)
-
-    comp_widget.components[1].g_edit.setText("0.7")
-    comp_widget.components[1].s_edit.setText("0.5")
-    comp_widget._on_component_coords_changed(1)
-
-    # Verify components exist
-    assert comp_widget.components[0].dot is not None
-    assert comp_widget.components[1].dot is not None
-
-    # Clear all
-    comp_widget._clear_components()
-
-    # Verify cleared
-    assert comp_widget.components[0].dot is None
-    assert comp_widget.components[1].dot is None
-    assert comp_widget.components[0].g_edit.text() == ""
-    assert comp_widget.components[0].name_edit.text() == ""
-    assert comp_widget.components[1].g_edit.text() == ""
-    assert comp_widget.components[1].name_edit.text() == ""
-
-
-def test_components_widget_calculate_button_text_changes(
-    make_viewer_model, qtbot
-):
-    """Test that calculate button text changes based on analysis type."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    # Initially should be Linear Projection
-    assert (
-        comp_widget.calculate_button.text()
-        == "Display Component Fraction Images"
-    )
-
-    # Change to Component Fit
-    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
-    assert (
-        comp_widget.calculate_button.text() == "Run Multi-Component Analysis"
-    )
-
-    # Change back to Linear Projection
-    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
-    assert (
-        comp_widget.calculate_button.text()
-        == "Display Component Fraction Images"
-    )
-
-
-def test_components_widget_component_state_initialization(
-    make_viewer_model, qtbot
-):
-    """Test that ComponentState objects are properly initialized."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    # Check first component state
-    comp0 = comp_widget.components[0]
-    assert comp0.idx == 0
-    assert comp0.dot is None
-    assert comp0.text is None
-    assert comp0.label == "Component 1"
-    assert comp0.text_offset == (0.02, 0.02)
-
-    # Check second component state
-    comp1 = comp_widget.components[1]
-    assert comp1.idx == 1
-    assert comp1.dot is None
-    assert comp1.text is None
-    assert comp1.label == "Component 2"
-    assert comp1.text_offset == (0.02, 0.02)
-
-
-def test_components_widget_ui_elements_stored(make_viewer_model, qtbot):
-    """Test that ui_elements dictionary is properly stored in ComponentState."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    comp = comp_widget.components[0]
-    assert hasattr(comp, 'ui_elements')
-    assert 'lifetime_label' in comp.ui_elements
-    assert 'comp_layout' in comp.ui_elements
-    assert comp.ui_elements['lifetime_label'] is not None
-    assert comp.ui_elements['comp_layout'] is not None
-
-
-def test_components_widget_default_settings_structure(
-    make_viewer_model, qtbot
-):
-    """Test the structure of default components settings."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    default_settings = comp_widget._get_default_components_settings()
-
-    assert 'analysis_type' in default_settings
-    assert default_settings['analysis_type'] == 'Linear Projection'
-    assert 'components' in default_settings
-    assert isinstance(default_settings['components'], dict)
-    # The default keys must match the ones edits are persisted under, so the
-    # restore path re-applies them (see ``_restore_line_and_label_settings``).
-    line_key = 'two_component_line_settings'
-    assert line_key in default_settings
-    assert 'show_colormap_line' in default_settings[line_key]
-    assert 'show_component_dots' in default_settings[line_key]
-    assert 'line_offset' in default_settings[line_key]
-    assert 'line_width' in default_settings[line_key]
-    assert 'line_alpha' in default_settings[line_key]
-    assert 'default_component_color' in default_settings[line_key]
-    assert 'show_fraction_histogram' in default_settings[line_key]
-    assert 'histogram_overlay_height' in default_settings[line_key]
-    assert 'histogram_offset' in default_settings[line_key]
-    assert 'histogram_alpha' in default_settings[line_key]
-    label_key = 'two_components_label_settings'
-    assert label_key in default_settings
-    assert 'fontsize' in default_settings[label_key]
-    assert 'bold' in default_settings[label_key]
-    assert 'italic' in default_settings[label_key]
-    assert 'color' in default_settings[label_key]
-
-
-def test_components_widget_style_state_initialization(
-    make_viewer_model, qtbot
-):
-    """Test that style state variables are properly initialized."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    assert comp_widget.label_fontsize == 10
-    assert comp_widget.label_bold is False
-    assert comp_widget.label_italic is False
-    assert comp_widget.label_color == 'black'
-
-
-def test_components_widget_line_settings_initialization(
-    make_viewer_model, qtbot
-):
-    """Test that line settings are properly initialized."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    assert comp_widget.show_colormap_line is True
-    assert comp_widget.show_component_dots is True
-    assert comp_widget.line_offset == 0.0
-    assert comp_widget.line_width == 3.0
-    assert comp_widget.line_alpha == 1
-    assert comp_widget.default_component_color == 'dimgray'
-
-
-def test_components_widget_flags_initialization(make_viewer_model, qtbot):
-    """Test that internal flags are properly initialized."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    assert comp_widget._updating_from_lifetime is False
-    assert comp_widget._updating_settings is False
-    assert comp_widget._analysis_attempted is False
-    assert comp_widget.drag_events_connected is False
-    assert comp_widget.dragging_component_idx is None
-    assert comp_widget.dragging_label_idx is None
-
-
-def test_components_widget_dialogs_initialization(make_viewer_model, qtbot):
-    """Test that dialog references are initialized as None."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    assert comp_widget.plot_dialog is None
-    assert comp_widget.style_dialog is None
-
-
-def test_components_widget_component_colors_list(make_viewer_model, qtbot):
-    """Test that component colors lists are properly initialized."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    assert len(comp_widget.component_colors) == 9
-    assert comp_widget.component_colors[0] == 'magenta'
-    assert comp_widget.component_colors[1] == 'cyan'
-
-    assert len(comp_widget.component_colormap_names) == 9
-    assert comp_widget.component_colormap_names[0] == 'magenta'
-    assert comp_widget.component_colormap_names[1] == 'cyan'
-
-
-def test_components_widget_harmonic_signal_connection(
-    make_viewer_model, qtbot
-):
-    """Test that harmonic spinbox signal is connected."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    # Change harmonic and verify method is called
-    parent.harmonic_spinbox.setValue(2)
-    assert comp_widget.current_harmonic == 2
-
-
-def test_components_widget_scroll_area_exists(make_viewer_model, qtbot):
-    """Test that a scroll area is created for the components widget."""
-    from qtpy.QtCore import Qt
-    from qtpy.QtWidgets import QScrollArea
-
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-
-    # The layout should contain a scroll area
-    assert comp_widget.layout() is not None
-    assert comp_widget.layout().count() > 0
-
-    # The horizontal scrollbar must only appear once the content genuinely
-    # can't shrink further, not be permanently suppressed.
-    scroll_area = comp_widget.findChild(QScrollArea)
-    assert scroll_area is not None
-    assert scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
-
-
-def test_components_fraction_range_updates_layer_and_is_reversible(
+    # Component-colour helper for both the Component Fit (>=2 layers) path
+    # and a smaller count.
+    assert comp_widget._get_component_colors_for_count(3) is not None
+    assert comp_widget._get_component_colors_for_count(2) is not None
+
+    # Record the default colormap of an untouched layer, then manually tweak
+    # a different one's colormap, contrast limits and gamma.
+    other_layer = comp_widget.fraction_layers[0]
+    other_colormap = other_layer.colormap.name
+
+    tweaked_layer = comp_widget.fraction_layers[1]
+    tweaked_layer.colormap = "magma"
+    tweaked_layer.contrast_limits = (0.15, 0.85)
+    tweaked_layer.gamma = 0.4
+
+    # Press "Display Component Fraction Images" again.
+    comp_widget._run_analysis()
+
+    new_tweaked = viewer.layers[tweaked_layer.name]
+    assert new_tweaked.colormap.name == "magma"
+    assert np.allclose(new_tweaked.contrast_limits, (0.15, 0.85))
+    assert new_tweaked.gamma == 0.4
+
+    # The untouched layer must keep its (default) colormap, not reset.
+    new_other = viewer.layers[other_layer.name]
+    assert new_other.colormap.name == other_colormap
+
+    # Removing the last layer clears the drawn polygon.
+    for fraction in list(comp_widget.fraction_layers):
+        viewer.layers.remove(fraction)
+    viewer.layers.remove(layer)
+    assert comp_widget.component_polygon is None
+
+
+def test_components_fraction_range_clips_from_the_original_data(
     make_viewer_model,
     qtbot,
 ):
-    """Range slider should clip fraction layer data from original values."""
+    """The range slider clips the fraction layer from its original values,
+    in first- or second-component space, and spans every checked one."""
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    _setup_linear_projection(comp_widget)
 
-    comp_widget.components[0].g_edit.setText("0.2")
-    comp_widget.components[0].s_edit.setText("0.1")
-    comp_widget._on_component_coords_changed(0)
-    comp_widget.components[1].g_edit.setText("0.8")
-    comp_widget.components[1].s_edit.setText("0.5")
-    comp_widget._on_component_coords_changed(1)
-    comp_widget._run_analysis()
-
-    comp_name = comp_widget.components[0].name_edit.text().strip()
-    if not comp_name:
-        comp_name = "Component 1"
-    _check_histogram_components(comp_widget, [comp_name])
-
+    name1, name2 = comp_widget._linear_projection_component_names()
     fraction_layer = comp_widget.comp1_fractions_layer
-    original_data = fraction_layer.data.copy()
 
+    # The slider covers all checked components, not just the first one.
+    _check_histogram_components(comp_widget, [name1, name2])
+    original = np.asarray(
+        fraction_layer.metadata.get(
+            'fraction_data_original', fraction_layer.data
+        ),
+        dtype=float,
+    )
+    original = original[np.isfinite(original)]
+    # The second component is 1 - the first, so together they span both ends.
+    expected_min = min(float(original.min()), float(1.0 - original.max()))
+    expected_max = max(float(original.max()), float(1.0 - original.min()))
+    factor = comp_widget.histogram_widget.range_factor
+    slider = comp_widget.histogram_widget.range_slider
+    assert slider.minimum() / factor == pytest.approx(expected_min, abs=1e-3)
+    assert slider.maximum() / factor == pytest.approx(expected_max, abs=1e-3)
+    # The handles are not clipped to the first component's contrast limits
+    # either, so neither distribution is cut off.
+    range_min, range_max = comp_widget.histogram_widget.get_range()
+    assert range_min == pytest.approx(expected_min, abs=1e-2)
+    assert range_max == pytest.approx(expected_max, abs=1e-2)
+
+    # The shared fraction layer is clipped once when both components show:
+    # the first component owns the layer, so it is clipped to the slider
+    # range rather than to the second component's mirrored range.
+    original = fraction_layer.metadata.get(
+        'fraction_data_original', fraction_layer.data
+    ).copy()
+    comp_widget._on_fraction_range_changed(0.2, 0.8)
+    np.testing.assert_allclose(
+        fraction_layer.data,
+        np.clip(original, 0.2, 0.8),
+        rtol=1e-6,
+        atol=1e-9,
+        equal_nan=True,
+    )
+    assert len(comp_widget.histogram_widget._datasets) == 2
+    comp_widget._on_fraction_range_changed(0.0, 1.0)
+
+    # One component: the layer is clipped, and expanding the range restores
+    # values from the original data, not from the already-clipped layer.
+    _check_histogram_components(comp_widget, [name1])
+    original_data = fraction_layer.data.copy()
     min_val, max_val = 0.2, 0.8
     comp_widget._on_fraction_range_changed(min_val, max_val)
-
     np.testing.assert_allclose(
         fraction_layer.data,
         np.clip(original_data, min_val, max_val),
@@ -1080,9 +1010,6 @@ def test_components_fraction_range_updates_layer_and_is_reversible(
         equal_nan=True,
     )
     assert tuple(fraction_layer.contrast_limits) == (min_val, max_val)
-
-    # Expanding the range should restore values from original data, not from
-    # the already-clipped layer data.
     comp_widget._on_fraction_range_changed(0.0, 1.0)
     np.testing.assert_allclose(
         fraction_layer.data,
@@ -1092,89 +1019,11 @@ def test_components_fraction_range_updates_layer_and_is_reversible(
         equal_nan=True,
     )
 
-
-def test_components_second_component_histogram_inverts_fraction(
-    make_viewer_model,
-    qtbot,
-):
-    """Second component option shows 1 - first fraction with reversed colormap."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
-
-    comp_widget.components[0].g_edit.setText("0.2")
-    comp_widget.components[0].s_edit.setText("0.1")
-    comp_widget._on_component_coords_changed(0)
-    comp_widget.components[1].g_edit.setText("0.8")
-    comp_widget.components[1].s_edit.setText("0.5")
-    comp_widget._on_component_coords_changed(1)
-    comp_widget._run_analysis()
-
-    name1, name2 = comp_widget._linear_projection_component_names()
-    assert name1 is not None and name2 is not None
-
-    # Both components must be toggleable on their cards.
-    assert _histogram_toggle(comp_widget, name1).isEnabled()
-    assert _histogram_toggle(comp_widget, name2).isEnabled()
-
-    fraction_layers_map, invert = comp_widget._resolve_histogram_component(
-        name2
-    )
-    assert invert is True
-    assert fraction_layers_map  # underlying first-component layers
-
-    first_layer = comp_widget.comp1_fractions_layer
-
-    # Selecting the second component displays the inverted distribution.
-    _check_histogram_components(comp_widget, [name2])
-    comp_widget.update_component_histogram()
-
-    displayed = comp_widget.histogram_widget._raw_valid_data
-    expected = 1.0 - first_layer.data
-    expected = expected[np.isfinite(expected)]
-    np.testing.assert_allclose(
-        np.sort(displayed),
-        np.sort(expected),
-        rtol=1e-6,
-        atol=1e-9,
-    )
-
-    # The histogram colormap must be the reversed first-component colormap.
-    np.testing.assert_allclose(
-        comp_widget.histogram_widget.colormap_colors,
-        np.asarray(first_layer.colormap.colors)[::-1],
-    )
-
-
-def test_components_second_component_fraction_range_inverts(
-    make_viewer_model,
-    qtbot,
-):
-    """Range slider on the second component clips the first-component layer."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    _setup_linear_projection(comp_widget)
-
-    name1, name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name2])
-
-    fraction_layer = comp_widget.comp1_fractions_layer
-    original_data = fraction_layer.data.copy()
-
     # Clipping the second-component fraction to [0.2, 0.6] is equivalent to
     # clipping the underlying first-component layer to [0.4, 0.8].
+    _check_histogram_components(comp_widget, [name2])
+    original_data = fraction_layer.data.copy()
     comp_widget._on_fraction_range_changed(0.2, 0.6)
-
     np.testing.assert_allclose(
         fraction_layer.data,
         np.clip(original_data, 0.4, 0.8),
@@ -1191,8 +1040,8 @@ def test_components_second_component_fraction_range_inverts(
     np.testing.assert_allclose(
         comp_widget.colormap_contrast_limits, [0.4, 0.8], atol=1e-9
     )
-
-    # The histogram shows the inverted distribution with the reversed colormap.
+    # The histogram shows the inverted distribution with the reversed
+    # colormap.
     np.testing.assert_allclose(
         comp_widget.histogram_widget.colormap_colors,
         np.asarray(fraction_layer.colormap.colors)[::-1],
@@ -1205,53 +1054,170 @@ def test_components_second_component_fraction_range_inverts(
     )
 
 
-def test_components_second_component_colormap_follows_first_layer(
+def test_components_second_component_and_several_curves(
     make_viewer_model,
     qtbot,
 ):
-    """First-layer colormap/contrast edits update the inverted overlay."""
+    """The second component is 1 - the first with a reversed colormap, and
+    checking both plots two curves in their layers' colormaps."""
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    parent.tab_widget.setCurrentWidget(comp_widget)
     _setup_linear_projection(comp_widget)
 
-    _name1, name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name2])
-
+    name1, name2 = comp_widget._linear_projection_component_names()
+    assert name1 is not None and name2 is not None
     fraction_layer = comp_widget.comp1_fractions_layer
+    histogram = comp_widget.histogram_widget
+
+    # Both components must be toggleable on their cards.
+    assert _histogram_toggle(comp_widget, name1).isEnabled()
+    assert _histogram_toggle(comp_widget, name2).isEnabled()
+
+    fraction_layers_map, invert = comp_widget._resolve_histogram_component(
+        name2
+    )
+    assert invert is True
+    assert fraction_layers_map  # underlying first-component layers
+
+    # Selecting the second component displays the inverted distribution.
+    _check_histogram_components(comp_widget, [name2])
+    comp_widget.update_component_histogram()
+    displayed = histogram._raw_valid_data
+    expected = 1.0 - fraction_layer.data
+    expected = expected[np.isfinite(expected)]
+    np.testing.assert_allclose(
+        np.sort(displayed),
+        np.sort(expected),
+        rtol=1e-6,
+        atol=1e-9,
+    )
+    # The histogram colormap must be the reversed first-component colormap.
+    np.testing.assert_allclose(
+        histogram.colormap_colors,
+        np.asarray(fraction_layer.colormap.colors)[::-1],
+    )
 
     # Changing the first component's colormap reverses it on the histogram.
     fraction_layer.colormap = "viridis"
     np.testing.assert_allclose(
-        comp_widget.histogram_widget.colormap_colors,
+        histogram.colormap_colors,
         np.asarray(fraction_layer.colormap.colors)[::-1],
     )
-
     # Changing the contrast limits flips them into second-component space.
     fraction_layer.contrast_limits = [0.2, 0.7]
     np.testing.assert_allclose(
-        np.asarray(comp_widget.histogram_widget.contrast_limits),
+        np.asarray(histogram.contrast_limits),
         [1.0 - 0.7, 1.0 - 0.2],
         atol=1e-9,
     )
-
-    # With no component selected, a first-layer colormap change is a no-op for
-    # the overlay (the refresh guard short-circuits).
+    # With no component selected, a first-layer colormap change is a no-op
+    # for the overlay (the refresh guard short-circuits).
     _check_histogram_components(comp_widget, [])
-    previous_colors = comp_widget.histogram_widget.colormap_colors
+    previous_colors = histogram.colormap_colors
     fraction_layer.colormap = "magma"
-    assert comp_widget.histogram_widget.colormap_colors is previous_colors
+    assert histogram.colormap_colors is previous_colors
+
+    # One component: its colormap gradient carries the fraction scale.
+    _check_histogram_components(comp_widget, [name1])
+    assert histogram._series_style == "colormap"
+
+    # Checking two components plots both fraction distributions together.
+    _check_histogram_components(comp_widget, [name1, name2])
+    datasets = histogram._datasets
+    assert len(datasets) == 2
+    first = np.asarray(fraction_layer.data, dtype=float).ravel()
+    first = first[np.isfinite(first)]
+    second = 1.0 - first
+    plotted = sorted(datasets, key=lambda label: name2 in label)
+    np.testing.assert_allclose(
+        np.sort(datasets[plotted[0]]), np.sort(first), rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.sort(datasets[plotted[1]]), np.sort(second), rtol=1e-6
+    )
+
+    # Both distributions trace back to the same analysed image, so grouping
+    # made in any tab applies to both of them.
+    sources = histogram._dataset_sources
+    assert set(sources) == set(datasets)
+    assert set(sources.values()) == {layer.name}
+
+    # The statistics dock keeps one row per analysed layer and adds a column
+    # block per component instead of repeating the layer once per component.
+    stats_table = parent.components_statistics_dock_widget.layer_stats_table
+    assert stats_table.rowCount() == 1
+    assert stats_table.item(0, 0).text() == layer.name
+    headers = [
+        stats_table.horizontalHeaderItem(col).text()
+        for col in range(stats_table.columnCount())
+    ]
+    block = len(StatisticsTableWidget.COLUMNS) - 1
+    assert headers[1].startswith(name1)
+    assert headers[1 + block].startswith(name2)
+
+    # Merged mode pools layers, not components: each component keeps its own
+    # curve. Their colormaps are mirror images, so gradients would only
+    # confuse: solid colours instead, one per component.
+    assert histogram.display_mode == "Merged"
+    assert histogram._series_style == "solid"
+    curves = histogram.ax.lines
+    assert len(curves) == 2
+    assert [line.get_label() for line in curves] == [name1, name2]
+
+    # Each component curve reads its layer's colormap, the second one
+    # reversed to match its inverted fraction scale.
+    stored = histogram._series_colormaps[name1]
+    np.testing.assert_allclose(stored[0], fraction_layer.colormap.colors)
+    np.testing.assert_allclose(
+        histogram._series_colormaps[name2][0],
+        np.asarray(fraction_layer.colormap.colors)[::-1],
+    )
+
+    # A choice made in the settings dialog is not overridden afterwards.
+    histogram._series_style = "colormap"
+    histogram._series_style_explicit = True
+    comp_widget.update_component_histogram()
+    assert histogram._series_style == "colormap"
+
+    # Asking for the colormap draws each curve as a gradient in its own
+    # colormap.
+    histogram.set_default_series_style("colormap")
+    histogram._render()
+    curves = [
+        artist
+        for artist in histogram.ax.collections
+        if isinstance(artist, LineCollection)
+    ]
+    assert len(curves) == 2
+
+    # Changing the layer's colormap updates the curve without a re-analysis.
+    fraction_layer.colormap = "viridis"
+    np.testing.assert_allclose(
+        histogram._series_colormaps[name1][0],
+        fraction_layer.colormap.colors,
+    )
+    assert not np.allclose(histogram._series_colormaps[name1][0], stored[0])
+
+    # Unchecking one goes back to a single distribution.
+    _histogram_toggle(comp_widget, name2).setChecked(False)
+    assert len(histogram._datasets) == 1
 
 
-def test_components_histogram_stays_empty_without_fraction_data(
+def test_components_card_toggles_drive_histogram_and_statistics(
     make_viewer_model,
     qtbot,
+    monkeypatch,
 ):
-    """Without data the histogram keeps its empty axes instead of hiding."""
+    """The card toggle is the only selector, and it feeds both docks."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._utils import HistogramSettingsDialog
+
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -1261,11 +1227,164 @@ def test_components_histogram_stays_empty_without_fraction_data(
     parent.tab_widget.setCurrentWidget(parent.components_tab)
     _setup_linear_projection(comp_widget)
 
-    hw = comp_widget.histogram_widget
-    name1, _ = comp_widget._linear_projection_component_names()
+    # The old checkable comboboxes are gone from the widget and from both
+    # docks; the per-card toggle replaces them.
+    assert not hasattr(comp_widget, "histogram_component_combobox")
+    assert not hasattr(comp_widget, "stats_component_combobox")
+
+    names = _available_histogram_components(comp_widget)
+    assert len(names) == 2
+
+    # Every card carries a labelled toggle.
+    for comp in comp_widget.components:
+        assert comp.histogram_checkbox is not None
+        assert (
+            comp.histogram_checkbox.text()
+            == "Show in histogram and statistics"
+        )
+
+    # The first component is checked by default, so neither dock starts blank.
+    assert comp_widget._selected_histogram_components() == [names[0]]
+
+    stats_table = parent.components_statistics_dock_widget.layer_stats_table
+
+    def stats_headers():
+        return [
+            stats_table.horizontalHeaderItem(col).text()
+            for col in range(stats_table.columnCount())
+        ]
+
+    # Checking the second card adds its curve and its statistics columns.
+    _histogram_toggle(comp_widget, names[1]).setChecked(True)
+    assert comp_widget._selected_histogram_components() == names
+    assert comp_widget.histogram_widget._series_names() == names
+    assert any(header.startswith(names[1]) for header in stats_headers())
+
+    # Unchecking the first card drops it from both the plot and the table.
+    _histogram_toggle(comp_widget, names[0]).setChecked(False)
+    assert comp_widget._selected_histogram_components() == [names[1]]
+    assert comp_widget.histogram_widget._series_names() == [names[1]]
+    assert not any(header.startswith(names[0]) for header in stats_headers())
+
+    name1, name2 = comp_widget._linear_projection_component_names()
     _check_histogram_components(comp_widget, [name1])
 
-    # Removing the only fraction layer leaves the selection unresolvable.
+    # Toggle syncing survives missing cards, missing toggles and reentrancy.
+    # A hole in the component list (left by teardown) resolves to no name.
+    original = comp_widget.components[1]
+    comp_widget.components[1] = None
+    try:
+        assert comp_widget._component_display_name(1) == ""
+        comp_widget._sync_component_histogram_toggles()
+    finally:
+        comp_widget.components[1] = original
+
+    # A card without a toggle is skipped rather than raising.
+    checkbox = comp_widget.components[1].histogram_checkbox
+    comp_widget.components[1].histogram_checkbox = None
+    try:
+        comp_widget._sync_component_histogram_toggles()
+    finally:
+        comp_widget.components[1].histogram_checkbox = checkbox
+
+    # A sync triggered from inside a sync is a no-op, so a toggle already
+    # being written cannot be clobbered halfway through.
+    comp_widget._syncing_component_toggles = True
+    try:
+        checkbox.setChecked(True)
+        comp_widget._sync_component_histogram_toggles()
+        assert checkbox.isChecked()
+    finally:
+        comp_widget._syncing_component_toggles = False
+    assert comp_widget._selected_histogram_components() == [name1]
+    checkbox.blockSignals(True)
+    checkbox.setChecked(False)
+    checkbox.blockSignals(False)
+
+    # Time-lapse frame refreshes are skipped while nothing is plotted.
+    with patch.object(comp_widget, "update_component_histogram") as mock:
+        comp_widget.refresh_for_frame_change()
+        mock.assert_called_once()
+    comp_widget._histogram_components = []
+    with patch.object(comp_widget, "update_component_histogram") as mock:
+        comp_widget.refresh_for_frame_change()
+        mock.assert_not_called()
+
+    # Re-emitting the current state, or a missing card, is a no-op.
+    _check_histogram_components(comp_widget, [name1])
+    comp_widget._on_component_histogram_toggled(0, True)
+    assert comp_widget._selected_histogram_components() == [name1]
+    comp_widget._on_component_histogram_toggled(1, False)
+    assert comp_widget._selected_histogram_components() == [name1]
+
+    # An out-of-range card index resolves to no name and is ignored.
+    assert comp_widget._component_display_name(99) == ""
+    assert comp_widget._component_display_name(-1) == ""
+    comp_widget._on_component_histogram_toggled(99, True)
+    assert comp_widget._selected_histogram_components() == [name1]
+
+    # While the toggles are being synced, user-facing handlers stay inert.
+    comp_widget._syncing_component_toggles = True
+    try:
+        comp_widget._on_component_histogram_toggled(1, True)
+    finally:
+        comp_widget._syncing_component_toggles = False
+    assert comp_widget._selected_histogram_components() == [name1]
+
+    # A committed rename carries the selection onto the new display name.
+    _rename_component(comp_widget, 0, "Free NADH")
+    assert comp_widget._selected_histogram_components() == ["Free NADH"]
+    assert comp_widget.components[0].histogram_checkbox.isChecked()
+    assert _histogram_toggle(comp_widget, name2) is not None
+    assert _histogram_toggle(comp_widget, "Not a component") is None
+
+    # Grouping the fraction histogram tags the analysed image layer: groups
+    # are keyed by the analysed image layer, not by the fraction curve.
+    histogram = comp_widget.histogram_widget
+    histogram._group_assignments = {layer.name: 1}
+    histogram._group_names = {1: 'Ctrl'}
+    histogram._group_colors = {1: (1.0, 0.0, 0.0)}
+
+    def fake_exec(self):
+        self.mode_combo.setCurrentText('Grouped')
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    histogram._open_settings_dialog()
+    group = viewer.layers[layer.name].metadata['settings']['group']
+    assert group['name'] == 'Ctrl'
+
+    # Typing a name updates the card only; Enter / focus-out applies it.
+    name_edit = comp_widget.components[0].name_edit
+    old_layer_name = comp_widget.comp1_fractions_layer.name
+    # Typing letter by letter must not rename layers, rewrite metadata or
+    # redraw the histogram once per keystroke.
+    with patch.object(
+        comp_widget, "_refresh_histogram_after_rename"
+    ) as mock_refresh:
+        for i in range(1, len("Free") + 1):
+            name_edit.setText("Free"[:i])
+    mock_refresh.assert_not_called()
+    assert comp_widget.comp1_fractions_layer.name == old_layer_name
+    assert comp_widget._selected_histogram_components() != ["Free"]
+    # The card's own title still follows every keystroke.
+    assert comp_widget._component_display_name(0) == "Free"
+    # Committing the edit (Enter, or leaving the field) applies it everywhere.
+    name_edit.editingFinished.emit()
+    assert comp_widget.comp1_fractions_layer.name.endswith(
+        "[(Linear Projection) Free]"
+    )
+    assert comp_widget._selected_histogram_components() == ["Free"]
+    # Re-committing an unchanged name is a no-op.
+    with patch.object(
+        comp_widget, "_propagate_component_name"
+    ) as mock_propagate:
+        name_edit.editingFinished.emit()
+    mock_propagate.assert_not_called()
+
+    # Without data the histogram keeps its empty axes instead of hiding:
+    # removing the only fraction layer leaves the selection unresolvable.
+    hw = comp_widget.histogram_widget
     viewer.layers.remove(comp_widget.comp1_fractions_layer)
     with patch.object(hw, "hide") as mock_hide:
         comp_widget.update_component_histogram()
@@ -1278,7 +1397,6 @@ def test_components_histogram_stays_empty_without_fraction_data(
     assert hw.ax.get_ylabel() == "Pixel count"
     assert hw.ax.spines["bottom"].get_visible()
     assert len(hw.ax.lines) == 0
-
     # An empty selection is drawn the same way.
     comp_widget._histogram_components = []
     with patch.object(hw, "hide") as mock_hide:
@@ -1335,8 +1453,8 @@ def test_components_histogram_multi_layer_linear_projection(
     # Merged / Individual layers / Grouped display modes and per-row
     # statistics all work. Rows are named after the analysis fraction layers.
     expected_keys = {
-        f"{name1} fractions: layer_a",
-        f"{name1} fractions: layer_b",
+        _lp_name(name1, "layer_a"),
+        _lp_name(name1, "layer_b"),
     }
     assert set(comp_widget.histogram_widget._datasets.keys()) == expected_keys
 
@@ -1401,125 +1519,6 @@ def test_components_gamma_links_layers_and_histogram(
     assert comp_widget.histogram_widget.gamma == 0.5
 
 
-def test_components_histogram_shows_several_components_at_once(
-    make_viewer_model,
-    qtbot,
-):
-    """Checking two components plots both fraction distributions together."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-    _setup_linear_projection(comp_widget)
-
-    name1, name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name1, name2])
-
-    datasets = comp_widget.histogram_widget._datasets
-    assert len(datasets) == 2
-
-    fraction_layer = comp_widget.comp1_fractions_layer
-    first = np.asarray(fraction_layer.data, dtype=float).ravel()
-    first = first[np.isfinite(first)]
-    second = 1.0 - first
-
-    plotted = sorted(datasets, key=lambda label: name2 in label)
-    np.testing.assert_allclose(
-        np.sort(datasets[plotted[0]]), np.sort(first), rtol=1e-6
-    )
-    np.testing.assert_allclose(
-        np.sort(datasets[plotted[1]]), np.sort(second), rtol=1e-6
-    )
-
-    # Both distributions trace back to the same analysed image, so grouping
-    # made in any tab applies to both of them.
-    sources = comp_widget.histogram_widget._dataset_sources
-    assert set(sources) == set(datasets)
-    assert set(sources.values()) == {layer.name}
-
-    # The statistics dock keeps one row per analysed layer and adds a column
-    # block per component instead of repeating the layer once per component.
-    stats_table = parent.components_statistics_dock_widget.layer_stats_table
-    assert stats_table.rowCount() == 1
-    assert stats_table.item(0, 0).text() == layer.name
-    headers = [
-        stats_table.horizontalHeaderItem(col).text()
-        for col in range(stats_table.columnCount())
-    ]
-    block = len(StatisticsTableWidget.COLUMNS) - 1
-    assert headers[1].startswith(name1)
-    assert headers[1 + block].startswith(name2)
-
-    # Merged mode pools layers, not components: each component keeps its own
-    # curve instead of being averaged into a single meaningless one. This
-    # Linear Projection pair has mirrored colormaps, so the curves are solid.
-    assert comp_widget.histogram_widget.display_mode == "Merged"
-    curves = comp_widget.histogram_widget.ax.lines
-    assert len(curves) == 2
-    assert sorted(str(curve.get_label()) for curve in curves) == sorted(
-        [name1, name2]
-    )
-
-    # Unchecking one goes back to a single distribution.
-    _histogram_toggle(comp_widget, name2).setChecked(False)
-    assert len(comp_widget.histogram_widget._datasets) == 1
-
-
-def test_components_curve_uses_layer_colormap_and_follows_changes(
-    make_viewer_model,
-    qtbot,
-):
-    """Each component curve is drawn in its layer's colormap, live."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-    _setup_linear_projection(comp_widget)
-
-    name1, name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name1, name2])
-
-    histogram = comp_widget.histogram_widget
-    fraction_layer = comp_widget.comp1_fractions_layer
-
-    stored = histogram._series_colormaps[name1]
-    np.testing.assert_allclose(stored[0], fraction_layer.colormap.colors)
-    # The second component reads the same colormap reversed, matching its
-    # inverted fraction scale.
-    np.testing.assert_allclose(
-        histogram._series_colormaps[name2][0],
-        np.asarray(fraction_layer.colormap.colors)[::-1],
-    )
-
-    # A mirrored pair is drawn solid by default; asking for the colormap
-    # draws each curve as a gradient in its own colormap.
-    assert histogram._series_style == "solid"
-    histogram._series_style_explicit = True
-    histogram.set_default_series_style("colormap")
-    histogram._series_style = "colormap"
-    histogram._render()
-    curves = [
-        artist
-        for artist in histogram.ax.collections
-        if isinstance(artist, LineCollection)
-    ]
-    assert len(curves) == 2
-
-    # Changing the layer's colormap updates the curve without a re-analysis.
-    fraction_layer.colormap = "viridis"
-    np.testing.assert_allclose(
-        histogram._series_colormaps[name1][0],
-        fraction_layer.colormap.colors,
-    )
-    assert not np.allclose(histogram._series_colormaps[name1][0], stored[0])
-
-
 def test_components_rename_follows_into_histogram_and_statistics(
     make_napari_viewer,
 ):
@@ -1574,82 +1573,6 @@ def test_components_rename_follows_into_histogram_and_statistics(
     assert headers()[1] == "Free NADH Center of Mass"
 
 
-def test_components_mirrored_pair_defaults_to_solid_curves(
-    make_viewer_model,
-    qtbot,
-):
-    """Two mirrored Linear Projection components are drawn in solid colours."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-    _setup_linear_projection(comp_widget)
-
-    name1, name2 = comp_widget._linear_projection_component_names()
-    histogram = comp_widget.histogram_widget
-
-    # One component: its colormap gradient carries the fraction scale.
-    _check_histogram_components(comp_widget, [name1])
-    assert histogram._series_style == "colormap"
-
-    # Both: their colormaps are mirror images, so gradients would only
-    # confuse — solid colours instead, one per component.
-    _check_histogram_components(comp_widget, [name1, name2])
-    assert histogram._series_style == "solid"
-    assert len(histogram.ax.lines) == 2
-    assert [line.get_label() for line in histogram.ax.lines] == [name1, name2]
-
-    # A choice made in the settings dialog is not overridden afterwards.
-    histogram._series_style = "colormap"
-    histogram._series_style_explicit = True
-    comp_widget.update_component_histogram()
-    assert histogram._series_style == "colormap"
-
-
-def test_components_range_slider_spans_every_checked_component(
-    make_viewer_model,
-    qtbot,
-):
-    """The slider covers all checked components, not just the first one."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-    _setup_linear_projection(comp_widget)
-
-    name1, name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name1, name2])
-
-    fraction_layer = comp_widget.comp1_fractions_layer
-    original = np.asarray(
-        fraction_layer.metadata.get(
-            'fraction_data_original', fraction_layer.data
-        ),
-        dtype=float,
-    )
-    original = original[np.isfinite(original)]
-    # The second component is 1 - the first, so together they span both ends.
-    expected_min = min(float(original.min()), float(1.0 - original.max()))
-    expected_max = max(float(original.max()), float(1.0 - original.min()))
-
-    factor = comp_widget.histogram_widget.range_factor
-    slider = comp_widget.histogram_widget.range_slider
-    assert slider.minimum() / factor == pytest.approx(expected_min, abs=1e-3)
-    assert slider.maximum() / factor == pytest.approx(expected_max, abs=1e-3)
-
-    # The handles are not clipped to the first component's contrast limits
-    # either, so neither distribution is cut off.
-    range_min, range_max = comp_widget.histogram_widget.get_range()
-    assert range_min == pytest.approx(expected_min, abs=1e-2)
-    assert range_max == pytest.approx(expected_max, abs=1e-2)
-
-
 def test_components_layer_visibility_follows_checked_components(
     make_napari_viewer,
 ):
@@ -1692,135 +1615,6 @@ def test_components_layer_visibility_follows_checked_components(
     _check_histogram_components(comp_widget, names[:2])
     assert all(visible(names[0]))
     assert all(visible(names[1]))
-
-
-def test_components_multi_component_range_clips_shared_layer_once(
-    make_viewer_model,
-    qtbot,
-):
-    """The shared fraction layer is clipped once when both components show."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-    _setup_linear_projection(comp_widget)
-
-    name1, name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name1, name2])
-
-    fraction_layer = comp_widget.comp1_fractions_layer
-    original = fraction_layer.metadata.get(
-        'fraction_data_original', fraction_layer.data
-    ).copy()
-
-    comp_widget._on_fraction_range_changed(0.2, 0.8)
-
-    # The first component owns the layer: it is clipped to the slider range
-    # rather than to the second component's mirrored range.
-    np.testing.assert_allclose(
-        fraction_layer.data,
-        np.clip(original, 0.2, 0.8),
-        rtol=1e-6,
-        atol=1e-9,
-        equal_nan=True,
-    )
-    assert len(comp_widget.histogram_widget._datasets) == 2
-
-
-def test_components_histogram_groups_saved_on_image_layer(
-    make_viewer_model,
-    qtbot,
-    monkeypatch,
-):
-    """Grouping the fraction histogram tags the analysed image layer."""
-    from qtpy.QtWidgets import QDialog
-
-    from napari_phasors._utils import HistogramSettingsDialog
-
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-    _setup_linear_projection(comp_widget)
-
-    name1, _name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name1])
-
-    histogram = comp_widget.histogram_widget
-    # Groups are keyed by the analysed image layer, not by the fraction curve.
-    histogram._group_assignments = {layer.name: 1}
-    histogram._group_names = {1: 'Ctrl'}
-    histogram._group_colors = {1: (1.0, 0.0, 0.0)}
-
-    def fake_exec(self):
-        self.mode_combo.setCurrentText('Grouped')
-        return QDialog.Accepted
-
-    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
-    histogram._open_settings_dialog()
-
-    group = viewer.layers[layer.name].metadata['settings']['group']
-    assert group['name'] == 'Ctrl'
-
-
-def test_components_card_toggle_drives_histogram_and_statistics(
-    make_viewer_model,
-    qtbot,
-):
-    """The card toggle is the only selector, and it feeds both docks."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    _setup_linear_projection(comp_widget)
-
-    # The old checkable comboboxes are gone from the widget and from both
-    # docks; the per-card toggle replaces them.
-    assert not hasattr(comp_widget, "histogram_component_combobox")
-    assert not hasattr(comp_widget, "stats_component_combobox")
-
-    names = _available_histogram_components(comp_widget)
-    assert len(names) == 2
-
-    # Every card carries a labelled toggle.
-    for comp in comp_widget.components:
-        assert comp.histogram_checkbox is not None
-        assert (
-            comp.histogram_checkbox.text()
-            == "Show in histogram and statistics"
-        )
-
-    # The first component is checked by default, so neither dock starts blank.
-    assert comp_widget._selected_histogram_components() == [names[0]]
-
-    stats_table = parent.components_statistics_dock_widget.layer_stats_table
-
-    def stats_headers():
-        return [
-            stats_table.horizontalHeaderItem(col).text()
-            for col in range(stats_table.columnCount())
-        ]
-
-    # Checking the second card adds its curve and its statistics columns.
-    _histogram_toggle(comp_widget, names[1]).setChecked(True)
-    assert comp_widget._selected_histogram_components() == names
-    assert comp_widget.histogram_widget._series_names() == names
-    assert any(header.startswith(names[1]) for header in stats_headers())
-
-    # Unchecking the first card drops it from both the plot and the table.
-    _histogram_toggle(comp_widget, names[0]).setChecked(False)
-    assert comp_widget._selected_histogram_components() == [names[1]]
-    assert comp_widget.histogram_widget._series_names() == [names[1]]
-    assert not any(header.startswith(names[0]) for header in stats_headers())
 
 
 def test_components_card_toggle_disabled_without_fraction_data(
@@ -1871,195 +1665,6 @@ def test_components_card_toggle_disabled_without_fraction_data(
     assert comp_widget.components[0].histogram_checkbox.isChecked()
 
 
-def test_components_rename_is_applied_only_once_committed(
-    make_viewer_model,
-    qtbot,
-):
-    """Typing a name updates the card only; Enter / focus-out applies it."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    _setup_linear_projection(comp_widget)
-
-    name_edit = comp_widget.components[0].name_edit
-    old_layer_name = comp_widget.comp1_fractions_layer.name
-
-    # Typing letter by letter must not rename layers, rewrite metadata or
-    # redraw the histogram once per keystroke.
-    with patch.object(
-        comp_widget, "_refresh_histogram_after_rename"
-    ) as mock_refresh:
-        for i in range(1, len("Free") + 1):
-            name_edit.setText("Free"[:i])
-    mock_refresh.assert_not_called()
-    assert comp_widget.comp1_fractions_layer.name == old_layer_name
-    assert comp_widget._selected_histogram_components() != ["Free"]
-
-    # The card's own title still follows every keystroke.
-    assert comp_widget._component_display_name(0) == "Free"
-
-    # Committing the edit (Enter, or leaving the field) applies it everywhere.
-    name_edit.editingFinished.emit()
-    assert comp_widget.comp1_fractions_layer.name.startswith("Free")
-    assert comp_widget._selected_histogram_components() == ["Free"]
-
-    # Re-committing an unchanged name is a no-op.
-    with patch.object(
-        comp_widget, "_propagate_component_name"
-    ) as mock_propagate:
-        name_edit.editingFinished.emit()
-    mock_propagate.assert_not_called()
-
-
-def test_components_selected_card_is_outlined_in_dodgerblue(
-    make_viewer_model,
-    qtbot,
-):
-    """The selected component card is highlighted in dodgerblue."""
-    from napari_phasors.components_tab import COMPONENT_CARD_STYLE
-
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-
-    # dodgerblue is rgb(30, 144, 255); the old green must be gone.
-    assert "rgba(30, 144, 255, 0.85)" in COMPONENT_CARD_STYLE
-    assert "rgba(30, 144, 255, 0.06)" in COMPONENT_CARD_STYLE
-    assert "0, 193, 140" not in COMPONENT_CARD_STYLE
-
-    comp_widget._select_component_item(0)
-    assert comp_widget.components[0].card_frame.property("selected") is True
-    assert (
-        comp_widget.components[1].card_frame.property("selected") is not True
-    )
-    comp_widget._select_component_item(1)
-    assert comp_widget.components[1].card_frame.property("selected") is True
-
-
-def test_components_card_toggle_sync_handles_partial_cards(
-    make_viewer_model,
-    qtbot,
-):
-    """Toggle syncing survives missing cards, missing toggles and reentrancy."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    _setup_linear_projection(comp_widget)
-
-    name1, _name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name1])
-
-    # A hole in the component list (left by teardown) resolves to no name.
-    original = comp_widget.components[1]
-    comp_widget.components[1] = None
-    try:
-        assert comp_widget._component_display_name(1) == ""
-        comp_widget._sync_component_histogram_toggles()
-    finally:
-        comp_widget.components[1] = original
-
-    # A card without a toggle is skipped rather than raising.
-    checkbox = comp_widget.components[1].histogram_checkbox
-    comp_widget.components[1].histogram_checkbox = None
-    try:
-        comp_widget._sync_component_histogram_toggles()
-    finally:
-        comp_widget.components[1].histogram_checkbox = checkbox
-
-    # A sync triggered from inside a sync is a no-op, so a toggle already
-    # being written cannot be clobbered halfway through.
-    comp_widget._syncing_component_toggles = True
-    try:
-        checkbox.setChecked(True)
-        comp_widget._sync_component_histogram_toggles()
-        assert checkbox.isChecked()
-    finally:
-        comp_widget._syncing_component_toggles = False
-
-    assert comp_widget._selected_histogram_components() == [name1]
-
-
-def test_components_frame_change_refresh_needs_a_checked_component(
-    make_viewer_model,
-    qtbot,
-):
-    """Time-lapse frame refreshes are skipped while nothing is plotted."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    _setup_linear_projection(comp_widget)
-
-    name1, _name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name1])
-    with patch.object(comp_widget, "update_component_histogram") as mock:
-        comp_widget.refresh_for_frame_change()
-        mock.assert_called_once()
-
-    comp_widget._histogram_components = []
-    with patch.object(comp_widget, "update_component_histogram") as mock:
-        comp_widget.refresh_for_frame_change()
-        mock.assert_not_called()
-
-
-def test_components_card_toggle_ignores_redundant_and_unknown_toggles(
-    make_viewer_model,
-    qtbot,
-):
-    """Re-emitting the current state, or a missing card, is a no-op."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-    _setup_linear_projection(comp_widget)
-
-    name1, name2 = comp_widget._linear_projection_component_names()
-    _check_histogram_components(comp_widget, [name1])
-
-    # Checking an already-checked component, or unchecking an unchecked one,
-    # leaves the selection untouched.
-    comp_widget._on_component_histogram_toggled(0, True)
-    assert comp_widget._selected_histogram_components() == [name1]
-    comp_widget._on_component_histogram_toggled(1, False)
-    assert comp_widget._selected_histogram_components() == [name1]
-
-    # An out-of-range card index resolves to no name and is ignored.
-    assert comp_widget._component_display_name(99) == ""
-    assert comp_widget._component_display_name(-1) == ""
-    comp_widget._on_component_histogram_toggled(99, True)
-    assert comp_widget._selected_histogram_components() == [name1]
-
-    # While the toggles are being synced, user-facing handlers stay inert.
-    comp_widget._syncing_component_toggles = True
-    try:
-        comp_widget._on_component_histogram_toggled(1, True)
-    finally:
-        comp_widget._syncing_component_toggles = False
-    assert comp_widget._selected_histogram_components() == [name1]
-
-    # A committed rename carries the selection onto the new display name.
-    _rename_component(comp_widget, 0, "Free NADH")
-    assert comp_widget._selected_histogram_components() == ["Free NADH"]
-    assert comp_widget.components[0].histogram_checkbox.isChecked()
-    assert _histogram_toggle(comp_widget, name2) is not None
-    assert _histogram_toggle(comp_widget, "Not a component") is None
-
-
 def test_components_on_image_layer_changed_runs_teardown_and_restore(
     make_viewer_model,
     qtbot,
@@ -2086,40 +1691,62 @@ def test_components_on_image_layer_changed_runs_teardown_and_restore(
         mock_restore.assert_called_once()
 
 
-def test_components_selection_calculates_lifetime(make_viewer_model, qtbot):
-    """Test that selecting/clicking or dragging a component calculates and updates the lifetime."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    layer.metadata["settings"] = {"frequency": 80.0}
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-
-    comp = comp_widget.components[0]
-
-    # 1. Test selection via _handle_component_selection_event
-    class DummyEvent:
-        inaxes = True
-        xdata = 0.5
-        ydata = 0.5
-
-    event = DummyEvent()
-    comp_widget._select_component(0)
-    comp_widget._handle_component_selection_event(event)
-
+def test_components_selecting_on_the_plot(make_viewer_model, qtbot):
+    """Picking a component on the plot: Escape cancels, a click or a drag
+    places it and fills its lifetime, and the lifetime box only reacts to
+    real typing."""
     from phasorpy.lifetime import phasor_to_normal_lifetime
 
-    expected_lifetime = phasor_to_normal_lifetime(0.5, 0.5, frequency=80.0)
+    viewer, layer, parent, comp_widget = _setup_components(make_viewer_model)
+    comp = comp_widget.components[0]
 
+    # Escape through the Matplotlib key press event cancels the selection.
+    comp_widget._select_component(0)
+    assert comp.select_button.text() == "Click on plot..."
+    assert not comp.select_button.isEnabled()
+    assert comp_widget._active_select_cid is not None
+    assert comp_widget._active_select_key_cid is not None
+    assert comp_widget._active_select_shortcut is not None
+    assert comp_widget._active_select_idx == 0
+
+    class DummyKeyEvent:
+        def __init__(self, key):
+            self.key = key
+
+    comp_widget._handle_select_key_press_event(DummyKeyEvent('escape'))
+    assert comp.select_button.text() == "Select"
+    assert comp.select_button.isEnabled()
+    assert comp_widget._active_select_cid is None
+    assert comp_widget._active_select_key_cid is None
+    assert comp_widget._active_select_shortcut is None
+    assert comp_widget._active_select_idx is None
+
+    # So does the Qt QShortcut.
+    comp_widget._select_component(0)
+    assert comp_widget._active_select_shortcut is not None
+    comp_widget._active_select_shortcut.activated.emit()
+    assert comp.select_button.text() == "Select"
+    assert comp.select_button.isEnabled()
+    assert comp_widget._active_select_cid is None
+    assert comp_widget._active_select_key_cid is None
+    assert comp_widget._active_select_shortcut is None
+
+    # Clicking on the plot creates the component and calculates its lifetime.
+    class Event:
+        inaxes = True
+
+    event = Event()
+    event.xdata, event.ydata = 0.5, 0.5
+    comp.name_edit.setText("First")
+    comp_widget._select_component(0)
+    comp_widget._handle_component_selection_event(event)
+    assert comp.dot is not None
+    expected_lifetime = phasor_to_normal_lifetime(0.5, 0.5, frequency=80.0)
     assert comp.lifetime_edit.text() != ""
     assert abs(float(comp.lifetime_edit.text()) - expected_lifetime) < 1e-3
 
-    # 2. Test dragging via _on_motion
+    # Dragging it updates the lifetime too.
     comp_widget.dragging_component_idx = 0
-    if comp.dot is None:
-        comp_widget._create_component_at_coordinates(0, 0.5, 0.5)
 
     class DragEvent:
         inaxes = True
@@ -2127,7 +1754,6 @@ def test_components_selection_calculates_lifetime(make_viewer_model, qtbot):
         ydata = 0.1
 
     comp_widget._on_motion(DragEvent())
-
     expected_drag_lifetime = phasor_to_normal_lifetime(
         0.2, 0.1, frequency=80.0
     )
@@ -2135,6 +1761,38 @@ def test_components_selection_calculates_lifetime(make_viewer_model, qtbot):
     assert (
         abs(float(comp.lifetime_edit.text()) - expected_drag_lifetime) < 1e-3
     )
+    comp_widget.dragging_component_idx = None
+
+    # A second selection event updates the existing dot instead of creating
+    # a new one.
+    comp_widget._select_component(0)
+    event.xdata, event.ydata = 0.3, 0.2
+    comp_widget._handle_component_selection_event(event)
+    assert comp.dot is not None
+    assert comp.lifetime_edit.text() != ""
+
+    # Leaving the lifetime box unedited keeps the placed component in place:
+    # Qt reports leaving the box as a finished edit, which used to place the
+    # component from the lifetime shown for it, onto the semicircle.
+    comp.lifetime_edit.editingFinished.emit()
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - 0.3) < 1e-9
+    assert abs(y[0] - 0.2) < 1e-9
+
+    comp.lifetime_edit.clear()
+    qtbot.keyClicks(comp.lifetime_edit, "3.0")
+    qtbot.keyClick(comp.lifetime_edit, Qt.Key_Return)
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-12
+    assert abs(y[0] - expected_s) < 1e-12
+
+    # Committing the same text again is not a new edit.
+    comp_widget._apply_component_coords(0, 0.3, 0.2)
+    comp.lifetime_edit.setText("3.0")
+    comp.lifetime_edit.editingFinished.emit()
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - 0.3) < 1e-9
 
 
 @pytest.mark.parametrize(
@@ -2193,142 +1851,51 @@ def test_components_inside_semicircle_stay_after_run(
         assert abs(y[0] - s) < 1e-9
 
 
-def test_components_lifetime_box_reacts_only_to_typing(
-    make_viewer_model, qtbot
-):
-    """Leaving the lifetime box unedited keeps a pinned component in place.
+def test_components_auto_placement_and_select_menu(make_viewer_model, qtbot):
+    """Auto placement on the semicircle, and every entry of the select menu."""
+    from qtpy.QtWidgets import QDialog, QMenu
 
-    Qt reports leaving the box as a finished edit, which used to place the
-    component from the lifetime shown for it, onto the semicircle.
-    """
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    layer.metadata["settings"] = {"frequency": 80.0}
-    viewer.add_layer(layer)
+    viewer, layer, parent, comp_widget = _setup_components(make_viewer_model)
 
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-    comp = comp_widget.components[0]
+    # Out-of-range indices return early.
+    comp_widget._auto_place_component_by_index(0)
+    comp_widget._auto_place_component_by_index(99)
+    # Previous component not set -> warning + early return.
+    comp_widget._auto_place_component_by_index(1)
 
-    class Event:
-        inaxes = True
-        xdata = 0.3
-        ydata = 0.2
-
-    comp_widget._select_component(0)
-    comp_widget._handle_component_selection_event(Event())
-    assert comp.lifetime_edit.text() != ""
-
-    comp.lifetime_edit.editingFinished.emit()
-    x, y = comp.dot.get_data()
-    assert abs(x[0] - 0.3) < 1e-9
-    assert abs(y[0] - 0.2) < 1e-9
-
-    comp.lifetime_edit.clear()
-    qtbot.keyClicks(comp.lifetime_edit, "3.0")
-    qtbot.keyClick(comp.lifetime_edit, Qt.Key_Return)
-    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
-    x, y = comp.dot.get_data()
-    assert abs(x[0] - expected_g) < 1e-12
-    assert abs(y[0] - expected_s) < 1e-12
-
-    # Committing the same text again is not a new edit.
-    comp_widget._apply_component_coords(0, 0.3, 0.2)
-    comp.lifetime_edit.setText("3.0")
-    comp.lifetime_edit.editingFinished.emit()
-    x, y = comp.dot.get_data()
-    assert abs(x[0] - 0.3) < 1e-9
-
-
-def test_components_typed_lifetime_follows_frequency(make_viewer_model, qtbot):
-    """A component placed by typing its lifetime moves with the frequency.
-
-    Moving it by other means pins it, after which it stays put.
-    """
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    layer.metadata["settings"] = {"frequency": 80.0}
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-    comp = comp_widget.components[0]
-
-    _type_lifetime(comp, "3.0")
-
-    parent._broadcast_frequency_value_across_tabs("40")
-    expected_g, expected_s = phasor_from_lifetime(40.0, 3.0)
-    x, y = comp.dot.get_data()
-    assert abs(x[0] - expected_g) < 1e-12
-    assert abs(y[0] - expected_s) < 1e-12
-
-    # The run keeps the mark, so it still follows after being stored.
-    comp_widget.components[1].g_edit.setText("0.8")
-    comp_widget.components[1].s_edit.setText("0.2")
-    comp_widget._on_component_coords_changed(1)
-    comp_widget._run_analysis()
-    parent._broadcast_frequency_value_across_tabs("80")
-    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
-    x, y = comp.dot.get_data()
-    assert abs(x[0] - expected_g) < 1e-12
-    assert abs(y[0] - expected_s) < 1e-12
-
-    # Typing coordinates pins the component.
-    comp.g_edit.setText("0.3")
-    comp.s_edit.setText("0.2")
-    comp_widget._on_component_coords_changed(0)
-    parent._broadcast_frequency_value_across_tabs("40")
-    x, y = comp.dot.get_data()
-    assert abs(x[0] - 0.3) < 1e-9
-    assert abs(y[0] - 0.2) < 1e-9
-
-
-def test_components_auto_placement_calculates_lifetime(
-    make_viewer_model, qtbot
-):
-    """Test that auto-placing the second component calculates and updates the lifetime edit."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    layer.metadata["settings"] = {"frequency": 80.0}
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-
-    # Set first component's position
+    # Set component 0, then auto-place component 1 on the universal circle,
+    # which also calculates its lifetime.
     comp_widget.components[0].g_edit.setText("0.3")
     comp_widget.components[0].s_edit.setText("0.2")
     comp_widget._on_component_coords_changed(0)
-
-    # Trigger auto place for second component
-    comp_widget._auto_place_second_component()
-
-    # The lifetime edit for Component 2 should not be empty and should have a valid lifetime
+    comp_widget._auto_place_component_by_index(1)
     comp2 = comp_widget.components[1]
+    assert comp2.g_edit.text() != ""
     assert comp2.lifetime_edit.text() != ""
     assert float(comp2.lifetime_edit.text()) > 0
 
+    # Without a frequency the method warns and returns.
+    layer.metadata["settings"].pop("frequency", None)
+    comp_widget.components[0].g_edit.setText("0.4")
+    comp_widget.components[0].s_edit.setText("0.2")
+    comp_widget._auto_place_component_by_index(1)
+    layer.metadata["settings"]["frequency"] = 80.0
 
-def test_components_dropdown_menu_and_cursor_selection(
-    make_viewer_model, qtbot
-):
-    """Test that the dropdown menu is populated correctly and selection from a cursor sets coordinates and lifetime."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    layer.metadata["settings"] = {"frequency": 80.0}
-    viewer.add_layer(layer)
+    # With no cursors the submenu says so, and only later components offer
+    # to auto intersect the semicircle.
+    menu0 = QMenu()
+    comp_widget._populate_select_menu(0, menu0)
+    texts0 = [a.text() for a in menu0.actions()]
+    assert "Select from layer(s) phasor center" in texts0
+    assert "Auto intersect semicircle" not in texts0
+    menu1 = QMenu()
+    comp_widget._populate_select_menu(1, menu1)
+    texts1 = [a.text() for a in menu1.actions()]
+    assert "Select from layer(s) phasor center" in texts1
+    assert "Auto intersect semicircle" in texts1
 
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-
-    # 1. Setup mock cursors in Selection tab
+    # The select menu lists every cursor and cluster of the Selection tab.
     selection_tab = parent.selection_tab
-
-    # A-C. Cursor-selection cursors (circular / polar / elliptical)
     cursor_widget = selection_tab.cursor_selection_widget
     cursor_widget._add_cursor(
         cursor_type="circular", g=0.4, s=0.3, radius=0.05
@@ -2341,8 +1908,6 @@ def test_components_dropdown_menu_and_cursor_selection(
         modulation_max=0.6,
     )
     cursor_widget._add_cursor(cursor_type="elliptic", g=0.35, s=0.25)
-
-    # D. GMM Cluster
     cluster_widget = selection_tab.automatic_clustering_widget
     cluster_widget._clusters.append(
         {
@@ -2354,21 +1919,14 @@ def test_components_dropdown_menu_and_cursor_selection(
         }
     )
 
-    # 2. Re-populate/verify the select menu for Component 1 (idx=0)
-    from qtpy.QtWidgets import QMenu
-
     menu = QMenu()
     comp_widget._populate_select_menu(0, menu)
-
-    # Verify menu has the right actions/submenus
     actions = menu.actions()
     assert len(actions) > 0
     assert actions[0].text() == "Select on plot"
-
     # The third action is the "Select from cursor center" submenu
     cursor_submenu = actions[2].menu()
     assert cursor_submenu is not None
-
     cursor_actions = cursor_submenu.actions()
     assert len(cursor_actions) == 4
     assert "Circular 1" in cursor_actions[0].text()
@@ -2376,139 +1934,44 @@ def test_components_dropdown_menu_and_cursor_selection(
     assert "Elliptical 3" in cursor_actions[2].text()
     assert "Cluster 1" in cursor_actions[3].text()
 
-    # 3. Trigger selecting from cursor center (each type)
+    # Selecting from a cursor center sets coordinates and lifetime.
     comp_widget._set_component_coords_from_menu(0, 0.4, 0.3)
     comp1 = comp_widget.components[0]
     assert comp1.g_edit.text() == "0.400"
     assert comp1.s_edit.text() == "0.300"
     assert comp1.lifetime_edit.text() != ""
     assert float(comp1.lifetime_edit.text()) > 0
-
     comp_widget._set_component_coords_from_menu(0, 0.5, 0.4)
     assert comp1.g_edit.text() == "0.500"
     assert comp1.s_edit.text() == "0.400"
 
-
-def test_components_selection_escape_cancellation(make_viewer_model, qtbot):
-    """Test that pressing Escape cancels the active plot selection and restores button state."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-
-    comp = comp_widget.components[0]
-
-    # Test path 1: Matplotlib key press event 'escape'
-    comp_widget._select_component(0)
-    assert comp.select_button.text() == "Click on plot..."
-    assert not comp.select_button.isEnabled()
-    assert comp_widget._active_select_cid is not None
-    assert comp_widget._active_select_key_cid is not None
-    assert comp_widget._active_select_shortcut is not None
-    assert comp_widget._active_select_idx == 0
-
-    class DummyKeyEvent:
-        def __init__(self, key):
-            self.key = key
-
-    event = DummyKeyEvent('escape')
-    comp_widget._handle_select_key_press_event(event)
-
-    assert comp.select_button.text() == "Select"
-    assert comp.select_button.isEnabled()
-    assert comp_widget._active_select_cid is None
-    assert comp_widget._active_select_key_cid is None
-    assert comp_widget._active_select_shortcut is None
-    assert comp_widget._active_select_idx is None
-
-    # Test path 2: Qt QShortcut activated signal
-    comp_widget._select_component(0)
-    assert comp_widget._active_select_shortcut is not None
-
-    # Trigger shortcut activation
-    comp_widget._active_select_shortcut.activated.emit()
-
-    assert comp.select_button.text() == "Select"
-    assert comp.select_button.isEnabled()
-    assert comp_widget._active_select_cid is None
-    assert comp_widget._active_select_key_cid is None
-    assert comp_widget._active_select_shortcut is None
-
-
-def test_components_select_from_phasor_center_and_generalized_auto_place(
-    make_viewer_model,
-    qtbot,
-):
-    """Test selection from phasor center dialog and generalized auto intersect placement."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    layer.metadata["settings"] = {"frequency": 80.0}
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-
-    # 1. Verify select menu options for idx=0 (Component 1) and idx=1 (Component 2)
-    from qtpy.QtWidgets import QMenu
-
-    menu0 = QMenu()
-    comp_widget._populate_select_menu(0, menu0)
-    texts0 = [a.text() for a in menu0.actions()]
-    assert "Select from layer(s) phasor center" in texts0
-    assert (
-        "Auto intersect semicircle" not in texts0
-    )  # idx=0 should NOT have auto intersect
-
-    menu1 = QMenu()
-    comp_widget._populate_select_menu(1, menu1)
-    texts1 = [a.text() for a in menu1.actions()]
-    assert "Select from layer(s) phasor center" in texts1
-    assert (
-        "Auto intersect semicircle" in texts1
-    )  # idx=1 should have auto intersect
-
-    # 2. Test select from phasor center using mock dialog
-    from unittest.mock import patch
-
-    from qtpy.QtWidgets import QDialog
-
-    # Mock the dialog execution
+    # Selecting from the layer's phasor center fills the coordinates.
+    comp_widget._clear_components()
     with patch(
         "napari_phasors.components_tab.PhasorCenterSelectionDialog"
     ) as MockDialog:
         mock_dialog_instance = MockDialog.return_value
         mock_dialog_instance.exec.return_value = QDialog.Accepted
         mock_dialog_instance.get_selected_layers.return_value = [layer.name]
-
         comp_widget._select_from_phasor_center(0)
-
-    # Verify component 1 coordinates are populated from the layer's phasor center
     comp0 = comp_widget.components[0]
     assert comp0.g_edit.text() != ""
     assert comp0.s_edit.text() != ""
     assert float(comp0.g_edit.text()) > 0
     assert float(comp0.s_edit.text()) > 0
 
-    # 3. Add a third component and verify generalized auto-placement
-    comp_widget._add_component()  # Adds component 3 (idx=2)
+    # Auto placement generalizes to later components: component 3
+    # intersects from component 2.
+    comp_widget._add_component()
     assert len(comp_widget.components) == 3
-
-    # Set component 2 (idx=1) coordinates manually
     comp_widget.components[1].g_edit.setText("0.6")
     comp_widget.components[1].s_edit.setText("0.4")
     comp_widget._on_component_coords_changed(1)
-
-    # Trigger auto-placement on component 3 (idx=2) which should intersect from component 2 (idx=1)
     comp_widget._auto_place_component_by_index(2)
-
-    comp2 = comp_widget.components[2]
-    assert comp2.g_edit.text() != ""
-    assert comp2.s_edit.text() != ""
-    assert float(comp2.g_edit.text()) > 0
+    comp3 = comp_widget.components[2]
+    assert comp3.g_edit.text() != ""
+    assert comp3.s_edit.text() != ""
+    assert float(comp3.g_edit.text()) > 0
 
 
 def test_components_phasor_center_remembers_selection_and_rename(
@@ -2660,38 +2123,6 @@ def test_color_action_widget_and_dialog(make_viewer_model, qtbot):
 # ---------------------------------------------------------------------------
 
 
-def test_components_histogram_dock_has_no_selector_row(
-    make_viewer_model, qtbot
-):
-    """The components histogram dock is sized like every other tab's dock.
-
-    Components are now picked with the toggle on each component card, so the
-    dock no longer carries a "Component:" selector row and no longer needs to
-    reserve extra height for one.
-    """
-    from qtpy.QtWidgets import QComboBox, QLabel
-
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-
-    components_min = parent.components_histogram_dock_widget.minimumHeight()
-    mapping_min = parent.phasor_map_histogram_dock_widget.minimumHeight()
-
-    assert components_min == mapping_min
-
-    for dock in (
-        parent.components_histogram_dock_widget,
-        parent.components_statistics_dock_widget,
-    ):
-        labels = [
-            widget.text()
-            for widget in dock.findChildren(QLabel)
-            if widget.text() == "Component:"
-        ]
-        assert labels == []
-        assert dock.findChild(QComboBox) is None
-
-
 def _setup_components(make_viewer_model, freq=80.0):
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
@@ -2701,6 +2132,71 @@ def _setup_components(make_viewer_model, freq=80.0):
     comp = parent.components_tab
     parent.tab_widget.setCurrentWidget(comp)
     return viewer, layer, parent, comp
+
+
+def test_linear_projection_layer_names(make_viewer_model, qtbot):
+    """Output layers are "<image> [(Linear Projection) <name>]" and follow
+    component and source renames; labels layers are "<image> [...]"."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    assert (
+        comp._label_layer_name(layer.name, None)
+        == "FLIM data Intensity [Dominant component]"
+    )
+    assert (
+        comp._label_layer_name(layer.name, 0)
+        == "FLIM data Intensity [Component 1 filtered]"
+    )
+
+    assert layer.name == "FLIM data Intensity [Phasor]"
+    _setup_linear_projection(comp)
+    name1, _ = comp._linear_projection_component_names()
+    expected = f"FLIM data Intensity [(Linear Projection) {name1}]"
+    assert comp.comp1_fractions_layer.name == expected
+    assert expected in viewer.layers
+    assert f"{name1} fractions: {layer.name}" not in viewer.layers
+
+    # Renaming component 1 renames the layer inside the brackets.
+    comp.components[0].name_edit.setText("Donor")
+    comp._on_component_name_changed(0)
+    assert (
+        comp.comp1_fractions_layer.name
+        == "FLIM data Intensity [(Linear Projection) Donor]"
+    )
+
+    # Renaming the source keeps the bracketed analysis of its outputs.
+    name1, _ = comp._linear_projection_component_names()
+    comp.rename_layer(layer.name, "renamed Intensity [Phasor]")
+    assert (
+        comp.comp1_fractions_layer.name
+        == f"renamed Intensity [(Linear Projection) {name1}]"
+    )
+
+
+def test_component_fit_layer_names_do_not_collide_with_projection(
+    make_viewer_model, qtbot
+):
+    """Every fit layer is "<image> [(Component Fit) <name>]", and both
+    methods can keep their layers for the same image."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    _setup_component_fit(comp)
+
+    fit_names = sorted(
+        lyr.name
+        for lyr in viewer.layers
+        if is_component_fit_label(split_analysis_layer_name(lyr.name)[1])
+    )
+    assert fit_names == [
+        "FLIM data Intensity [(Component Fit) Component 1]",
+        "FLIM data Intensity [(Component Fit) Component 2]",
+    ]
+
+    lp_name = _lp_name("Component 1", layer.name)
+    fit_name = _fit_name("Component 1", layer.name)
+    assert lp_name != fit_name
+    assert lp_name in viewer.layers
+    assert fit_name in viewer.layers
 
 
 def _linear_projection_settings():
@@ -2733,32 +2229,52 @@ def _linear_projection_settings():
     }
 
 
-def test_components_restore_ui_only_from_metadata(make_viewer_model, qtbot):
+def test_components_restore_from_metadata(make_viewer_model, qtbot):
+    """Stored component settings rebuild the cards, line and labels."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # No 'component_analysis' key -> the restore returns early.
+    comp._restore_components_ui_only_from_metadata()
+    assert len(comp.components) == 2
+
+    # Restoring fewer components than shown trims the extra cards.
+    comp._add_component()
+    comp._add_component()
+    assert len(comp.components) == 4
+    layer.metadata["settings"]["component_analysis"] = {
+        "analysis_type": "Linear Projection",
+        "components": {
+            "0": {"name": "A", "gs_harmonics": {"1": {"g": 0.2, "s": 0.1}}},
+            "1": {"name": "B", "gs_harmonics": {"1": {"g": 0.8, "s": 0.5}}},
+        },
+    }
+    comp._restore_components_ui_only_from_metadata()
+    assert len(comp.components) == 2
+    assert comp.components[0].name_edit.text() == "A"
+    assert comp.components[1].name_edit.text() == "B"
+    assert comp._selected_component is comp.components[0]
+
     layer.metadata["settings"][
         "component_analysis"
     ] = _linear_projection_settings()
-
     comp._restore_components_ui_only_from_metadata()
-
     assert comp.components[0].name_edit.text() == "Comp A"
     assert comp.components[1].name_edit.text() == "Comp B"
+    # Both components are drawn on the plot.
+    created = [
+        c for c in comp.components if c is not None and c.dot is not None
+    ]
+    assert len(created) == 2
     assert comp.label_color == "red"
     assert comp.label_bold is True
     assert comp.line_width == 2.0
     assert comp.show_colormap_line is False
 
-
-def test_components_restore_line_and_histogram_overlay_settings(
-    make_viewer_model, qtbot
-):
-    """Line + fraction-histogram overlay settings round-trip via metadata.
-
-    User edits are persisted under ``two_component_line_settings``; the restore
-    path must read that key (regression: it previously only read the unused
-    ``line_settings`` key, so overlay settings were never re-applied).
-    """
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    # Line + fraction-histogram overlay settings round-trip via metadata.
+    # User edits are persisted under ``two_component_line_settings``; the
+    # restore path must read that key (regression: it previously only read
+    # the unused ``line_settings`` key, so overlay settings were never
+    # re-applied).
     layer.metadata["settings"]["component_analysis"] = {
         "analysis_type": "Linear Projection",
         "last_analysis_harmonic": 1,
@@ -2791,9 +2307,7 @@ def test_components_restore_line_and_histogram_overlay_settings(
             "color": "red",
         },
     }
-
     comp._restore_components_ui_only_from_metadata()
-
     assert comp.show_component_dots is False
     assert comp.line_offset == 0.07
     assert comp.line_width == 4.5
@@ -2808,69 +2322,42 @@ def test_components_restore_line_and_histogram_overlay_settings(
     assert comp.label_italic is True
     assert comp.label_color == "red"
 
+    # Removing a component from the settings re-indexes the rest.
+    comp._add_component()
+    layer.metadata["settings"]["component_analysis"] = {
+        "components": {
+            "0": {"name": "Comp 0", "gs_harmonics": {}},
+            "1": {"name": "Comp 1", "gs_harmonics": {}},
+            "2": {"name": "Comp 2", "gs_harmonics": {}},
+        }
+    }
+    # Remove index 1 from settings: old '2' should become new '1'. The
+    # removal is an unsaved edit until the analysis runs.
+    comp._remove_component_from_settings(1)
+    settings = parent.layer_settings(layer)["component_analysis"]["components"]
+    assert "0" in settings and settings["0"]["name"] == "Comp 0"
+    assert "1" in settings and settings["1"]["name"] == "Comp 2"
+    assert "2" not in settings
+    stored = layer.metadata["settings"]["component_analysis"]["components"]
+    assert len(stored) == 3
 
-def test_components_restore_and_recreate_linear_projection(
-    make_viewer_model, qtbot
-):
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    layer.metadata["settings"][
-        "component_analysis"
-    ] = _linear_projection_settings()
+    # Remove with idx=None removes the last component
+    comp._remove_component_from_settings(None)
+    settings = parent.layer_settings(layer)["component_analysis"]["components"]
+    assert len(settings) == 1
+    assert "0" in settings
 
-    comp._restore_and_recreate_components_from_metadata()
-
-    assert comp.components[0].name_edit.text() == "Comp A"
-    # Two components were recreated with dots.
-    created = [
-        c for c in comp.components if c is not None and c.dot is not None
-    ]
-    assert len(created) == 2
-
-
-def test_components_restore_no_component_analysis_is_noop(
-    make_viewer_model, qtbot
-):
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    # No 'component_analysis' key -> both restore methods return early.
-    comp._restore_components_ui_only_from_metadata()
-    comp._restore_and_recreate_components_from_metadata()
-    assert len(comp.components) == 2
-
-
-def test_components_reset_plot_settings_and_artists(make_viewer_model, qtbot):
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp._create_component_at_coordinates(0, 0.6, 0.3)
-    comp._create_component_at_coordinates(1, 0.3, 0.2)
-    comp.draw_line_between_components()
-
-    artists = comp.get_all_artists()
-    assert len(artists) >= 2
-
-    comp.set_artists_visible(False)
-    comp.set_artists_visible(True)
-
-    # The reset routine manipulates widgets created by the settings dialog.
-    comp._open_plot_settings_dialog()
-    comp.line_width = 5.0
-    comp.line_alpha = 0.2
-    comp._reset_plot_settings()
-    assert comp.line_width == 3.0
-    assert comp.line_alpha == 1
-    assert comp.show_colormap_line is True
-
-    comp.clear_artists()
+    # Calling with empty or missing components setting does nothing
+    layer.metadata["settings"]["component_analysis"]["components"] = {}
+    comp._remove_component_from_settings(0)
 
 
-def test_components_pure_helpers(make_viewer_model, qtbot):
-    """Consolidated coverage of pure helper methods using a single widget
-    build: per-harmonic coordinate/harmonic helpers, inverted colormap, and
-    lifetime->phasor conversion."""
-    import numpy as np
-    from napari.utils.colormaps import Colormap
-
+def test_components_artists_and_plot_settings_dialog(make_viewer_model, qtbot):
+    """Artists, the plot settings dialog and its reset, and the per-harmonic
+    coordinate helpers, on one widget."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
 
-    # --- per-harmonic coordinate + harmonic-listing helpers ---
+    # Per-harmonic coordinate and harmonic-listing helpers.
     comp._create_component_at_coordinates(0, 0.5, 0.3)
     comp._create_component_at_coordinates(1, 0.3, 0.2)
     comp.components[0].name_edit.setText("A")
@@ -2888,194 +2375,74 @@ def test_components_pure_helpers(make_viewer_model, qtbot):
     assert g2 == [0.4, 0.2]
     assert current in comp._get_harmonics_with_components()
 
-    # --- inverted colormap (name, reversed name, Colormap object) ---
-    assert comp._get_inverted_colormap("viridis") is not None
-    assert comp._get_inverted_colormap("viridis_r") is not None
+    # Artists: listed, hidden and shown.
+    comp._create_component_at_coordinates(0, 0.6, 0.3)
+    comp._create_component_at_coordinates(1, 0.3, 0.2)
+    comp.draw_line_between_components()
+    artists = comp.get_all_artists()
+    assert len(artists) >= 2
+    comp.set_artists_visible(False)
+    comp.set_artists_visible(True)
+
+    # The reset routine manipulates widgets created by the settings dialog.
+    comp._open_plot_settings_dialog()
+    comp.line_width = 5.0
+    comp.line_alpha = 0.2
+    comp._reset_plot_settings()
+    assert comp.line_width == 3.0
+    assert comp.line_alpha == 1
+    assert comp.show_colormap_line is True
+
+    # Picking a valid color from the dialog updates the button, the stored
+    # default color, and the persisted metadata setting.
+    with patch.object(
+        QColorDialog, "getColor", return_value=QColor("#ff0000")
+    ):
+        comp._on_color_button_clicked()
+    assert comp.default_component_color == "#ff0000"
+    settings = parent.layer_settings(layer)["component_analysis"]
     assert (
-        comp._get_inverted_colormap(
-            Colormap(
-                colors=np.array([[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]]),
-                name="grayish",
-            )
-        )
-        is not None
+        settings["two_component_line_settings"]["default_component_color"]
+        == "#ff0000"
     )
+    comp.plot_dialog.close()
+    comp.plot_dialog = None
 
-    # --- lifetime -> phasor (valid, non-numeric, missing frequency) ---
-    gg, ss = comp._compute_phasor_from_lifetime("2.0", harmonic=1)
-    assert gg is not None and ss is not None
-    assert comp._compute_phasor_from_lifetime("not-a-number") == (None, None)
-    layer.metadata["settings"].pop("frequency", None)
-    assert comp._compute_phasor_from_lifetime("2.0") == (None, None)
+    comp.clear_artists()
 
-
-def test_components_restore_on_layer_change_without_layer(
-    make_viewer_model, qtbot
-):
-    """With no primary layer, restore clears the component input fields."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp = parent.components_tab
-    comp.components[0].g_edit.setText("0.5")
-    comp.components[0].name_edit.setText("stale")
-
-    comp._restore_on_layer_change()
-
-    assert comp.components[0].g_edit.text() == ""
-    assert comp.components[0].name_edit.text() == ""
-
-
-def test_components_selection_event_updates_existing_dot(
-    make_viewer_model, qtbot
-):
-    """A second selection event updates the existing dot/label instead of
-    creating a new one."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp.components[0].name_edit.setText("First")
-    comp._select_component(0)
-
-    class _Event:
-        inaxes = True
-        xdata = 0.5
-        ydata = 0.4
-
-    comp._handle_component_selection_event(_Event())
-    assert comp.components[0].dot is not None
-
-    # Second event updates the existing dot (the else branch).
-    comp._select_component(0)
-    ev2 = _Event()
-    ev2.xdata, ev2.ydata = 0.3, 0.2
-    comp._handle_component_selection_event(ev2)
-    assert comp.components[0].dot is not None
-
-
-def test_components_component_fit_three_and_colors(make_viewer_model, qtbot):
-    """Run a 3-component Component Fit analysis and query component colours."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp._add_component()
+    # The fraction-histogram overlay group is only enabled for a
+    # two-component Linear Projection.
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    comp._open_plot_settings_dialog()
+    assert comp.fraction_histogram_checkbox.isEnabled()
+    comp.plot_dialog.close()
+    comp.plot_dialog = None
     comp.analysis_type_combo.setCurrentText("Component Fit")
-    for i, (g, s) in enumerate(
-        [("0.2", "0.1"), ("0.5", "0.3"), ("0.8", "0.5")]
-    ):
-        comp.components[i].g_edit.setText(g)
-        comp.components[i].s_edit.setText(s)
-        comp._on_component_coords_changed(i)
+    comp._open_plot_settings_dialog()
+    assert not comp.fraction_histogram_checkbox.isEnabled()
+    comp.plot_dialog.close()
 
-    comp._run_analysis()
-    assert len(comp.fraction_layers) == 3
+    # ``get_all_artists``/``set_artists_visible`` wrap a non-list/tuple
+    # ``component_histogram`` into a single-element list before use.
+    fake_artist = MagicMock()
+    comp.component_histogram = fake_artist
+    assert fake_artist in comp.get_all_artists()
+    comp.set_artists_visible(True)
+    fake_artist.set_visible.assert_called_once_with(True)
 
-    # Component-colour helper for both the Component Fit (>=2 layers) path
-    # and a smaller count.
-    assert comp._get_component_colors_for_count(3) is not None
-    assert comp._get_component_colors_for_count(2) is not None
+    # A single artist whose ``remove`` raises is still dropped.
+    comp.component_histogram = _RemoveRaisesArtist()
+    comp._remove_histogram_overlay()
+    assert comp.component_histogram is None
 
-
-def test_components_redisplay_preserves_display_settings(
-    make_viewer_model, qtbot
-):
-    """Re-displaying fraction images keeps manual colormap/contrast/gamma."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp._add_component()
-    comp.analysis_type_combo.setCurrentText("Component Fit")
-    for i, (g, s) in enumerate(
-        [("0.2", "0.1"), ("0.5", "0.3"), ("0.8", "0.5")]
-    ):
-        comp.components[i].g_edit.setText(g)
-        comp.components[i].s_edit.setText(s)
-        comp._on_component_coords_changed(i)
-
-    comp._run_analysis()
-    assert len(comp.fraction_layers) == 3
-
-    # Record the default colormap of an untouched layer, then manually tweak
-    # a different one's colormap, contrast limits and gamma.
-    other_layer = comp.fraction_layers[0]
-    other_colormap = other_layer.colormap.name
-
-    tweaked_layer = comp.fraction_layers[1]
-    tweaked_layer.colormap = "magma"
-    tweaked_layer.contrast_limits = (0.15, 0.85)
-    tweaked_layer.gamma = 0.4
-
-    # Press "Display Component Fraction Images" again.
-    comp._run_analysis()
-
-    new_tweaked = viewer.layers[tweaked_layer.name]
-    assert new_tweaked.colormap.name == "magma"
-    assert np.allclose(new_tweaked.contrast_limits, (0.15, 0.85))
-    assert new_tweaked.gamma == 0.4
-
-    # The untouched layer must keep its (default) colormap, not reset.
-    new_other = viewer.layers[other_layer.name]
-    assert new_other.colormap.name == other_colormap
-
-
-def test_components_auto_place_by_index(make_viewer_model, qtbot):
-    """Cover _auto_place_component_by_index guards and the success path."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    # Out-of-range indices return early.
-    comp._auto_place_component_by_index(0)
-    comp._auto_place_component_by_index(99)
-
-    # Previous component not set -> warning + early return.
-    comp._auto_place_component_by_index(1)
-
-    # Set component 0, then auto-place component 1 on the universal circle.
-    comp.components[0].g_edit.setText("0.5")
-    comp.components[0].s_edit.setText("0.3")
-    comp._on_component_coords_changed(0)
-    comp._auto_place_component_by_index(1)
-    assert comp.components[1].g_edit.text() != ""
-
-    # Without a frequency the method warns and returns.
-    layer.metadata["settings"].pop("frequency", None)
-    comp.components[0].g_edit.setText("0.4")
-    comp.components[0].s_edit.setText("0.2")
-    comp._auto_place_component_by_index(1)
-
-
-def test_components_fraction_layer_colormap_and_contrast_events(
-    make_viewer_model, qtbot
-):
-    """Changing the fraction layer's colormap/contrast triggers handlers."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp.components[0].g_edit.setText("0.2")
-    comp.components[0].s_edit.setText("0.1")
-    comp._on_component_coords_changed(0)
-    comp.components[1].g_edit.setText("0.8")
-    comp.components[1].s_edit.setText("0.5")
-    comp._on_component_coords_changed(1)
-    comp._run_analysis()
-
-    fl = comp.comp1_fractions_layer
-    assert fl is not None
-    fl.contrast_limits = (0.1, 0.9)
-    fl.colormap = "viridis"
-    assert comp.colormap_contrast_limits is not None
-
-
-def test_components_name_change_creates_and_moves_label(
-    make_viewer_model, qtbot
-):
-    """Setting/clearing a component name creates, repositions and removes its
-    text label."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp._create_component_at_coordinates(0, 0.5, 0.3)
-
-    comp.components[0].name_edit.setText("Alpha")
-    comp._on_component_name_changed(0)
-    assert comp.components[0].text is not None
-
-    # Renaming again exercises the previous-position branch.
-    comp.components[0].name_edit.setText("Beta")
-    comp._on_component_name_changed(0)
-    assert comp.components[0].text is not None
-
-    # Clearing the name removes the label.
-    comp.components[0].name_edit.setText("")
-    comp._on_component_name_changed(0)
+    # ``_draw_colormap_line`` falls back to ``plt.cm.jet`` when
+    # ``fractions_colormap`` is unset.
+    comp.fractions_colormap = None
+    fig, ax = plt.subplots()
+    try:
+        comp._draw_colormap_line(ax, 0.0, 0.0, 1.0, 1.0)
+    finally:
+        plt.close(fig)
 
 
 def test_components_component_fit_prompts_for_more_harmonics(
@@ -3138,88 +2505,6 @@ def test_components_teardown_and_restore_for_harmonic(
     assert comp.component_line is None
 
 
-def test_components_apply_saved_colormap_settings(make_viewer_model, qtbot):
-    """Apply saved colormap settings (name and explicit colours) to the
-    fraction layer."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp.components[0].g_edit.setText("0.2")
-    comp.components[0].s_edit.setText("0.1")
-    comp._on_component_coords_changed(0)
-    comp.components[1].g_edit.setText("0.8")
-    comp.components[1].s_edit.setText("0.5")
-    comp._on_component_coords_changed(1)
-    comp._run_analysis()
-    assert comp.comp1_fractions_layer is not None
-
-    # Saved as a named colormap.
-    comp._saved_colormap_name = "viridis"
-    comp._saved_colormap_colors = None
-    comp._saved_contrast_limits = (0.0, 1.0)
-    comp._apply_saved_colormap_settings()
-
-    # Saved as an explicit colour list.
-    comp._saved_colormap_colors = [[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]]
-    comp._saved_contrast_limits = [0.0, 1.0]
-    comp._apply_saved_colormap_settings()
-
-
-def test_components_recreate_variants_and_colormaps(make_viewer_model, qtbot):
-    """One widget, two recreate flows: Linear Projection with fraction-layer
-    colormap restore, then Component Fit (which also adds a 3rd component)."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    settings = layer.metadata["settings"]
-
-    # 1. Linear Projection recreate with per-component colormap settings.
-    settings["component_analysis"] = {
-        "analysis_type": "Linear Projection",
-        "last_analysis_harmonic": 1,
-        "components": {
-            "0": {
-                "name": "A",
-                "gs_harmonics": {
-                    "1": {
-                        "g": 0.6,
-                        "s": 0.3,
-                        "colormap_name": "viridis",
-                        "contrast_limits": [0.0, 1.0],
-                    }
-                },
-            },
-            "1": {
-                "name": "B",
-                "gs_harmonics": {
-                    "1": {
-                        "g": 0.3,
-                        "s": 0.2,
-                        "colormap_colors": [
-                            [0.0, 0.0, 0.0, 1.0],
-                            [1.0, 1.0, 1.0, 1.0],
-                        ],
-                        "contrast_limits": [0.1, 0.9],
-                    }
-                },
-            },
-        },
-        "line_settings": {"show_colormap_line": True, "line_width": 2.0},
-        "label_settings": {"fontsize": 11, "color": "red"},
-    }
-    comp._restore_and_recreate_components_from_metadata()
-    assert comp.comp1_fractions_layer is not None
-
-    # 2. Component Fit recreate with three components (adds a component).
-    settings["component_analysis"] = {
-        "analysis_type": "Component Fit",
-        "last_analysis_harmonic": 1,
-        "components": {
-            "0": {"name": "C0", "gs_harmonics": {"1": {"g": 0.2, "s": 0.1}}},
-            "1": {"name": "C1", "gs_harmonics": {"1": {"g": 0.5, "s": 0.3}}},
-            "2": {"name": "C2", "gs_harmonics": {"1": {"g": 0.8, "s": 0.5}}},
-        },
-    }
-    comp._restore_and_recreate_components_from_metadata()
-    assert len(comp.fraction_layers) == 3
-
-
 def test_components_widget_harmonics_none_fallback(make_viewer_model, qtbot):
     """Test component analysis when harmonics metadata is None (e.g. loaded .R64 files)."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
@@ -3279,111 +2564,6 @@ def test_components_widget_exceptions(make_viewer_model, qtbot):
     comp._run_analysis()  # Should return early
 
 
-def test_components_widget_fraction_histogram_overlay(
-    make_viewer_model,
-    qtbot,
-):
-    """Fraction histogram overlay is drawn/removed with the setting toggle."""
-    from matplotlib.image import AxesImage
-
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-
-    _setup_linear_projection(comp_widget)
-
-    # No overlay by default.
-    assert comp_widget.show_fraction_histogram is False
-    assert comp_widget.component_histogram is None
-
-    # Enable the overlay and redraw.
-    comp_widget.show_fraction_histogram = True
-    comp_widget.draw_line_between_components()
-
-    assert comp_widget.component_histogram is not None
-    # The overlay is a single seamless gradient image (no outline).
-    assert len(comp_widget.component_histogram) == 1
-    fill = comp_widget.component_histogram[0]
-    assert isinstance(fill, AxesImage)
-    assert fill in comp_widget.get_all_artists()
-    assert fill.get_alpha() == comp_widget.histogram_alpha
-
-    # Disable again -> overlay removed on next draw.
-    comp_widget.show_fraction_histogram = False
-    comp_widget.draw_line_between_components()
-    assert comp_widget.component_histogram is None
-
-
-def test_components_widget_fraction_histogram_height_setting(
-    make_viewer_model,
-    qtbot,
-):
-    """Overlay height scales the histogram profile."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-
-    _setup_linear_projection(comp_widget)
-
-    comp_widget.show_fraction_histogram = True
-
-    def _profile_height():
-        comp_widget.draw_line_between_components()
-        # The gradient image extent is in the local (u, v) frame; its top edge
-        # (v_max) scales linearly with the height setting.
-        im = comp_widget.component_histogram[0]
-        return im.get_extent()[3]
-
-    comp_widget.histogram_overlay_height = 0.1
-    small = _profile_height()
-    comp_widget.histogram_overlay_height = 0.6
-    large = _profile_height()
-
-    assert large > small
-    assert np.isclose(large / small, 6.0, rtol=1e-3)
-
-
-def test_components_widget_fraction_histogram_offset_flips_side(
-    make_viewer_model,
-    qtbot,
-):
-    """A negative histogram offset mirrors the overlay to the other side."""
-    viewer = make_viewer_model()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(comp_widget)
-
-    _setup_linear_projection(comp_widget)
-    comp_widget.show_fraction_histogram = True
-
-    def _apex_display():
-        comp_widget.draw_line_between_components()
-        im = comp_widget.component_histogram[0]
-        # Map the local apex (u=0, top of the profile) through the image
-        # transform to display coordinates.
-        v_max = im.get_extent()[3]
-        return im.get_transform().transform((0.0, v_max))
-
-    comp_widget.histogram_offset = 0.1
-    pos_apex = _apex_display()
-    comp_widget.histogram_offset = -0.1
-    neg_apex = _apex_display()
-
-    # Flipping the sign puts the apex on the opposite side of the line.
-    assert not np.allclose(pos_apex, neg_apex)
-
-
 def test_center_fill_slider_paint_event_zero_span(qtbot):
     """paintEvent should no-op (not raise) when minimum == maximum."""
     slider = CenterFillSlider()
@@ -3396,54 +2576,6 @@ def test_center_fill_slider_paint_event_zero_span(qtbot):
     # only schedules one on the offscreen platform used in tests); the
     # span==0 guard must return early without error.
     slider.grab()
-
-
-def test_restore_fraction_layer_colormaps_applies_gamma(
-    make_viewer_model, qtbot
-):
-    """Saved settings with a non-None gamma are applied to the fraction
-    layer by ``_restore_fraction_layer_colormaps``."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    _setup_linear_projection(comp)
-    assert comp.comp1_fractions_layer is not None
-
-    settings = {
-        "components": {
-            "0": {
-                "name": "Component 1",
-                "gs_harmonics": {
-                    "1": {
-                        "colormap_name": "viridis",
-                        "gamma": 2.0,
-                    }
-                },
-            }
-        }
-    }
-    comp._restore_fraction_layer_colormaps(settings, "1")
-
-    assert comp.comp1_fractions_layer.gamma == 2.0
-
-
-def test_on_color_button_clicked_updates_color_and_metadata(
-    make_viewer_model, qtbot
-):
-    """Picking a valid color from the dialog updates the button, the stored
-    default color, and the persisted metadata setting."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp._open_plot_settings_dialog()
-
-    with patch.object(
-        QColorDialog, "getColor", return_value=QColor("#ff0000")
-    ):
-        comp._on_color_button_clicked()
-
-    assert comp.default_component_color == "#ff0000"
-    settings = parent.layer_settings(layer)["component_analysis"]
-    assert (
-        settings["two_component_line_settings"]["default_component_color"]
-        == "#ff0000"
-    )
 
 
 def _is_connected(emitter, bound_method):
@@ -3465,63 +2597,6 @@ def _is_connected(emitter, bound_method):
     return False
 
 
-def test_apply_saved_colormap_settings_exception_reconnects_gamma(
-    make_viewer_model, qtbot
-):
-    """When applying saved colormap settings raises, the except-branch must
-    still reconnect the colormap/contrast_limits/gamma events."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    _setup_linear_projection(comp)
-    assert comp.comp1_fractions_layer is not None
-
-    # An invalid colormap name raises inside the try block, forcing the
-    # except branch (which re-connects the events) to run.
-    comp._saved_colormap_name = "not_a_real_colormap_xyz"
-    comp._saved_colormap_colors = None
-    comp._saved_contrast_limits = (0.0, 1.0)
-
-    comp._apply_saved_colormap_settings()
-
-    assert _is_connected(
-        comp.comp1_fractions_layer.events.gamma, comp._on_colormap_changed
-    )
-    assert _is_connected(
-        comp.comp1_fractions_layer.events.colormap, comp._on_colormap_changed
-    )
-
-
-def test_on_histogram_offset_changed_updates_metadata_and_redraws(
-    make_viewer_model, qtbot
-):
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    _setup_linear_projection(comp)
-    comp.show_fraction_histogram = True
-
-    comp._on_histogram_offset_changed(0.3)
-
-    assert comp.histogram_offset == 0.3
-    # Unsaved until the analysis runs again.
-    settings = parent.layer_settings(layer)["component_analysis"]
-    assert settings["two_component_line_settings"]["histogram_offset"] == 0.3
-
-
-def test_on_histogram_transparency_changed_updates_metadata_and_redraws(
-    make_viewer_model, qtbot
-):
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    _setup_linear_projection(comp)
-    comp.show_fraction_histogram = True
-
-    comp._on_histogram_transparency_changed(0.4)
-
-    assert abs(comp.histogram_alpha - 0.6) < 1e-9
-    settings = parent.layer_settings(layer)["component_analysis"]
-    assert (
-        abs(settings["two_component_line_settings"]["histogram_alpha"] - 0.6)
-        < 1e-9
-    )
-
-
 class _RemoveRaisesArtist:
     """Fake artist whose ``remove`` raises, exercising the suppressed
     ValueError/AttributeError branch in ``_remove_histogram_overlay``."""
@@ -3530,101 +2605,53 @@ class _RemoveRaisesArtist:
         raise ValueError("boom")
 
 
-def test_remove_histogram_overlay_single_artist(make_viewer_model, qtbot):
+def test_get_first_component_fraction_values(make_viewer_model, qtbot):
+    """First-component fractions are pooled across the selected images."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
 
-    # Single artist (not a list/tuple) - exercises the wrap-into-list branch.
-    comp.component_histogram = _RemoveRaisesArtist()
-    comp._remove_histogram_overlay()
-    assert comp.component_histogram is None
+    # With no fraction layers and no comp1_fractions_layer, an empty array
+    # is returned.
+    assert comp.comp1_fractions_layer is None
+    assert comp._get_first_component_fraction_values().size == 0
 
-
-def test_get_all_artists_and_set_artists_visible_single_histogram_artist(
-    make_viewer_model, qtbot
-):
-    """``get_all_artists``/``set_artists_visible`` wrap a non-list/tuple
-    ``component_histogram`` into a single-element list before use."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    fake_artist = MagicMock()
-    comp.component_histogram = fake_artist
-
-    artists = comp.get_all_artists()
-    assert fake_artist in artists
-
-    comp.set_artists_visible(True)
-    fake_artist.set_visible.assert_called_once_with(True)
-
-
-def test_get_first_component_fraction_values_pools_multiple_layers(
-    make_viewer_model, qtbot
-):
-    """Fraction values are pooled (and non-finite values dropped) across
-    every selected layer's fraction layer for the first component."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
     _setup_linear_projection(comp)
     assert comp.comp1_fractions_layer is not None
+    comp1_name = comp.components[0].name_edit.text().strip() or "Component 1"
+    original_size = np.asarray(
+        comp.comp1_fractions_layer.data, dtype=float
+    ).size
 
-    # A second analysed image must be selected for its fractions to be pooled.
+    # Fraction layers of deselected images are excluded from the pool.
+    viewer.add_layer(
+        Image(
+            np.array([[0.25, 0.75], [np.nan, 0.5]]),
+            name=_lp_name(comp1_name, "never_selected"),
+        )
+    )
+    values = comp._get_first_component_fraction_values()
+    assert values.size == original_size
+
+    # A second analysed image must be selected for its fractions to be
+    # pooled, and non-finite values are dropped.
     other_image = create_image_layer_with_phasors()
     other_image.name = "other_image"
     viewer.add_layer(other_image)
     parent.image_layers_checkable_combobox.setCheckedItems(
         [layer.name, other_image.name]
     )
-
-    comp1_name = comp.components[0].name_edit.text().strip() or "Component 1"
-    extra_layer = Image(
-        np.array([[0.25, 0.75], [np.nan, 0.5]]),
-        name=f"{comp1_name} fractions: other_image",
-    )
-    viewer.add_layer(extra_layer)
-
-    values = comp._get_first_component_fraction_values()
-
-    assert not np.any(np.isnan(values))
-    original_size = np.asarray(
-        comp.comp1_fractions_layer.data, dtype=float
-    ).size
-    assert values.size == original_size + 3
-
-
-def test_get_first_component_fraction_values_skips_deselected_layers(
-    make_viewer_model, qtbot
-):
-    """Fraction layers of deselected images are excluded from the pool."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    _setup_linear_projection(comp)
-    assert comp.comp1_fractions_layer is not None
-
-    comp1_name = comp.components[0].name_edit.text().strip() or "Component 1"
     viewer.add_layer(
         Image(
             np.array([[0.25, 0.75], [np.nan, 0.5]]),
-            name=f"{comp1_name} fractions: never_selected",
+            name=_lp_name(comp1_name, "other_image"),
         )
     )
-
     values = comp._get_first_component_fraction_values()
+    assert not np.any(np.isnan(values))
+    assert values.size == original_size + 3
 
-    original_size = np.asarray(
-        comp.comp1_fractions_layer.data, dtype=float
-    ).size
-    assert values.size == original_size
-
-
-def test_get_first_component_fraction_values_fallback_to_comp1_layer(
-    make_viewer_model, qtbot
-):
-    """When no fraction layer matches the live component name, values fall
-    back to ``comp1_fractions_layer`` directly."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    _setup_linear_projection(comp)
-    assert comp.comp1_fractions_layer is not None
-
-    # Renaming after analysis means no viewer layer matches the new name.
+    # When no fraction layer matches the live component name, values fall
+    # back to ``comp1_fractions_layer`` directly.
     comp.components[0].name_edit.setText("Renamed Component")
-
     values = comp._get_first_component_fraction_values()
     expected = np.asarray(comp.comp1_fractions_layer.data, dtype=float).ravel()
     expected = expected[np.isfinite(expected)]
@@ -3632,117 +2659,86 @@ def test_get_first_component_fraction_values_fallback_to_comp1_layer(
     assert values.size > 0
 
 
-def test_get_first_component_fraction_values_returns_empty_with_no_data(
-    make_viewer_model, qtbot
-):
-    """With no fraction layers and no comp1_fractions_layer, an empty array
-    is returned."""
+def test_components_internal_helpers(make_viewer_model, qtbot):
+    """Guards, layer reconnection, selection lookups and label updates."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    assert comp.comp1_fractions_layer is None
 
-    values = comp._get_first_component_fraction_values()
-    assert values.size == 0
-
-
-def test_draw_colormap_line_jet_fallback(make_viewer_model, qtbot):
-    """``_draw_colormap_line`` falls back to ``plt.cm.jet`` when
-    ``fractions_colormap`` is unset."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp.fractions_colormap = None
-
-    fig, ax = plt.subplots()
-    try:
-        comp._draw_colormap_line(ax, 0.0, 0.0, 1.0, 1.0)
-    finally:
-        plt.close(fig)
-
-
-def test_sync_component_layers_gamma_guard_returns_early(
-    make_viewer_model, qtbot
-):
-    """``_sync_component_layers_gamma`` returns immediately (without
-    touching any layers) while ``_updating_linked_layers`` is already
-    True."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    # ``_sync_component_layers_gamma`` returns immediately (without touching
+    # any layers) while ``_updating_linked_layers`` is already True.
     comp._updating_linked_layers = True
-
     with patch.object(comp, "_get_all_layers_for_component") as mock_get:
         comp._sync_component_layers_gamma(0, 1.5)
-
     mock_get.assert_not_called()
+    comp._updating_linked_layers = False
 
-
-def test_find_and_reconnect_layer_expected_name(make_viewer_model, qtbot):
-    """Reconnecting via the expected layer name connects the gamma event."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
+    # Reconnecting via the expected layer name connects the gamma event.
     fraction_layer = Image(
-        np.zeros((5, 5)), name="Component 1 fractions: img1"
+        np.zeros((5, 5)), name=_lp_name("Component 1", "img1")
     )
     viewer.add_layer(fraction_layer)
-
     comp._find_and_reconnect_layer(
-        "Component 1 fractions: img1", "Component 1", "img1", 0
+        _lp_name("Component 1", "img1"), "Component 1", "img1", 0
     )
-
     assert comp.comp1_fractions_layer is fraction_layer
     assert _is_connected(
         fraction_layer.events.gamma, comp._on_colormap_changed
     )
 
-
-def test_find_and_reconnect_layer_possible_names(make_viewer_model, qtbot):
-    """Reconnecting via one of the fallback naming conventions renames the
-    layer and connects the gamma event."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
+    # Reconnecting via one of the fallback naming conventions renames the
+    # layer and connects the gamma event.
     fraction_layer = Image(
-        np.zeros((5, 5)), name="Component 1 fractions: img2"
+        np.zeros((5, 5)), name=_lp_name("Component 1", "img2")
     )
     viewer.add_layer(fraction_layer)
-
     comp._find_and_reconnect_layer(
-        "Component 1 fractions: RENAMED", "Component 1", "img2", 0
+        _lp_name("Component 1", "RENAMED"), "Component 1", "img2", 0
     )
-
     assert comp.comp1_fractions_layer is fraction_layer
-    assert fraction_layer.name == "Component 1 fractions: RENAMED"
+    assert fraction_layer.name == _lp_name("Component 1", "RENAMED")
     assert _is_connected(
         fraction_layer.events.gamma, comp._on_colormap_changed
     )
 
+    # Without a parent widget there is no selection to honour.
+    with patch.object(comp, "parent_widget", None):
+        assert comp._get_selected_image_layer_names() == set()
+    # A deleted Qt combobox is treated as an empty selection, not an error.
+    with patch.object(
+        parent,
+        "get_selected_layers",
+        side_effect=RuntimeError("wrapped C/C++ object has been deleted"),
+    ):
+        assert comp._get_selected_image_layer_names() == set()
+    with patch.object(
+        parent, "get_selected_layers", side_effect=AttributeError
+    ):
+        assert comp._get_selected_image_layer_names() == set()
 
-def test_get_inverted_colormap_name_fallback(make_viewer_model, qtbot):
-    """Non-standard colormap names without explicit colors fall back to the
-    ``_r``-suffix inversion convention (the fallback name is a literal
-    ``jet``/``jet_r`` pair keyed only off whether the input already ends in
-    ``_r``)."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    # Component name changes update name_label if present.
+    comp.components[0].name_label = MagicMock()
+    comp.components[0].name_edit.setText("NewName")
+    comp.components[0].name_label.setText.assert_called_with("NewName")
+    comp.components[0].name_edit.setText("")
+    comp.components[0].name_label.setText.assert_called_with("Component 1")
 
-    assert comp._get_inverted_colormap("zzz_not_a_real_colormap") == "jet_r"
-    assert comp._get_inverted_colormap("zzz_not_a_real_colormap_r") == "jet"
+    # Clearing components clears fields and updates labels.
+    comp.components[0].name_edit.setText("MyComp")
+    comp.components[0].g_edit.setText("0.4")
+    comp.components[0].s_edit.setText("0.3")
+    comp.components[0].coords_label = MagicMock()
+    comp.components[0].name_label = MagicMock()
+    comp._clear_components()
+    comp.components[0].coords_label.setText.assert_called_with("G: -, S: -")
+    comp.components[0].name_label.setText.assert_called_with("Component 1")
+    assert comp.components[0].name_edit.text() == ""
 
 
-def test_linear_projection_preserves_gamma_on_redisplay(
+def test_linear_projection_gamma_is_restored_and_preserved(
     make_viewer_model, qtbot
 ):
-    """Re-triggering the same analysis preserves a manually-set gamma on the
-    already-displayed comp1 fraction layer."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    _setup_linear_projection(comp)
-    assert comp.comp1_fractions_layer is not None
-
-    comp.comp1_fractions_layer.gamma = 2.5
-    comp._run_analysis()
-
-    assert comp.comp1_fractions_layer.gamma == 2.5
-
-
-def test_linear_projection_restores_saved_gamma_from_metadata(
-    make_viewer_model, qtbot
-):
-    """A gamma value saved in metadata under the first component's harmonic
-    data is picked up when the fraction layer is first created."""
+    """A gamma saved in metadata under the first component's harmonic data
+    is picked up when the fraction layer is first created, and re-running
+    the analysis preserves a manually-set gamma."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
     layer.metadata["settings"]["component_analysis"] = {
         "components": {
@@ -3761,9 +2757,12 @@ def test_linear_projection_restores_saved_gamma_from_metadata(
     }
 
     _setup_linear_projection(comp)
-
     assert comp.comp1_fractions_layer is not None
     assert comp.comp1_fractions_layer.gamma == 2.75
+
+    comp.comp1_fractions_layer.gamma = 2.5
+    comp._run_analysis()
+    assert comp.comp1_fractions_layer.gamma == 2.5
 
 
 def test_component_fit_restores_saved_gamma_for_non_first_component(
@@ -4027,7 +3026,9 @@ def test_component_fit_rename_replaces_layers(make_viewer_model, qtbot):
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
     _setup_component_fit(comp)
     first_run = sorted(
-        lyr.name for lyr in viewer.layers if " fraction: " in lyr.name
+        lyr.name
+        for lyr in viewer.layers
+        if is_component_fit_label(split_analysis_layer_name(lyr.name)[1])
     )
     assert len(first_run) == 2
 
@@ -4038,7 +3039,9 @@ def test_component_fit_rename_replaces_layers(make_viewer_model, qtbot):
     comp._run_analysis()
 
     second_run = sorted(
-        lyr.name for lyr in viewer.layers if " fraction: " in lyr.name
+        lyr.name
+        for lyr in viewer.layers
+        if is_component_fit_label(split_analysis_layer_name(lyr.name)[1])
     )
     assert len(second_run) == 2, second_run
     assert all("Alpha" in n or "Beta" in n for n in second_run)
@@ -4107,7 +3110,9 @@ def test_source_rename_updates_fraction_tags(make_viewer_model, qtbot):
         tag = lyr.metadata['phasor_component_fraction']
         assert tag['source_layer'] == "renamed_source", (lyr.name, tag)
     # Default-named layer's name suffix followed the source rename too.
-    assert fracs[1].name.endswith(" fraction: renamed_source")
+    assert fracs[1].name == _fit_name("Component 2", "renamed_source"), fracs[
+        1
+    ].name
 
     # Re-run: the custom-named layer is still matched (no duplicate).
     comp.components[1].g_edit.setText("0.75")
@@ -4145,8 +3150,9 @@ def test_renamed_fraction_layer_stays_in_histogram_combobox(
     assert list(comp.histogram_widget._datasets.keys()) == ["SomethingCustom"]
 
 
-def test_component_display_name_from_tag(make_viewer_model, qtbot):
-    """Unit checks for the tag → display-name resolution helper."""
+def test_component_fraction_layer_lookup_by_tag(make_viewer_model, qtbot):
+    """The tag -> display-name helper, and _find_component_fraction_layer
+    matching by tag, falling back to the default name, or returning None."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
     # Non-dict tags resolve to None.
     assert comp._component_display_name_from_tag(None) is None
@@ -4154,27 +3160,12 @@ def test_component_display_name_from_tag(make_viewer_model, qtbot):
     # Default name when the source layer has no custom component name.
     tag = {'source_layer': layer.name, 'component_index': 1}
     assert comp._component_display_name_from_tag(tag) == "Component 2"
-    # Custom name from the source layer's component settings.
-    _setup_component_fit(comp)
-    comp.components[1].name_edit.setText("Bound")
-    comp._on_component_name_changed(1)
-    assert comp._component_display_name_from_tag(tag) == "Bound"
-    # Unknown component index without a source falls back to the default.
-    assert (
-        comp._component_display_name_from_tag({'component_index': 4})
-        == "Component 5"
-    )
-
-
-def test_find_component_fraction_layer_paths(make_viewer_model, qtbot):
-    """_find_component_fraction_layer matches by tag, falls back to the
-    default name, and returns None when nothing matches."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
     assert (
         comp._find_component_fraction_layer(layer.name, 0, "missing") is None
     )
+
     _setup_component_fit(comp)
-    default_name = f"Component 1 fraction: {layer.name}"
+    default_name = _fit_name("Component 1", layer.name)
     found = comp._find_component_fraction_layer(layer.name, 0, default_name)
     assert found is not None and found.name == default_name
     # Tag path: still found after a manual rename.
@@ -4187,23 +3178,15 @@ def test_find_component_fraction_layer_paths(make_viewer_model, qtbot):
     fallback = comp._find_component_fraction_layer(layer.name, 0, default_name)
     assert fallback is not None and fallback.name == default_name
 
-
-def test_plot_settings_dialog_histogram_group_disabled_in_component_fit(
-    make_viewer_model, qtbot
-):
-    """The fraction-histogram overlay group is only enabled for a
-    two-component Linear Projection."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-    comp.analysis_type_combo.setCurrentText("Linear Projection")
-    comp._open_plot_settings_dialog()
-    assert comp.fraction_histogram_checkbox.isEnabled()
-    comp.plot_dialog.close()
-    comp.plot_dialog = None
-
-    comp.analysis_type_combo.setCurrentText("Component Fit")
-    comp._open_plot_settings_dialog()
-    assert not comp.fraction_histogram_checkbox.isEnabled()
-    comp.plot_dialog.close()
+    # Custom name from the source layer's component settings.
+    comp.components[1].name_edit.setText("Bound")
+    comp._on_component_name_changed(1)
+    assert comp._component_display_name_from_tag(tag) == "Bound"
+    # Unknown component index without a source falls back to the default.
+    assert (
+        comp._component_display_name_from_tag({'component_index': 4})
+        == "Component 5"
+    )
 
 
 def test_component_fit_multi_layer_per_row_datasets(make_viewer_model, qtbot):
@@ -4219,8 +3202,8 @@ def test_component_fit_multi_layer_per_row_datasets(make_viewer_model, qtbot):
     _check_histogram_components(comp, ["Component 1"])
     comp.update_component_histogram()
     assert set(comp.histogram_widget._datasets.keys()) == {
-        "Component 1 fraction: img_a",
-        "Component 1 fraction: img_b",
+        _fit_name("Component 1", "img_a"),
+        _fit_name("Component 1", "img_b"),
     }
 
 
@@ -4244,8 +3227,8 @@ def test_linear_projection_second_component_per_row(make_viewer_model, qtbot):
     _check_histogram_components(comp, [name2])
     comp.update_component_histogram()
     assert set(comp.histogram_widget._datasets.keys()) == {
-        f"{name2} fractions: img_a",
-        f"{name2} fractions: img_b",
+        _lp_name(name2, "img_a"),
+        _lp_name(name2, "img_b"),
     }
 
 
@@ -4285,7 +3268,7 @@ def test_switch_to_linear_projection_hides_stale_component_fit(
     assert invert is True, "Component 2 should be the complementary fraction"
     only_layer = next(iter(fmap.values()))
     assert only_layer.metadata.get('phasor_component_fraction') is None
-    assert only_layer.name.startswith("Component 1 fractions: ")
+    assert only_layer.name == _lp_name("Component 1", layer.name)
 
 
 def _setup_analysed_layers(viewer, count=3):
@@ -4362,84 +3345,49 @@ def _assert_individual_histogram(histogram, expected_labels):
     assert _histogram_legend_labels(histogram) == expected_labels
 
 
-def test_components_histogram_follows_layer_selection(make_napari_viewer):
-    """Histogram must track layers being unchecked and re-checked (issue #358)."""
+def test_components_histogram_follows_layer_selection(
+    make_napari_viewer, qtbot
+):
+    """Histogram and fraction layers track the selected layers (issue #358).
+
+    Deselected layers are hidden, not deleted, are left untouched by the
+    range slider, and are not resurrected by re-running the analysis.
+    """
     viewer = make_napari_viewer()
     parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
 
-    assert sorted(
-        comp_widget._get_fraction_layers_for_component(comp_name)
-    ) == ["img0", "img1", "img2"]
+    def fraction_sources():
+        return sorted(
+            comp_widget._get_fraction_layers_for_component(comp_name)
+        )
+
+    assert fraction_sources() == ["img0", "img1", "img2"]
     assert len(comp_widget.histogram_widget._datasets) == 3
 
-    _select_layers(parent, ["img0"])
+    # The real selectionChanged -> debounce -> components tab wiring works:
+    # emit the real signal and let the 300 ms debounce timer expire.
+    parent.image_layers_checkable_combobox.setCheckedItems(["img0", "img1"])
+    qtbot.waitUntil(
+        lambda: len(comp_widget.histogram_widget._datasets) == 2,
+        timeout=5000,
+    )
+    assert fraction_sources() == ["img0", "img1"]
+    assert viewer.layers[_lp_name(comp_name, "img2")].visible is False
 
-    assert sorted(
-        comp_widget._get_fraction_layers_for_component(comp_name)
-    ) == ["img0"]
-    assert len(comp_widget.histogram_widget._datasets) == 1
-
-    _select_layers(parent, ["img0", "img1", "img2"])
-
-    assert sorted(
-        comp_widget._get_fraction_layers_for_component(comp_name)
-    ) == ["img0", "img1", "img2"]
-    assert len(comp_widget.histogram_widget._datasets) == 3
-
-
-def test_components_histogram_ignores_stale_fraction_layers_on_rerun(
-    make_napari_viewer,
-):
-    """Re-running the analysis must not resurrect deselected layers (issue #358)."""
-    viewer = make_napari_viewer()
-    parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
-
-    _select_layers(parent, ["img0"])
-    comp_widget._run_analysis()
-
-    # Fraction layers of the deselected layers still exist in the viewer ...
-    assert f"{comp_name} fractions: img1" in viewer.layers
-    # ... but must not contribute to the histogram.
-    assert sorted(
-        comp_widget._get_fraction_layers_for_component(comp_name)
-    ) == ["img0"]
-    assert len(comp_widget.histogram_widget._datasets) == 1
-
-
-def test_components_fraction_layers_hidden_when_deselected(make_napari_viewer):
-    """Fraction layers are hidden, not deleted, when their source is unchecked."""
-    viewer = make_napari_viewer()
-    parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
-
-    _select_layers(parent, ["img0"])
-
-    assert viewer.layers[f"{comp_name} fractions: img0"].visible is True
-    assert viewer.layers[f"{comp_name} fractions: img1"].visible is False
-    assert viewer.layers[f"{comp_name} fractions: img2"].visible is False
-
-    _select_layers(parent, ["img0", "img1", "img2"])
-
-    assert viewer.layers[f"{comp_name} fractions: img1"].visible is True
-    assert viewer.layers[f"{comp_name} fractions: img2"].visible is True
-
-
-def test_components_fraction_range_only_clips_selected_layers(
-    make_napari_viewer,
-):
-    """The fraction range slider must leave deselected layers untouched."""
-    viewer = make_napari_viewer()
-    parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
-
-    deselected = viewer.layers[f"{comp_name} fractions: img1"]
+    deselected = viewer.layers[_lp_name(comp_name, "img1")]
     untouched_data = deselected.data.copy()
 
     _select_layers(parent, ["img0"])
+    assert fraction_sources() == ["img0"]
+    assert len(comp_widget.histogram_widget._datasets) == 1
+    assert viewer.layers[_lp_name(comp_name, "img0")].visible is True
+    assert viewer.layers[_lp_name(comp_name, "img1")].visible is False
+    assert viewer.layers[_lp_name(comp_name, "img2")].visible is False
 
-    selected = viewer.layers[f"{comp_name} fractions: img0"]
+    # The fraction range slider must leave deselected layers untouched.
+    selected = viewer.layers[_lp_name(comp_name, "img0")]
     selected_original = selected.data.copy()
-
     comp_widget._on_fraction_range_changed(0.2, 0.8)
-
     np.testing.assert_allclose(
         selected.data,
         np.clip(selected_original, 0.2, 0.8),
@@ -4449,59 +3397,26 @@ def test_components_fraction_range_only_clips_selected_layers(
     )
     np.testing.assert_array_equal(deselected.data, untouched_data)
 
+    # Re-running the analysis must not resurrect deselected layers: their
+    # fraction layers still exist in the viewer, but must not contribute.
+    comp_widget._run_analysis()
+    assert _lp_name(comp_name, "img1") in viewer.layers
+    assert fraction_sources() == ["img0"]
+    assert len(comp_widget.histogram_widget._datasets) == 1
 
-def test_components_histogram_cleared_when_no_layers_selected(
-    make_napari_viewer,
-):
-    """Unchecking every layer empties the fraction histogram."""
-    viewer = make_napari_viewer()
-    parent, comp_widget, _ = _setup_analysed_layers(viewer)
+    _select_layers(parent, ["img0", "img1", "img2"])
+    assert fraction_sources() == ["img0", "img1", "img2"]
+    assert len(comp_widget.histogram_widget._datasets) == 3
+    assert viewer.layers[_lp_name(comp_name, "img1")].visible is True
+    assert viewer.layers[_lp_name(comp_name, "img2")].visible is True
 
+    # Unchecking every layer empties the fraction histogram.
     _select_layers(parent, [])
-
     assert _available_histogram_components(comp_widget) == []
     assert comp_widget._selected_histogram_components() == []
     assert comp_widget.histogram_widget.counts is None
     assert comp_widget.histogram_widget._datasets == {}
     assert not comp_widget.histogram_widget.isHidden()
-
-
-def test_components_histogram_clears_unresolved_component(
-    make_viewer_model, qtbot
-):
-    """A selected component without fraction layers cannot retain old data."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp = parent.components_tab
-    comp.histogram_widget.update_data(np.array([0.1, 0.2]))
-    comp._histogram_components = ["Missing component"]
-
-    comp.update_component_histogram()
-
-    assert comp.histogram_widget.counts is None
-    assert comp.histogram_widget._datasets == {}
-    assert not comp.histogram_widget.isHidden()
-
-
-def test_components_histogram_updates_from_debounced_selection_signal(
-    make_napari_viewer, qtbot
-):
-    """The real selectionChanged -> debounce -> components tab wiring works."""
-    viewer = make_napari_viewer()
-    parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
-
-    # Emit the real signal and let the 300 ms debounce timer expire.
-    parent.image_layers_checkable_combobox.setCheckedItems(["img0", "img1"])
-
-    qtbot.waitUntil(
-        lambda: len(comp_widget.histogram_widget._datasets) == 2,
-        timeout=5000,
-    )
-
-    assert sorted(
-        comp_widget._get_fraction_layers_for_component(comp_name)
-    ) == ["img0", "img1"]
-    assert viewer.layers[f"{comp_name} fractions: img2"].visible is False
 
 
 def test_components_individual_histogram_follows_real_popup_click(
@@ -4516,8 +3431,8 @@ def test_components_individual_histogram_follows_real_popup_click(
     histogram = comp.histogram_widget
     histogram.display_mode = "Individual layers"
     labels = [
-        f"{comp_name} fractions: img0",
-        f"{comp_name} fractions: img1",
+        _lp_name(comp_name, "img0"),
+        _lp_name(comp_name, "img1"),
     ]
     _assert_individual_histogram(histogram, labels)
 
@@ -4559,8 +3474,8 @@ def test_component_fit_individual_histogram_follows_primary_popup_click(
     histogram = comp.histogram_widget
     histogram.display_mode = "Individual layers"
     labels = [
-        f"{comp_name} fraction: img_a",
-        f"{comp_name} fraction: img_b",
+        _fit_name(comp_name, "img_a"),
+        _fit_name(comp_name, "img_b"),
     ]
     _assert_individual_histogram(histogram, labels)
 
@@ -4589,35 +3504,6 @@ def test_component_fit_individual_histogram_follows_primary_popup_click(
     comp._run_analysis()
 
     _assert_individual_histogram(histogram, labels[1:])
-
-
-def test_get_selected_image_layer_names_without_parent_widget(
-    make_viewer_model, qtbot
-):
-    """Without a parent widget there is no selection to honour."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    with patch.object(comp, "parent_widget", None):
-        assert comp._get_selected_image_layer_names() == set()
-
-
-def test_get_selected_image_layer_names_survives_torn_down_widgets(
-    make_viewer_model, qtbot
-):
-    """A deleted Qt combobox is treated as an empty selection, not an error."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    with patch.object(
-        parent,
-        "get_selected_layers",
-        side_effect=RuntimeError("wrapped C/C++ object has been deleted"),
-    ):
-        assert comp._get_selected_image_layer_names() == set()
-
-    with patch.object(
-        parent, "get_selected_layers", side_effect=AttributeError
-    ):
-        assert comp._get_selected_image_layer_names() == set()
 
 
 def test_sync_fraction_layer_visibility_only_touches_fraction_layers(
@@ -4666,96 +3552,62 @@ def _projection_widget(viewer, name="proj_layer"):
     return parent, comp_widget, layer
 
 
-def test_linear_projection_skips_a_layer_without_phasor_arrays(
-    make_viewer_model, qtbot
-):
-    """A layer whose G/S went missing yields no fraction layer."""
+def test_linear_projection_per_layer_failures(make_viewer_model, qtbot):
+    """Layers the projection cannot use are skipped or reported by name,
+    and the per-layer entry point works on its own."""
     viewer = make_viewer_model()
     _, comp_widget, layer = _projection_widget(viewer)
+    real = layer.metadata["G"]
+    harmonics = layer.metadata["harmonics"]
+    c1 = comp_widget.components[0]
+
+    # A layer whose G/S went missing yields no fraction layer, from the run
+    # or from the per-layer entry point.
     layer.metadata["G"] = None
-
     comp_widget._run_analysis()
-
     assert comp_widget.comp1_fractions_layer is None
-
-
-def test_linear_projection_skips_a_layer_missing_the_harmonic(
-    make_viewer_model, qtbot
-):
-    """A layer that never computed the selected harmonic is skipped."""
-    viewer = make_viewer_model()
-    _, comp_widget, layer = _projection_widget(viewer)
-    layer.metadata["harmonics"] = np.array([97])
-
-    comp_widget._run_analysis()
-
-    assert comp_widget.comp1_fractions_layer is None
-
-
-def test_linear_projection_reports_a_failing_layer(
-    make_viewer_model, qtbot, monkeypatch
-):
-    """A projection that raises names the layer instead of failing silently."""
-    viewer = make_viewer_model()
-    _, comp_widget, layer = _projection_widget(viewer)
-
-    errors = []
-    monkeypatch.setattr(
-        "napari_phasors.components_tab.show_error", errors.append
+    comp_widget._run_linear_projection_for_layer(
+        layer,
+        np.array([0.2, 0.8]),
+        np.array([0.1, 0.5]),
+        c1,
     )
+    assert comp_widget.comp1_fractions_layer is None
+    layer.metadata["G"] = real
+
+    # A layer that never computed the selected harmonic is skipped.
+    layer.metadata["harmonics"] = np.array([97])
+    comp_widget._run_analysis()
+    assert comp_widget.comp1_fractions_layer is None
+    layer.metadata["harmonics"] = harmonics
+
+    # A projection that raises names the layer instead of failing silently.
+    errors = []
 
     def explode(*args, **kwargs):
         raise RuntimeError("projection boom")
 
-    monkeypatch.setattr(
-        "napari_phasors.components_tab.phasor_component_fraction", explode
-    )
-
-    comp_widget._run_analysis()
-
+    with (
+        patch("napari_phasors.components_tab.show_error", errors.append),
+        patch(
+            "napari_phasors.components_tab.phasor_component_fraction",
+            explode,
+        ),
+    ):
+        comp_widget._run_analysis()
     assert any("projection boom" in message for message in errors)
     assert any("proj_layer" in message for message in errors)
 
-
-def test_linear_projection_for_layer_computes_its_own_fraction(
-    make_viewer_model, qtbot
-):
-    """The per-layer entry point still works without a precomputed map."""
-    viewer = make_viewer_model()
-    _, comp_widget, layer = _projection_widget(viewer)
+    # The per-layer entry point still works without a precomputed map.
     comp_widget._run_analysis()
     comp_widget.comp1_fractions_layer = None
-
-    c1, c2 = comp_widget.components[0], comp_widget.components[1]
     comp_widget._run_linear_projection_for_layer(
         layer,
         np.array([0.2, 0.8]),
         np.array([0.1, 0.5]),
         c1,
-        c2,
     )
-
     assert comp_widget.comp1_fractions_layer is not None
-
-
-def test_linear_projection_for_layer_bails_out_when_it_cannot_compute(
-    make_viewer_model, qtbot
-):
-    """No phasor arrays means no layer, not a crash."""
-    viewer = make_viewer_model()
-    _, comp_widget, layer = _projection_widget(viewer)
-    layer.metadata["G"] = None
-
-    c1, c2 = comp_widget.components[0], comp_widget.components[1]
-    comp_widget._run_linear_projection_for_layer(
-        layer,
-        np.array([0.2, 0.8]),
-        np.array([0.1, 0.5]),
-        c1,
-        c2,
-    )
-
-    assert comp_widget.comp1_fractions_layer is None
 
 
 def _fit_widget(make_viewer_model, name="fit_layer"):
@@ -4773,89 +3625,56 @@ def _fit_widget(make_viewer_model, name="fit_layer"):
     return parent, comp_widget, layer
 
 
-def test_component_fit_reports_a_failing_layer(
-    make_viewer_model, qtbot, monkeypatch
-):
-    """A fit that raises is reported rather than swallowed."""
-    _, comp_widget, layer = _fit_widget(make_viewer_model)
+def test_component_fit_per_layer_failures(make_viewer_model, qtbot):
+    """A fit that raises is reported rather than swallowed, and the per-layer
+    path prepares, fits and bails out on its own."""
+    parent, comp_widget, layer = _fit_widget(make_viewer_model)
 
     errors = []
-    monkeypatch.setattr(
-        "napari_phasors.components_tab.show_error", errors.append
-    )
-    monkeypatch.setattr(
-        "napari_phasors.components_tab.phasor_component_fit",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("fit boom")),
-    )
-
-    comp_widget._run_analysis()
-
+    with (
+        patch("napari_phasors.components_tab.show_error", errors.append),
+        patch(
+            "napari_phasors.components_tab.phasor_component_fit",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("fit boom")),
+        ),
+    ):
+        comp_widget._run_analysis()
     assert any("fit boom" in message for message in errors)
 
-
-def test_component_fit_for_layer_prepares_and_fits_on_its_own(
-    make_viewer_model, qtbot
-):
-    """Called without a precomputed fit, the per-layer path does the work."""
-    parent, comp_widget, layer = _fit_widget(make_viewer_model)
     comp_widget._run_analysis()
-
     active = [c for c in comp_widget.components if c is not None and c.dot]
     harmonic = getattr(parent, "harmonic", 1)
     required = comp_widget._get_required_harmonics(len(active))
 
+    # Called without a precomputed fit, the per-layer path does the work.
     comp_widget._run_component_fit_for_layer(
-        layer, active, len(active), harmonic, required
+        layer, len(active), harmonic, required
     )
-
     assert layer.metadata["settings"]["component_analysis"]
 
+    # A harmonic with no component positions is skipped without raising:
+    # nothing was ever placed on harmonic 7, so there is nothing to fit.
+    before = dict(layer.metadata["settings"]["component_analysis"])
+    comp_widget._run_component_fit_for_layer(layer, 2, 7, 1)
+    assert layer.metadata["settings"]["component_analysis"] == before
 
-def test_component_fit_for_layer_reports_its_own_failure(
-    make_viewer_model, qtbot, monkeypatch
-):
-    """The standalone path reports a failing fit the same way."""
-    parent, comp_widget, layer = _fit_widget(make_viewer_model)
-    comp_widget._run_analysis()
-
-    active = [c for c in comp_widget.components if c is not None and c.dot]
-    harmonic = getattr(parent, "harmonic", 1)
-    required = comp_widget._get_required_harmonics(len(active))
-
+    # The standalone path reports a failing fit the same way.
     errors = []
-    monkeypatch.setattr(
-        "napari_phasors.components_tab.show_error", errors.append
-    )
-    monkeypatch.setattr(
-        "napari_phasors.components_tab.phasor_component_fit",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("solo boom")),
-    )
-
-    comp_widget._run_component_fit_for_layer(
-        layer, active, len(active), harmonic, required
-    )
-
+    with (
+        patch("napari_phasors.components_tab.show_error", errors.append),
+        patch(
+            "napari_phasors.components_tab.phasor_component_fit",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("solo boom")),
+        ),
+    ):
+        comp_widget._run_component_fit_for_layer(
+            layer, len(active), harmonic, required
+        )
     assert any("solo boom" in message for message in errors)
 
 
-def test_component_fit_for_layer_bails_out_when_preparation_fails(
-    make_viewer_model, qtbot
-):
-    """A harmonic with no component positions is skipped without raising."""
-    parent, comp_widget, layer = _fit_widget(make_viewer_model)
-    comp_widget._run_analysis()
-
-    active = [c for c in comp_widget.components if c is not None and c.dot][:2]
-    before = dict(layer.metadata["settings"]["component_analysis"])
-
-    # Nothing was ever placed on harmonic 7, so there is nothing to fit.
-    comp_widget._run_component_fit_for_layer(layer, active, 2, 7, 1)
-
-    assert layer.metadata["settings"]["component_analysis"] == before
-
-
-def test_components_inline_card_selection(make_viewer_model, qtbot):
-    """Component cards can be clicked to highlight the active component."""
+def test_components_card_selection(make_viewer_model, qtbot):
+    """Cards are selected by clicking them, their inputs, or the canvas."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
 
     assert len(comp.components) == 2
@@ -4869,362 +3688,96 @@ def test_components_inline_card_selection(make_viewer_model, qtbot):
     assert not comp.components[0].card_frame.property("selected")
     assert comp.components[1].card_frame.property("selected")
 
+    # Focusing or moving the cursor in any input field selects that card.
+    comp._select_component_item(0)
+    assert comp._selected_component is comp.components[0]
+    assert comp.components[0].card_frame.property("selected")
+    comp.components[1].name_edit.cursorPositionChanged.emit(0, 1)
+    assert comp._selected_component is comp.components[1]
+    assert comp.components[1].card_frame.property("selected")
+    comp.components[0].g_edit.cursorPositionChanged.emit(0, 1)
+    assert comp._selected_component is comp.components[0]
+    comp.components[1].s_edit.cursorPositionChanged.emit(0, 1)
+    assert comp._selected_component is comp.components[1]
+    comp.components[0].lifetime_edit.cursorPositionChanged.emit(0, 1)
+    assert comp._selected_component is comp.components[0]
 
-def test_components_inline_card_inputs_structure(make_viewer_model, qtbot):
-    """Each component card embeds inputs directly in two rows."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    # Invalid indices deselect; a ComponentState selects itself; a foreign
+    # component is ignored.
+    comp._select_component_item(-1)
+    assert comp._selected_component is None
+    for c in comp.components:
+        assert not c.card_frame.property("selected")
+    comp._select_component_item(999)
+    assert comp._selected_component is None
+    comp._select_component_item(comp.components[1])
+    assert comp._selected_component is comp.components[1]
+    assert comp.components[1].card_frame.property("selected")
+    foreign_comp = MagicMock()
+    comp._select_component_item(foreign_comp)
+    assert comp._selected_component is comp.components[1]
 
+    # Each card embeds its inputs directly, in two rows.
     c0 = comp.components[0]
-    # Check top row controls
     assert c0.number_label.text() == "1."
     assert c0.name_edit is not None
     assert c0.select_button is not None
     assert c0.remove_button is not None
-
-    # Check bottom row controls
     assert c0.g_edit is not None
     assert c0.s_edit is not None
     assert c0.lifetime_edit is not None
-
-    # Typing name updates the component's name
     c0.name_edit.setText("Donor Fluorophore")
     assert c0.name_edit.text() == "Donor Fluorophore"
-
-    # Updating G and S updates coordinates
     c0.g_edit.setText("0.600")
     c0.s_edit.setText("0.400")
     comp._on_component_coords_changed(0)
     assert c0.g_edit.text() == "0.600"
     assert c0.s_edit.text() == "0.400"
-
-    # Updating lifetime
     c0.lifetime_edit.setText("2.500")
     comp._update_component_from_lifetime(0)
     assert c0.lifetime_edit.text() == "2.500"
 
-
-def test_components_remove_specific_button(make_viewer_model, qtbot):
-    """Clicking the remove button on a specific component removes it and renumbers remaining."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    comp._add_component()
-    assert len(comp.components) == 3
-
-    comp.components[0].name_edit.setText("Comp A")
-    comp.components[1].name_edit.setText("Comp B")
-    comp.components[2].name_edit.setText("Comp C")
-
-    # All 3 have remove buttons enabled because count > 2
-    for c in comp.components:
-        assert c.remove_button.isEnabled()
-
-    # Remove the middle component (Comp B)
-    comp.components[1].remove_button.click()
-
-    assert len(comp.components) == 2
-    assert comp.components[0].name_edit.text() == "Comp A"
-    assert comp.components[0].idx == 0
-    assert comp.components[0].number_label.text() == "1."
-
-    assert comp.components[1].name_edit.text() == "Comp C"
-    assert comp.components[1].idx == 1
-    assert comp.components[1].number_label.text() == "2."
-
-    # Now remove buttons should be disabled because count == 2
-    assert not comp.components[0].remove_button.isEnabled()
-    assert not comp.components[1].remove_button.isEnabled()
-
-
-def test_components_canvas_interaction_selects_component(
-    make_viewer_model, qtbot
-):
-    """Clicking a component dot on the canvas selects its card in the list."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    # Set up coordinates so dots are created on canvas
-    comp.components[0].g_edit.setText("0.2")
-    comp.components[0].s_edit.setText("0.1")
-    comp._on_component_coords_changed(0)
-
-    comp.components[1].g_edit.setText("0.8")
-    comp.components[1].s_edit.setText("0.5")
-    comp._on_component_coords_changed(1)
-
-    # Select component 0
-    comp._select_component_item(0)
-    assert comp._selected_component is comp.components[0]
-    assert comp.components[0].card_frame.property("selected")
-
-    # Simulate canvas press event on component 1 dot
-    mock_event = MagicMock()
-    mock_event.inaxes = parent.canvas_widget.axes
-    with patch.object(
-        comp.components[1].dot, "contains", return_value=(True, {})
-    ):
-        comp._on_press(mock_event)
-
-    assert comp._selected_component is comp.components[1]
-    assert comp.components[1].card_frame.property("selected")
-    assert not comp.components[0].card_frame.property("selected")
-
-
-def test_components_input_focus_updates_selection(make_viewer_model, qtbot):
-    """Focusing or moving the cursor in any input field of a card selects that card."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    comp._select_component_item(0)
-    assert comp._selected_component is comp.components[0]
-    assert comp.components[0].card_frame.property("selected")
-
-    # Name edit cursor position change selects component 1
-    comp.components[1].name_edit.cursorPositionChanged.emit(0, 1)
-    assert comp._selected_component is comp.components[1]
-    assert comp.components[1].card_frame.property("selected")
-
-    # G edit cursor position change selects component 0
-    comp.components[0].g_edit.cursorPositionChanged.emit(0, 1)
-    assert comp._selected_component is comp.components[0]
-
-    # S edit cursor position change selects component 1
-    comp.components[1].s_edit.cursorPositionChanged.emit(0, 1)
-    assert comp._selected_component is comp.components[1]
-
-    # Lifetime edit cursor position change selects component 0
-    comp.components[0].lifetime_edit.cursorPositionChanged.emit(0, 1)
-    assert comp._selected_component is comp.components[0]
-
-
-def test_components_select_component_item_edge_cases(make_viewer_model):
-    """Test _select_component_item with invalid index, foreign component, and component instance."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    # Invalid negative index deselects
-    comp._select_component_item(-1)
-    assert comp._selected_component is None
-    for c in comp.components:
-        assert not c.card_frame.property("selected")
-
-    # Invalid out-of-bounds index deselects
-    comp._select_component_item(999)
-    assert comp._selected_component is None
-
-    # Passing valid ComponentState instance selects it
-    comp._select_component_item(comp.components[1])
-    assert comp._selected_component is comp.components[1]
-    assert comp.components[1].card_frame.property("selected")
-
-    # Passing foreign component not in self.components is safely ignored
-    foreign_comp = MagicMock()
-    comp._select_component_item(foreign_comp)
-    assert comp._selected_component is comp.components[1]
-
-
-def test_components_backward_compatibility_stubs(make_viewer_model):
-    """Backward compatibility stubs should execute without raising errors."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    comp._refresh_editor_title()
-    comp._update_row_coords_label(0)
-    comp._update_all_row_coords_labels()
-
-
-def test_components_remove_component_branches_and_edge_cases(
-    make_viewer_model,
-):
-    """Test all branches of _remove_component: count <= 2, invalid index, ComponentState arg, unselected removal, and last index removal."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    # Cannot remove when count <= 2
-    assert len(comp.components) == 2
-    comp._remove_component()
-    assert len(comp.components) == 2
-
-    # Add components up to 4
-    comp._add_component()
-    comp._add_component()
-    assert len(comp.components) == 4
-
-    # Remove with invalid indices (no-ops)
-    comp._remove_component(-1)
-    comp._remove_component(100)
-    assert len(comp.components) == 4
-
-    # Select component 0, remove component 2 (was_selected is False)
-    comp._select_component_item(0)
-    comp._remove_component(2)
-    assert len(comp.components) == 3
-    assert comp._selected_component is comp.components[0]
-    assert comp.components[0].card_frame.property("selected")
-
-    # Remove passing ComponentState instance
-    comp_to_remove = comp.components[2]
-    comp._remove_component(comp_to_remove)
-    assert len(comp.components) == 2
-
-    # Add back to 3 and remove with idx=None (removes last component)
-    comp._add_component()
-    assert len(comp.components) == 3
-    comp._select_component_item(2)  # last component selected
-    comp._remove_component(None)
-    assert len(comp.components) == 2
-    # Since was_selected was True on index 2, new selection is min(2, len-1) = 1
-    assert comp._selected_component is comp.components[1]
-    assert comp.components[1].card_frame.property("selected")
-
-
-def test_components_remove_component_from_settings(make_viewer_model):
-    """Test _remove_component_from_settings re-indexing and removing specific/last component."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    # Populate metadata settings with 3 components
-    comp._add_component()
-    layer.metadata.setdefault("settings", {})["component_analysis"] = {
-        "components": {
-            "0": {"name": "Comp 0", "gs_harmonics": {}},
-            "1": {"name": "Comp 1", "gs_harmonics": {}},
-            "2": {"name": "Comp 2", "gs_harmonics": {}},
-        }
-    }
-
-    # Remove index 1 from settings: old '2' should become new '1'. The
-    # removal is an unsaved edit until the analysis runs.
-    comp._remove_component_from_settings(1)
-    settings = parent.layer_settings(layer)["component_analysis"]["components"]
-    assert "0" in settings and settings["0"]["name"] == "Comp 0"
-    assert "1" in settings and settings["1"]["name"] == "Comp 2"
-    assert "2" not in settings
-    stored = layer.metadata["settings"]["component_analysis"]["components"]
-    assert len(stored) == 3
-
-    # Remove with idx=None removes the last component
-    comp._remove_last_component_from_settings()
-    settings = parent.layer_settings(layer)["component_analysis"]["components"]
-    assert len(settings) == 1
-    assert "0" in settings
-
-    # Calling with empty or missing components setting does nothing
-    layer.metadata["settings"]["component_analysis"]["components"] = {}
-    comp._remove_component_from_settings(0)
-
-
-def test_components_canvas_label_drag_interaction_selects_component(
-    make_viewer_model,
-):
-    """Clicking a component's text label on the canvas selects its card."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    # Set up coordinates and name so dots and text labels are created on canvas
+    # Clicking a component's text label selects its card and starts a drag.
     comp.components[0].g_edit.setText("0.3")
     comp.components[0].s_edit.setText("0.2")
     comp._on_component_coords_changed(0)
-
     comp.components[1].name_edit.setText("Comp 2")
     comp.components[1].g_edit.setText("0.7")
     comp.components[1].s_edit.setText("0.4")
     comp._on_component_coords_changed(1)
-
     assert comp.components[1].text is not None
-
     comp._select_component_item(0)
     assert comp._selected_component is comp.components[0]
-
-    # Simulate canvas press on component 1's text label
     mock_event = MagicMock()
     mock_event.inaxes = parent.canvas_widget.axes
     with patch.object(
         comp.components[1].text, "contains", return_value=(True, {})
     ):
         comp._on_press(mock_event)
-
     assert comp._selected_component is comp.components[1]
     assert comp.components[1].card_frame.property("selected")
     assert comp.dragging_label_idx == 1
+    comp.dragging_label_idx = None
 
-
-def test_components_restore_metadata_removes_extra_components(
-    make_viewer_model,
-):
-    """Restoring metadata with fewer components trims extra component cards."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    # Add up to 4 components
-    comp._add_component()
-    comp._add_component()
-    assert len(comp.components) == 4
-
-    # Settings only specify 2 components (indices 0 and 1)
-    layer.metadata.setdefault("settings", {})["component_analysis"] = {
-        "analysis_type": "Linear Projection",
-        "components": {
-            "0": {"name": "A", "gs_harmonics": {"1": {"g": 0.2, "s": 0.1}}},
-            "1": {"name": "B", "gs_harmonics": {"1": {"g": 0.8, "s": 0.5}}},
-        },
-    }
-
-    comp._restore_components_ui_only_from_metadata()
-    # Should have shrunk from 4 down to 2 components
-    assert len(comp.components) == 2
-    assert comp.components[0].name_edit.text() == "A"
-    assert comp.components[1].name_edit.text() == "B"
+    # Clicking a component dot on the canvas selects its card.
+    comp.components[0].g_edit.setText("0.2")
+    comp.components[0].s_edit.setText("0.1")
+    comp._on_component_coords_changed(0)
+    comp.components[1].g_edit.setText("0.8")
+    comp.components[1].s_edit.setText("0.5")
+    comp._on_component_coords_changed(1)
+    comp._select_component_item(0)
     assert comp._selected_component is comp.components[0]
-
-
-def test_components_clear_components_labels_and_numbering(make_viewer_model):
-    """Clearing components clears fields and updates labels."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    comp.components[0].name_edit.setText("MyComp")
-    comp.components[0].g_edit.setText("0.4")
-    comp.components[0].s_edit.setText("0.3")
-
-    # Give component mock labels to test label updates
-    comp.components[0].coords_label = MagicMock()
-    comp.components[0].name_label = MagicMock()
-
-    comp._clear_components()
-    comp.components[0].coords_label.setText.assert_called_with("G: -, S: -")
-    comp.components[0].name_label.setText.assert_called_with("Component 1")
-    assert comp.components[0].name_edit.text() == ""
-
-
-def test_components_on_component_name_changed_label_update(make_viewer_model):
-    """Component name changes update name_label if present."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    comp.components[0].name_label = MagicMock()
-    comp.components[0].name_edit.setText("NewName")
-    comp.components[0].name_label.setText.assert_called_with("NewName")
-
-    comp.components[0].name_edit.setText("")
-    comp.components[0].name_label.setText.assert_called_with("Component 1")
-
-
-def test_components_restore_and_recreate_metadata_removes_extra_components(
-    make_viewer_model,
-):
-    """Restoring full metadata with fewer components trims extra component cards."""
-    viewer, layer, parent, comp = _setup_components(make_viewer_model)
-
-    # Add up to 4 components
-    comp._add_component()
-    comp._add_component()
-    assert len(comp.components) == 4
-
-    # Settings only specify 2 components (indices 0 and 1)
-    layer.metadata.setdefault("settings", {})["component_analysis"] = {
-        "analysis_type": "Linear Projection",
-        "components": {
-            "0": {"name": "A", "gs_harmonics": {"1": {"g": 0.2, "s": 0.1}}},
-            "1": {"name": "B", "gs_harmonics": {"1": {"g": 0.8, "s": 0.5}}},
-        },
-    }
-
-    comp._restore_and_recreate_components_from_metadata()
-    # Should have shrunk from 4 down to 2 components
-    assert len(comp.components) == 2
-    assert comp.components[0].name_edit.text() == "A"
-    assert comp.components[1].name_edit.text() == "B"
-    assert comp._selected_component is comp.components[0]
+    assert comp.components[0].card_frame.property("selected")
+    mock_event = MagicMock()
+    mock_event.inaxes = parent.canvas_widget.axes
+    with patch.object(
+        comp.components[1].dot, "contains", return_value=(True, {})
+    ):
+        comp._on_press(mock_event)
+    assert comp._selected_component is comp.components[1]
+    assert comp.components[1].card_frame.property("selected")
+    assert not comp.components[0].card_frame.property("selected")
 
 
 # --------------------------------------------------------- fraction filters
@@ -5324,16 +3877,47 @@ def test_fraction_filter_cards_follow_the_components(make_viewer_model):
     assert sorted(comp_widget.filter_list._cards) == [0, 1]
 
 
-def test_a_fraction_filter_blanks_the_pixels_outside_its_range(
+def test_a_fraction_filter_blanks_pixels_and_reports_its_share(
     make_viewer_model,
 ):
-    """A filtered pixel loses its phasor coordinates, as a threshold does."""
+    """A filtered pixel loses its phasor coordinates, as a threshold does,
+    and the statistics say which range was counted and how much was kept."""
     viewer = make_viewer_model()
     parent, comp_widget, layer = _components_tab(viewer)
     _setup_linear_projection(comp_widget)
-    card = _enable_fraction_filter(comp_widget, 0, 0.0, 0.4)
+    table = parent.components_statistics_dock_widget.layer_stats_table
+
+    # The table says which pixels it counted, not just how many.
+    assert comp_widget._series_range_labels() == {}
+    _enable_fraction_filter(comp_widget, 0, 0.2, 0.8)
+    assert comp_widget._series_range_labels() == {
+        "Component 1": "in 0.2 – 0.8"
+    }
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert "Component 1 Pixels in 0.2 – 0.8" in headers
+    assert "Component 1 % in 0.2 – 0.8" in headers
+
+    # Excluding a range says so rather than reading as keeping it.
+    card = comp_widget.filter_list._cards[0]
+    card.mode_combobox.setCurrentIndex(1)
+    assert comp_widget._series_range_labels() == {
+        "Component 1": "outside 0.2 – 0.8"
+    }
+
+    # A filter that is switched off is not a range the counts were taken over.
+    card = comp_widget.filter_list._cards[0]
+    card.enabled_check.setChecked(False)
+    assert comp_widget._series_range_labels() == {}
+    with patch.object(comp_widget, "_primary_filter_layer", return_value=None):
+        assert comp_widget._series_range_labels() == {}
+    comp_widget.filter_list._cards[0].mode_combobox.setCurrentIndex(0)
+
     # What the filters are measured against: the threshold, the median filter
     # and the mask applied, the criteria not.
+    card = _enable_fraction_filter(comp_widget, 0, 0.0, 0.4)
     measurable = comp_widget._reference_pixel_count(layer)
     assert measurable > 0
 
@@ -5352,6 +3936,22 @@ def test_a_fraction_filter_blanks_the_pixels_outside_its_range(
     # is the whole of the baseline again.
     comp_widget.filter_list._cards[0].enabled_check.setChecked(False)
     assert int(np.isfinite(layer.data).sum()) == measurable
+
+    # The table says how much of the layer the filters left behind.
+    baseline = comp_widget._reference_pixel_count(layer)
+    assert baseline == int(np.isfinite(layer.data).sum())
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.5)
+    columns = StatisticsTableWidget.COLUMNS
+    pixels = int(table.item(0, columns.index("Pixels")).text())
+    share = table.item(0, columns.index("% Pixels")).text()
+    assert pixels == int(np.isfinite(layer.data).sum())
+    assert share == f"{100.0 * pixels / baseline:.1f}%"
+
+    # The denominator is cached, and forgotten when the layer changes.
+    assert comp_widget._reference_pixel_counts[layer.name] == baseline
+    assert comp_widget._reference_pixel_count(layer) == baseline
+    comp_widget._invalidate_pixel_counts()
+    assert comp_widget._reference_pixel_counts == {}
 
 
 def test_fraction_filters_combine_with_the_other_tabs(make_viewer_model):
@@ -5414,111 +4014,50 @@ def test_removing_a_component_takes_its_filter_with_it(make_viewer_model):
     assert sorted(comp_widget.filter_list._cards) == [0, 1]
 
 
-def test_renaming_a_component_renames_its_filter(make_viewer_model):
-    """The card, the stored criterion and the other tabs all follow."""
+def test_component_labels_layers(make_viewer_model):
+    """Labels layers paint each component's kept pixels in its own colour,
+    or name the dominant component, and follow filters and renames."""
     viewer = make_viewer_model()
     parent, comp_widget, layer = _components_tab(viewer)
     _setup_linear_projection(comp_widget)
-    _enable_fraction_filter(comp_widget, 0, 0.0, 0.9)
 
-    _rename_component(comp_widget, 0, "Free NADH")
+    def labels_layers():
+        return [lyr for lyr in viewer.layers if isinstance(lyr, Labels)]
 
-    assert (
-        comp_widget.filter_list._cards[0].metric_label.text()
-        == "Free NADH Filter"
-    )
-    assert [
-        f['params']['component_name']
-        for f in get_filters(layer)
-        if f['metric'] == COMPONENT_FRACTION
-    ] == ["Free NADH"]
-
-
-def test_moving_a_component_moves_its_filter(make_viewer_model):
-    """A filter tests the fraction on screen, not the one it was made with."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-    _enable_fraction_filter(comp_widget, 0, 0.0, 0.9)
-    assert get_filters(layer)[0]['params']['component_real'] == [0.2, 0.8]
-
-    comp_widget.components[1].g_edit.setText("0.6")
-    comp_widget.components[1].s_edit.setText("0.4")
-    comp_widget._on_component_coords_changed(1)
-    comp_widget._run_analysis()
-
-    assert get_filters(layer)[0]['params']['component_real'] == [0.2, 0.6]
-
-
-def test_statistics_report_the_share_of_pixels_kept(make_viewer_model):
-    """The table says how much of the layer the filters left behind."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-    baseline = comp_widget._reference_pixel_count(layer)
-    assert baseline == int(np.isfinite(layer.data).sum())
-
+    # One layer per component, in that component's own colour.
     _enable_fraction_filter(comp_widget, 0, 0.0, 0.5)
-
-    table = parent.components_statistics_dock_widget.layer_stats_table
-    columns = StatisticsTableWidget.COLUMNS
-    pixels = int(table.item(0, columns.index("Pixels")).text())
-    share = table.item(0, columns.index("% Pixels")).text()
-    assert pixels == int(np.isfinite(layer.data).sum())
-    assert share == f"{100.0 * pixels / baseline:.1f}%"
-
-    # The denominator is cached, and forgotten when the layer changes.
-    assert comp_widget._reference_pixel_counts[layer.name] == baseline
-    assert comp_widget._reference_pixel_count(layer) == baseline
-    comp_widget._invalidate_pixel_counts()
-    assert comp_widget._reference_pixel_counts == {}
-
-
-def test_labels_layers_paint_one_layer_per_component(make_viewer_model):
-    """Each component's kept pixels, in that component's own colour."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-    _enable_fraction_filter(comp_widget, 0, 0.0, 0.5)
-
     comp_widget.create_labels_checkbox.setChecked(True)
     assert comp_widget.labels_mode_combobox.isEnabled()
-
-    labels = [lyr for lyr in viewer.layers if isinstance(lyr, Labels)]
+    labels = labels_layers()
     assert len(labels) == 2
     names = {lyr.name for lyr in labels}
     assert names == {
-        f"Component 1 filtered: {layer.name}",
-        f"Component 2 filtered: {layer.name}",
+        analysis_layer_name("Component 1 filtered", layer.name),
+        analysis_layer_name("Component 2 filtered", layer.name),
     }
-    first = viewer.layers[f"Component 1 filtered: {layer.name}"]
+    first = viewer.layers[
+        analysis_layer_name("Component 1 filtered", layer.name)
+    ]
     assert set(np.unique(first.data)) <= {0, 1}
     assert first.metadata[COMPONENT_LABELS_TAG]['source_layer'] == layer.name
     assert first.metadata[COMPONENT_LABELS_TAG]['component_index'] == 0
-
     # Component 1's layer shows exactly the pixels its own range keeps, which
     # is what its card reports.
     assert first.data.astype(bool).sum() == int(np.isfinite(layer.data).sum())
 
     comp_widget.create_labels_checkbox.setChecked(False)
-    assert [lyr for lyr in viewer.layers if isinstance(lyr, Labels)] == []
+    assert labels_layers() == []
+    comp_widget.filter_list._cards[0].enabled_check.setChecked(False)
 
-
-def test_a_single_labels_layer_names_the_dominant_component(
-    make_viewer_model,
-):
-    """The other layout is one layer naming each pixel's main component."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
+    # The other layout is one layer naming each pixel's main component.
     comp_widget.create_labels_checkbox.setChecked(True)
     comp_widget.labels_mode_combobox.setCurrentText(LABELS_DOMINANT)
-
-    labels = [lyr for lyr in viewer.layers if isinstance(lyr, Labels)]
+    labels = labels_layers()
     assert len(labels) == 1
     combined = labels[0]
-    assert combined.name == f"Dominant component: {layer.name}"
+    assert combined.name == analysis_layer_name(
+        "Dominant component", layer.name
+    )
     assert set(np.unique(combined.data)) <= {0, 1, 2}
     # Every measurable pixel belongs to one of the two components.
     assert combined.data.astype(bool).sum() == int(
@@ -5529,41 +4068,62 @@ def test_a_single_labels_layer_names_the_dominant_component(
 
     # Switching layout replaces the layers rather than accumulating them.
     comp_widget.labels_mode_combobox.setCurrentText(LABELS_PER_COMPONENT)
-    assert len([x for x in viewer.layers if isinstance(x, Labels)]) == 2
+    assert len(labels_layers()) == 2
 
+    # A pixel with no phasor coordinates left cannot be labelled.
+    combined_before = (
+        viewer.layers[analysis_layer_name("Component 1 filtered", layer.name)]
+        .data.astype(bool)
+        .sum()
+    )
+    mapping_tab = parent.phasor_mapping_tab
+    mapping_tab.filter_list.set_current_metric(MODULATION)
+    mapping_tab._sync_filter_ui()
+    mapping_tab.filter_list.add_filter(new_filter(MODULATION, 0.0, 0.5))
+    comp_widget._update_label_layers()
+    after = (
+        viewer.layers[analysis_layer_name("Component 1 filtered", layer.name)]
+        .data.astype(bool)
+        .sum()
+    )
+    assert after < combined_before
 
-def test_labels_layers_follow_renames(make_viewer_model):
-    """A renamed component or image keeps its labels layer recognisable."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-    comp_widget.create_labels_checkbox.setChecked(True)
+    # Editing a filter refreshes the layer instead of replacing it.
+    first = viewer.layers[
+        analysis_layer_name("Component 1 filtered", layer.name)
+    ]
+    before = first.data.astype(bool).sum()
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.2)
+    assert (
+        viewer.layers[analysis_layer_name("Component 1 filtered", layer.name)]
+        is first
+    )
+    assert first.data.astype(bool).sum() <= before
 
+    # A renamed component renames its filter card, the stored criterion and
+    # its labels layer.
     _rename_component(comp_widget, 0, "Free NADH")
-    assert f"Free NADH filtered: {layer.name}" in viewer.layers
+    assert (
+        comp_widget.filter_list._cards[0].metric_label.text()
+        == "Free NADH Filter"
+    )
+    assert [
+        f['params']['component_name']
+        for f in get_filters(layer)
+        if f['metric'] == COMPONENT_FRACTION
+    ] == ["Free NADH"]
+    assert (
+        analysis_layer_name("Free NADH filtered", layer.name) in viewer.layers
+    )
 
+    # A renamed image keeps its labels layer recognisable.
     old_name = layer.name
     comp_widget.rename_layer(old_name, "renamed")
-    assert "Free NADH filtered: renamed" in viewer.layers
-    renamed = viewer.layers["Free NADH filtered: renamed"]
+    assert "renamed [Free NADH filtered]" in viewer.layers
+    renamed = viewer.layers["renamed [Free NADH filtered]"]
     assert renamed.metadata[COMPONENT_LABELS_TAG]['source_layer'] == "renamed"
     assert ("renamed", 0) in comp_widget._component_label_layers
     assert old_name not in comp_widget._reference_pixel_counts
-
-
-def test_labels_layers_are_updated_in_place(make_viewer_model):
-    """Editing a filter refreshes the layer instead of replacing it."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-    comp_widget.create_labels_checkbox.setChecked(True)
-    first = viewer.layers[f"Component 1 filtered: {layer.name}"]
-    before = first.data.astype(bool).sum()
-
-    _enable_fraction_filter(comp_widget, 0, 0.0, 0.2)
-
-    assert viewer.layers[f"Component 1 filtered: {layer.name}"] is first
-    assert first.data.astype(bool).sum() <= before
 
 
 def test_a_component_labels_colour_can_be_picked(
@@ -5593,7 +4153,9 @@ def test_a_component_labels_colour_can_be_picked(
     assert (
         mcolors.to_hex(comp_widget.components[0].dot.get_color()) == "#ff0000"
     )
-    painted = viewer.layers[f"Component 1 filtered: {layer.name}"]
+    painted = viewer.layers[
+        analysis_layer_name("Component 1 filtered", layer.name)
+    ]
     assert np.allclose(painted.colormap.color_dict[1], (1.0, 0.0, 0.0, 1.0))
     # Like a rename, the choice is a draft until the analysis runs...
     draft = comp_widget._read_component_settings(layer)['components']
@@ -5712,15 +4274,29 @@ def test_a_card_colour_draws_the_fraction_layer_from_black_to_it(
     assert _as_hex(fraction.colormap.colors[-1]) == "#ff8800"
 
 
-def test_a_card_colour_sets_its_end_of_the_linear_projection_colormap(
+def test_card_colours_set_the_linear_projection_colormap_ends(
     make_viewer_model,
 ):
-    """Linear Projection's one layer runs from one card colour to the other."""
+    """Clicking the swatch asks for a colour, cancelling leaves it alone, and
+    Linear Projection's one layer runs from one card colour to the other."""
     viewer = make_viewer_model()
     parent, comp_widget, layer = _components_tab(viewer)
     _setup_linear_projection(comp_widget)
     fraction = comp_widget.comp1_fractions_layer
     jet = np.asarray(fraction.colormap.colors)
+    comp = comp_widget.components[1]
+
+    with patch.object(
+        QColorDialog, "getColor", return_value=QColor("#123456")
+    ):
+        comp.color_button.click()
+    assert comp_widget._component_label_colors == {1: "#123456"}
+    assert comp_widget.filter_list._cards[1].accent_color == "#123456"
+
+    # An invalid colour is what a cancelled dialog returns.
+    with patch.object(QColorDialog, "getColor", return_value=QColor()):
+        comp.color_button.click()
+    assert comp_widget._component_label_colors == {1: "#123456"}
 
     comp_widget._on_component_color_changed(1, "#00ff00")
     colors = np.asarray(fraction.colormap.colors)
@@ -5743,26 +4319,135 @@ def test_a_card_colour_sets_its_end_of_the_linear_projection_colormap(
     assert np.allclose(colors[-1], (1, 0, 0, 1))
 
 
-def test_the_swatch_opens_a_picker_and_a_cancelled_pick_changes_nothing(
-    make_viewer_model,
+def _stored_display(layer, index):
+    """Return how component *index*'s fraction layer is stored in *layer*."""
+    components = layer.metadata['settings']['component_analysis']
+    return components['components'][str(index)]['gs_harmonics']['1']
+
+
+def test_a_custom_colormap_on_a_component_fit_layer_is_stored_by_its_colours(
+    make_viewer_model, monkeypatch
 ):
-    """Clicking the swatch asks for a colour; cancelling leaves it alone."""
+    """A colormap only this session knows by name is kept as its colours."""
     viewer = make_viewer_model()
-    parent, comp_widget, _layer = _components_tab(viewer)
+    parent, comp_widget, layer = _components_tab(viewer)
+    _setup_component_fit(comp_widget)
+    ramp = np.array([[0.0, 0.0, 0.0, 1.0], [1.0, 0.5, 0.0, 1.0]])
+
+    # A built-in colormap is stored by name.
+    comp_widget.fraction_layers[0].colormap = "viridis"
+    assert _stored_display(layer, 0)['colormap_name'] == "viridis"
+    assert _stored_display(layer, 0)['colormap_colors'] is None
+
+    # napari registers a colormap's name as soon as a layer uses it, but
+    # that name means nothing in another session.
+    comp_widget.fraction_layers[1].colormap = Colormap(
+        colors=ramp, name="fit ramp"
+    )
+    assert _stored_display(layer, 1)['colormap_name'] is None
+    assert np.allclose(_stored_display(layer, 1)['colormap_colors'], ramp)
+
+    # A layer recreated where the name is unknown gets the same colours.
+    viewer.layers.remove(comp_widget.fraction_layers[1])
+    monkeypatch.delitem(AVAILABLE_COLORMAPS, "fit ramp")
+    comp_widget._run_analysis()
+    fraction = comp_widget.fraction_layers[1]
+    assert np.allclose(fraction.colormap.colors, ramp)
+    assert np.allclose(_stored_display(layer, 1)['colormap_colors'], ramp)
+
+    # The recreated colormap's name is again this session's only, so a
+    # display change keeps storing the colours.
+    fraction.gamma = 0.5
+    assert _stored_display(layer, 1)['colormap_name'] is None
+    assert np.allclose(_stored_display(layer, 1)['colormap_colors'], ramp)
+    assert comp_widget.fraction_layers[0].colormap.name == "viridis"
+
+
+def test_a_custom_colormap_on_a_linear_projection_is_stored_by_its_colours(
+    make_viewer_model, monkeypatch
+):
+    """The Linear Projection layer keeps a custom colormap as its colours."""
+    viewer = make_viewer_model()
+    parent, comp_widget, layer = _components_tab(viewer)
     _setup_linear_projection(comp_widget)
-    comp = comp_widget.components[1]
+    ramp = np.array([[0.0, 0.0, 1.0, 1.0], [1.0, 1.0, 0.0, 1.0]])
 
-    with patch.object(
-        QColorDialog, "getColor", return_value=QColor("#123456")
-    ):
-        comp.color_button.click()
-    assert comp_widget._component_label_colors == {1: "#123456"}
-    assert comp_widget.filter_list._cards[1].accent_color == "#123456"
+    comp_widget.comp1_fractions_layer.colormap = Colormap(
+        colors=ramp, name="projection ramp"
+    )
+    assert _stored_display(layer, 0)['colormap_name'] is None
+    assert np.allclose(_stored_display(layer, 0)['colormap_colors'], ramp)
 
-    # An invalid colour is what a cancelled dialog returns.
-    with patch.object(QColorDialog, "getColor", return_value=QColor()):
-        comp.color_button.click()
-    assert comp_widget._component_label_colors == {1: "#123456"}
+    # A re-run keeps the layer's colormap and stores it the same way.
+    comp_widget._run_analysis()
+    fraction = comp_widget.comp1_fractions_layer
+    assert fraction.colormap.name == "projection ramp"
+    assert _stored_display(layer, 0)['colormap_name'] is None
+    assert np.allclose(_stored_display(layer, 0)['colormap_colors'], ramp)
+
+    # A layer recreated where the name is unknown gets the same colours.
+    viewer.layers.remove(fraction)
+    monkeypatch.delitem(AVAILABLE_COLORMAPS, "projection ramp")
+    comp_widget._run_analysis()
+    fraction = comp_widget.comp1_fractions_layer
+    assert np.allclose(fraction.colormap.colors, ramp)
+    assert np.allclose(comp_widget.fractions_colormap, ramp)
+
+
+@pytest.mark.parametrize(
+    ("analysis_type", "index", "default"),
+    [("Linear Projection", 0, "jet"), ("Component Fit", 1, "cyan")],
+)
+def test_a_colormap_name_this_session_lacks_falls_back_to_the_default(
+    make_viewer_model, analysis_type, index, default
+):
+    """A fraction layer stored under an unknown colormap name still loads.
+
+    Older versions stored some custom colormaps by a name napari only knew
+    in the session that used it, with no colours to rebuild it from.
+    """
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    components = {
+        str(i): {"name": f"C{i}", "gs_harmonics": {"1": {"g": g, "s": s}}}
+        for i, (g, s) in enumerate(((0.2, 0.1), (0.8, 0.5)))
+    }
+    components[str(index)]["gs_harmonics"]["1"].update(
+        colormap_name="lost ramp",
+        colormap_colors=None,
+        contrast_limits=[0.1, 0.9],
+        analysis_type=analysis_type,
+    )
+    layer.metadata["settings"]["component_analysis"] = {
+        "analysis_type": analysis_type,
+        "last_analysis_harmonic": 1,
+        "components": components,
+    }
+
+    def fraction():
+        if analysis_type == "Linear Projection":
+            return comp.comp1_fractions_layer
+        return comp.fraction_layers[index]
+
+    # Running the analysis on the reopened layer shows the default colormap
+    # with the stored contrast limits, says why, and stores the default in
+    # place of the unknown name.
+    comp._restore_components_ui_only_from_metadata()
+    with patch("napari_phasors.components_tab.show_warning") as warn:
+        comp._run_analysis()
+    assert fraction().colormap.name == default
+    assert tuple(fraction().contrast_limits) == pytest.approx((0.1, 0.9))
+    warn.assert_called_once()
+    assert "lost ramp" in warn.call_args[0][0]
+    stored = _stored_display(layer, index)
+    assert stored['colormap_name'] == default
+    assert stored['colormap_colors'] is None
+
+    # So a layer made again from the metadata has nothing to warn about.
+    viewer.layers.remove(fraction())
+    with patch("napari_phasors.components_tab.show_warning") as warn:
+        comp._run_analysis()
+    assert fraction().colormap.name == default
+    warn.assert_not_called()
 
 
 def test_a_picked_colour_stays_with_its_component_and_is_restored(
@@ -5791,8 +4476,9 @@ def test_a_picked_colour_stays_with_its_component_and_is_restored(
     assert comp_widget._component_label_colors == {0: "#0000ff"}
 
 
-def test_one_edit_measures_the_image_once(make_viewer_model):
-    """The baseline and the fractions are derived once, not once per card."""
+def test_derived_arrays_are_measured_once_per_edit(make_viewer_model):
+    """The baseline and the fractions are derived once, not once per card,
+    and the scratch pad expires with the interaction."""
     viewer = make_viewer_model()
     parent, comp_widget, layer = _components_tab(viewer)
     _setup_linear_projection(comp_widget)
@@ -5814,11 +4500,43 @@ def test_one_edit_measures_the_image_once(make_viewer_model):
     comp_widget._component_fraction_maps(layer).clear()
     assert set(comp_widget._component_fraction_maps(layer)) == {0, 1}
 
+    # They are a scratch pad for one edit, not a memory of the layer.
+    assert comp_widget._baseline_cache
+    assert comp_widget._fraction_map_cache
+    # Adding and removing layers pumps the event loop, so the expiry can
+    # land in the middle of the edit it was meant to speed up: it waits.
+    comp_widget._applying_mapping_filter = True
+    comp_widget._expire_derived_arrays()
+    assert comp_widget._baseline_cache
+    comp_widget._applying_mapping_filter = False
+    comp_widget._expire_derived_arrays()
+    assert comp_widget._baseline_cache == {}
+    assert comp_widget._fraction_map_cache == {}
+    assert comp_widget._metric_context_cache == {}
+    assert comp_widget._derived_cache_timer.isActive() is False
 
-def test_a_measurement_is_never_served_for_the_wrong_arrays(
-    make_viewer_model,
-):
-    """A changed threshold, or changed components, re-derives everything."""
+    # Replacing the fraction layers must not redraw the histogram each time.
+    comp_widget._applying_mapping_filter = True
+    with patch.object(ComponentsWidget, 'update_component_histogram') as draw:
+        comp_widget.on_layer_selection_changed()
+        comp_widget.on_layer_selection_changed()
+    draw.assert_not_called()
+    assert comp_widget._deferred_selection_refresh is True
+    comp_widget._applying_mapping_filter = False
+    with patch.object(ComponentsWidget, 'update_component_histogram') as draw:
+        comp_widget.on_layer_selection_changed()
+    assert draw.call_count == 1
+    assert comp_widget._deferred_selection_refresh is False
+
+    # An edit answers the postponed refresh itself.
+    comp_widget._deferred_selection_refresh = False
+    _enable_fraction_filter(comp_widget, 0, 0.0, 0.5)
+    assert comp_widget._deferred_selection_refresh is False
+
+
+def test_a_measurement_is_never_served_for_stale_arrays(make_viewer_model):
+    """A changed threshold, components or mask re-derives everything, and
+    the shared baseline is never handed to the layer itself."""
     viewer = make_viewer_model()
     parent, comp_widget, layer = _components_tab(viewer)
     _setup_linear_projection(comp_widget)
@@ -5837,18 +4555,19 @@ def test_a_measurement_is_never_served_for_the_wrong_arrays(
     maps_after = comp_widget._component_fraction_maps(layer)
     assert not np.allclose(maps_after[0], maps_before[0], equal_nan=True)
 
+    # Switched off: nothing is masked, so the rebuild has no new array to
+    # write and would otherwise hand the layer the cached baseline itself.
+    comp_widget._run_analysis()
+    _enable_fraction_filter(comp_widget, 0, 0.0, 1.0)
+    comp_widget.filter_list._cards[0].enabled_check.setChecked(False)
+    mean, real, imag = comp_widget._baseline_for(layer)
+    assert layer.data is not mean
+    assert layer.metadata['G'] is not real
+    assert layer.metadata['S'] is not imag
 
-def test_a_masked_layer_is_never_measured_on_its_unmasked_baseline(
-    make_viewer_model,
-):
-    """The baseline outlives one edit now, so a mask has to invalidate it."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
+    # The baseline outlives one edit now, so a mask has to invalidate it.
     unmasked = comp_widget._baseline_for(layer)
     assert comp_widget._baseline_for(layer) is unmasked
-
     mask = np.zeros(layer.data.shape, dtype=int)
     mask[..., :1] = 1
     layer.metadata['mask'] = mask
@@ -5861,105 +4580,47 @@ def test_a_masked_layer_is_never_measured_on_its_unmasked_baseline(
     inverted = comp_widget._baseline_for(layer)
     assert inverted is not masked
     assert np.isfinite(inverted[0]).sum() != np.isfinite(masked[0]).sum()
-
     layer.metadata['mask_labels'] = [1]
     assert comp_widget._baseline_for(layer) is not inverted
 
-
-def test_the_shared_baseline_is_not_handed_to_the_layer_itself(
-    make_viewer_model,
-):
-    """The layer's arrays are its own, whoever measured them first."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
-    # Switched off: nothing is masked, so the rebuild has no new array to
-    # write and would otherwise hand the layer the cached baseline itself.
-    _enable_fraction_filter(comp_widget, 0, 0.0, 1.0)
-    comp_widget.filter_list._cards[0].enabled_check.setChecked(False)
-
-    mean, real, imag = comp_widget._baseline_for(layer)
-    assert layer.data is not mean
-    assert layer.metadata['G'] is not real
-    assert layer.metadata['S'] is not imag
-
+    # The layer's arrays are its own, whoever measured them first.
     layer.data[:] = np.nan
     assert np.isfinite(comp_widget._baseline_for(layer)[0]).any()
 
 
-def test_the_derived_arrays_do_not_outlive_the_interaction(
-    make_viewer_model,
-):
-    """They are a scratch pad for one edit, not a memory of the layer."""
+def test_component_filter_helpers(make_viewer_model):
+    """The filter section's helpers before and after an analysis, and every
+    input they have to survive."""
     viewer = make_viewer_model()
     parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
 
-    comp_widget._baseline_for(layer)
-    comp_widget._component_fraction_maps(layer)
-    assert comp_widget._baseline_cache
-    assert comp_widget._fraction_map_cache
+    # A refresh must not raise on a layer whose phasor data is unusable.
+    broken = Image(
+        np.random.random((4, 4)),
+        name="broken",
+        metadata={"G": np.array([1]), "S": np.array([1]), "G_original": 1},
+    )
+    assert comp_widget._baseline_for(broken) == (None, None, None)
+    assert comp_widget._measurable_mask(broken) is None
+    assert comp_widget._reference_pixel_count(broken) is None
+    assert comp_widget._component_fraction_maps(broken) == {}
 
-    # Adding and removing layers pumps the event loop, so the expiry can
-    # land in the middle of the edit it was meant to speed up: it waits.
-    comp_widget._applying_mapping_filter = True
-    comp_widget._expire_derived_arrays()
-    assert comp_widget._baseline_cache
-    comp_widget._applying_mapping_filter = False
-
-    comp_widget._expire_derived_arrays()
-    assert comp_widget._baseline_cache == {}
-    assert comp_widget._fraction_map_cache == {}
-    assert comp_widget._metric_context_cache == {}
-    assert comp_widget._derived_cache_timer.isActive() is False
-
-
-def test_the_redraws_of_one_edit_collapse_into_one(make_viewer_model):
-    """Replacing the fraction layers must not redraw the histogram each time."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
-    comp_widget._applying_mapping_filter = True
-    with patch.object(ComponentsWidget, 'update_component_histogram') as draw:
-        comp_widget.on_layer_selection_changed()
-        comp_widget.on_layer_selection_changed()
-    draw.assert_not_called()
-    assert comp_widget._deferred_selection_refresh is True
-
-    comp_widget._applying_mapping_filter = False
-    with patch.object(ComponentsWidget, 'update_component_histogram') as draw:
-        comp_widget.on_layer_selection_changed()
-    assert draw.call_count == 1
-    assert comp_widget._deferred_selection_refresh is False
-
-    # An edit answers the postponed refresh itself.
-    comp_widget._deferred_selection_refresh = False
-    _enable_fraction_filter(comp_widget, 0, 0.0, 0.5)
-    assert comp_widget._deferred_selection_refresh is False
-
-
-def test_component_filter_colours_fall_back_when_the_line_is_hidden(
-    make_viewer_model,
-):
-    """Greying the plot dots must not collapse every label to one colour."""
-    viewer = make_viewer_model()
-    parent, comp_widget, _layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
-    colors = comp_widget._component_filter_colors()
-    assert set(colors) == {0, 1}
-
-    comp_widget.show_colormap_line = False
-    fallback = comp_widget._component_filter_colors()
-    assert len(set(map(str, fallback.values()))) == 2
-
-
-def test_component_filter_params_describe_the_analysis(make_viewer_model):
-    """A criterion stores what it takes to reproduce the fraction it tests."""
-    viewer = make_viewer_model()
-    parent, comp_widget, _layer = _components_tab(viewer)
+    # Every entry point is safe before a layer is selected.
+    comp_widget.parent_widget = None
+    assert comp_widget._filter_layers() == []
+    assert comp_widget._primary_filter_layer() is None
+    assert comp_widget._layer_filter_params(None) == {}
+    assert comp_widget._component_filter_colors() == {}
+    comp_widget._apply_filter_stack()
+    comp_widget._sync_filter_ui()
+    assert comp_widget.filter_list.filters() == []
+    comp_widget.parent_widget = parent
+    # A parent that cannot answer is the same as no layers at all.
+    with patch.object(
+        parent, "get_selected_layers", side_effect=RuntimeError("gone")
+    ):
+        assert comp_widget._filter_layers() == []
+        comp_widget._apply_filter_stack()
 
     # Nothing placed: the identifying keys only, so the card stays unusable.
     bare = comp_widget._component_filter_params(0)
@@ -5968,8 +4629,15 @@ def test_component_filter_params_describe_the_analysis(make_viewer_model):
         'component_name': "Component 1",
         'analysis_type': "Linear Projection",
     }
+    # Persisting the names is a no-op when there is nothing to rename.
+    comp_widget._persist_component_filter_names()
+    assert get_filters(layer) == []
 
     _setup_linear_projection(comp_widget)
+    comp_widget._persist_component_filter_names()
+    assert get_filters(layer) == []
+
+    # A criterion stores what it takes to reproduce the fraction it tests.
     params = comp_widget._component_filter_params(1)
     assert params['component_real'] == [0.2, 0.8]
     assert params['component_imag'] == [0.1, 0.5]
@@ -5977,29 +4645,77 @@ def test_component_filter_params_describe_the_analysis(make_viewer_model):
     # A projection has no third fraction to filter on.
     assert 'component_real' not in comp_widget._component_filter_params(2)
 
-    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
-    fit = comp_widget._component_filter_params(0)
-    assert fit['analysis_type'] == "Component Fit"
-    assert fit['component_real'] == [0.2, 0.8]
-    assert 'component_real' not in comp_widget._component_filter_params(5)
-
-
-def test_component_fraction_maps_cover_every_component(make_viewer_model):
-    """The labels layers measure the same fractions the filters do."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
+    # The labels layers measure the same fractions the filters do.
     maps = comp_widget._component_fraction_maps(layer)
     assert sorted(maps) == [0, 1]
     np.testing.assert_allclose(maps[0] + maps[1], 1.0)
     for values in maps.values():
         assert values.shape == layer.data.shape
-
     # A layer with no phasor arrays has no fractions and no labels.
     empty = Image(np.ones((2, 2)), name="plain", metadata={'settings': {}})
     assert comp_widget._component_fraction_maps(empty) == {}
     assert comp_widget._component_label_maps(empty, LABELS_DOMINANT) == {}
+
+    # Greying the plot dots must not collapse every label to one colour.
+    colors = comp_widget._component_filter_colors()
+    assert set(colors) == {0, 1}
+    comp_widget.show_colormap_line = False
+    fallback = comp_widget._component_filter_colors()
+    assert len(set(map(str, fallback.values()))) == 2
+    comp_widget.show_colormap_line = True
+
+    # A component the analysis cannot place is left out of the labels.
+    with patch.object(
+        comp_widget, "_component_filter_params", return_value={}
+    ):
+        assert comp_widget._component_fraction_maps(layer) == {}
+    with patch.object(
+        comp_widget, "_baseline_for", return_value=(None, None, None)
+    ):
+        assert comp_widget._component_label_maps(layer, LABELS_DOMINANT) == {}
+
+    # A layer with no phasor data, or none at all, contributes no total.
+    assert comp_widget._reference_pixel_totals({"x": "no such layer"}) == {}
+    totals = comp_widget._reference_pixel_totals({"x": layer.name})
+    assert totals[layer.name] > 0
+    viewer.add_layer(empty)
+    with patch.object(
+        comp_widget, "_baseline_for", return_value=(None, None, None)
+    ):
+        assert comp_widget._reference_pixel_count(empty) is None
+        assert comp_widget._reference_pixel_totals({"x": "plain"}) == {}
+
+    # Nothing to measure is not the same as a range of zero.
+    with patch.object(comp_widget, "_primary_filter_layer", return_value=None):
+        assert comp_widget._component_fraction_bounds(0) is None
+        comp_widget._refresh_filter_bounds()
+    # A component the analysis has no fraction for cannot be measured.
+    assert comp_widget._component_fraction_bounds(7) is None
+    with patch.object(
+        comp_widget,
+        "_component_fraction_maps",
+        return_value={0: np.full((2, 2), np.nan)},
+    ):
+        assert comp_widget._component_fraction_bounds(0) is None
+
+    # Applying the stack re-runs the analysis; that must not re-apply it.
+    comp_widget._applying_mapping_filter = True
+    try:
+        assert comp_widget._refresh_component_filter_params() is False
+    finally:
+        comp_widget._applying_mapping_filter = False
+
+    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
+    fit = comp_widget._component_filter_params(0)
+    assert fit['analysis_type'] == "Component Fit"
+    assert fit['component_real'] == [0.2, 0.8]
+    assert 'component_real' not in comp_widget._component_filter_params(5)
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    # A projection with only one placed component has no line to project on.
+    comp_widget.components[1].dot.remove()
+    comp_widget.components[1].dot = None
+    assert 'component_real' not in comp_widget._component_filter_params(0)
 
 
 def test_colour_helpers_fall_back_rather_than_raise():
@@ -6013,46 +4729,6 @@ def test_colour_helpers_fall_back_rather_than_raise():
     assert colors[1] == (1.0, 0.0, 0.0, 1.0)
     assert colors[2] != colors[1]
     assert colors[None] == (0.0, 0.0, 0.0, 0.0)
-
-
-def test_the_filter_section_copes_with_no_parent_and_no_layers(
-    make_viewer_model,
-):
-    """Every entry point is safe before a layer is selected."""
-    viewer = make_viewer_model()
-    parent, comp_widget, _layer = _components_tab(viewer)
-
-    comp_widget.parent_widget = None
-    assert comp_widget._filter_layers() == []
-    assert comp_widget._primary_filter_layer() is None
-    assert comp_widget._layer_filter_params(None) == {}
-    assert comp_widget._component_filter_colors() == {}
-    comp_widget._apply_filter_stack()
-    comp_widget._sync_filter_ui()
-    assert comp_widget.filter_list.filters() == []
-
-    comp_widget.parent_widget = parent
-
-    # A parent that cannot answer is the same as no layers at all.
-    with patch.object(
-        parent, "get_selected_layers", side_effect=RuntimeError("gone")
-    ):
-        assert comp_widget._filter_layers() == []
-        comp_widget._apply_filter_stack()
-
-
-def test_component_filter_params_give_up_on_incomplete_components(
-    make_viewer_model,
-):
-    """A fit missing a position, or a harmonic, cannot be filtered on."""
-    viewer = make_viewer_model()
-    parent, comp_widget, _layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
-    # A projection with only one placed component has no line to project on.
-    comp_widget.components[1].dot.remove()
-    comp_widget.components[1].dot = None
-    assert 'component_real' not in comp_widget._component_filter_params(0)
 
 
 def test_component_filter_params_span_the_harmonics_a_fit_needs(
@@ -6192,100 +4868,6 @@ def test_criteria_follow_the_analysis_they_were_made_for(make_viewer_model):
     assert params()['component_real'] == [0.3, 0.7, 0.5]
 
 
-def test_criteria_are_not_refreshed_while_they_are_being_applied(
-    make_viewer_model,
-):
-    """Applying the stack re-runs the analysis; that must not re-apply it."""
-    viewer = make_viewer_model()
-    parent, comp_widget, _layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-    comp_widget._applying_mapping_filter = True
-    try:
-        assert comp_widget._refresh_component_filter_params() is False
-    finally:
-        comp_widget._applying_mapping_filter = False
-
-
-def test_pixel_counts_ignore_layers_that_cannot_supply_one(
-    make_viewer_model,
-):
-    """A layer with no phasor data, or none at all, contributes no total."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
-    assert comp_widget._reference_pixel_totals({"x": "no such layer"}) == {}
-    totals = comp_widget._reference_pixel_totals({"x": layer.name})
-    assert totals[layer.name] > 0
-
-    empty = Image(np.ones((2, 2)), name="plain", metadata={'settings': {}})
-    viewer.add_layer(empty)
-    with patch.object(
-        comp_widget, "_baseline_for", return_value=(None, None, None)
-    ):
-        assert comp_widget._reference_pixel_count(empty) is None
-        assert comp_widget._reference_pixel_totals({"x": "plain"}) == {}
-
-
-def test_a_component_with_no_fraction_gets_no_label(make_viewer_model):
-    """A component the analysis cannot place is left out of the labels."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
-    with patch.object(
-        comp_widget, "_component_filter_params", return_value={}
-    ):
-        assert comp_widget._component_fraction_maps(layer) == {}
-
-    with patch.object(
-        comp_widget, "_baseline_for", return_value=(None, None, None)
-    ):
-        assert comp_widget._component_label_maps(layer, LABELS_DOMINANT) == {}
-
-
-def test_labels_layers_exclude_the_pixels_other_tabs_filtered(
-    make_viewer_model,
-):
-    """A pixel with no phasor coordinates left cannot be labelled."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-    comp_widget.create_labels_checkbox.setChecked(True)
-    combined_before = (
-        viewer.layers[f"Component 1 filtered: {layer.name}"]
-        .data.astype(bool)
-        .sum()
-    )
-
-    mapping_tab = parent.phasor_mapping_tab
-    mapping_tab.filter_list.set_current_metric(MODULATION)
-    mapping_tab._sync_filter_ui()
-    mapping_tab.filter_list.add_filter(new_filter(MODULATION, 0.0, 0.5))
-    comp_widget._update_label_layers()
-
-    after = (
-        viewer.layers[f"Component 1 filtered: {layer.name}"]
-        .data.astype(bool)
-        .sum()
-    )
-    assert after < combined_before
-
-
-def test_renaming_a_component_without_a_filter_changes_nothing(
-    make_viewer_model,
-):
-    """Persisting the names is a no-op when there is nothing to rename."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    comp_widget._persist_component_filter_names()
-    assert get_filters(layer) == []
-
-    _setup_linear_projection(comp_widget)
-    comp_widget._persist_component_filter_names()
-    assert get_filters(layer) == []
-
-
 def test_fraction_filter_range_spans_what_a_fit_actually_produces(
     make_viewer_model,
 ):
@@ -6330,26 +4912,6 @@ def test_fraction_filter_range_spans_what_a_fit_actually_produces(
     stored = get_filters(layer)[0]
     assert stored['min'] < 0
     assert int(np.isfinite(layer.data).sum()) < layer.data.size
-
-
-def test_fraction_bounds_are_unmeasurable_without_a_layer(make_viewer_model):
-    """Nothing to measure is not the same as a range of zero."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
-    with patch.object(comp_widget, "_primary_filter_layer", return_value=None):
-        assert comp_widget._component_fraction_bounds(0) is None
-        comp_widget._refresh_filter_bounds()
-
-    # A component the analysis has no fraction for cannot be measured.
-    assert comp_widget._component_fraction_bounds(7) is None
-    with patch.object(
-        comp_widget,
-        "_component_fraction_maps",
-        return_value={0: np.full((2, 2), np.nan)},
-    ):
-        assert comp_widget._component_fraction_bounds(0) is None
 
 
 def test_a_nested_filter_apply_runs_once_after_the_first(make_viewer_model):
@@ -6423,59 +4985,6 @@ def test_the_share_is_measured_when_the_analysis_ran(make_viewer_model):
     assert comp_widget._reference_pixel_count(layer) < pinned
 
 
-def test_statistics_headers_name_the_fraction_range(make_viewer_model):
-    """The table says which pixels it counted, not just how many."""
-    viewer = make_viewer_model()
-    parent, comp_widget, layer = _components_tab(viewer)
-    _setup_linear_projection(comp_widget)
-
-    assert comp_widget._series_range_labels() == {}
-    _enable_fraction_filter(comp_widget, 0, 0.2, 0.8)
-    assert comp_widget._series_range_labels() == {
-        "Component 1": "in 0.2 – 0.8"
-    }
-
-    table = parent.components_statistics_dock_widget.layer_stats_table
-    headers = [
-        table.horizontalHeaderItem(col).text()
-        for col in range(table.columnCount())
-    ]
-    assert "Component 1 Pixels in 0.2 – 0.8" in headers
-    assert "Component 1 % in 0.2 – 0.8" in headers
-
-    # Excluding a range says so rather than reading as keeping it.
-    card = comp_widget.filter_list._cards[0]
-    card.mode_combobox.setCurrentIndex(1)
-    assert comp_widget._series_range_labels() == {
-        "Component 1": "outside 0.2 – 0.8"
-    }
-
-    # A filter that is switched off is not a range the counts were taken over.
-    card.enabled_check.setChecked(False)
-    assert comp_widget._series_range_labels() == {}
-
-    with patch.object(comp_widget, "_primary_filter_layer", return_value=None):
-        assert comp_widget._series_range_labels() == {}
-
-
-def test_a_layer_that_cannot_be_re_derived_measures_nothing(
-    make_viewer_model,
-):
-    """A refresh must not raise on a layer whose phasor data is unusable."""
-    viewer = make_viewer_model()
-    parent, comp_widget, _layer = _components_tab(viewer)
-
-    broken = Image(
-        np.random.random((4, 4)),
-        name="broken",
-        metadata={"G": np.array([1]), "S": np.array([1]), "G_original": 1},
-    )
-    assert comp_widget._baseline_for(broken) == (None, None, None)
-    assert comp_widget._measurable_mask(broken) is None
-    assert comp_widget._reference_pixel_count(broken) is None
-    assert comp_widget._component_fraction_maps(broken) == {}
-
-
 def test_every_criterion_follows_the_same_analysis_run(make_viewer_model):
     """One run, one method: the criteria never split across two of them."""
     viewer = make_viewer_model()
@@ -6507,35 +5016,3 @@ def test_every_criterion_follows_the_same_analysis_run(make_viewer_model):
     assert len(stored) == 2
     assert {f['params']['analysis_type'] for f in stored} == {"Component Fit"}
     assert len({tuple(f['params']['harmonics']) for f in stored}) == 1
-
-
-def test_the_run_button_is_pinned_under_the_settings(make_viewer_model):
-    """The primary action stays reachable however long the settings get."""
-    viewer = make_viewer_model()
-    parent, comp_widget, _layer = _components_tab(viewer)
-    assert_run_row_is_pinned(
-        comp_widget,
-        comp_widget.calculate_button,
-        comp_widget.autoupdate_container,
-    )
-
-
-def test_components_card_fields_are_bold_for_added_components(
-    make_viewer_model, qtbot
-):
-    """Every card's text fields are bold, including cards added later."""
-    viewer = make_viewer_model()
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    comp_widget._add_component()
-    assert len(comp_widget.components) >= 3
-
-    for comp in comp_widget.components:
-        for edit in (
-            comp.name_edit,
-            comp.g_edit,
-            comp.s_edit,
-            comp.lifetime_edit,
-        ):
-            edit.ensurePolished()
-            assert edit.font().weight() >= QFont.DemiBold

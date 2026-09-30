@@ -2,6 +2,7 @@ import contextlib
 import copy
 import math
 import warnings
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,8 @@ from ._utils import (
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
+    parse_component_analysis_label,
+    phasor_layer_base_name,
     phasor_storage_dtype,
     populate_colormap_combobox,
     rank_mask_candidates,
@@ -112,6 +115,7 @@ from ._utils import (
     save_groups_to_layer_metadata,
     set_phasor_storage_dtype,
     set_settings_note,
+    split_analysis_layer_name,
     split_items_by_group,
     unassigned_layer_labels,
     update_frequency_in_metadata,
@@ -124,6 +128,37 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
+
+
+class _SameArrays:
+    """Cache-key part equal only while it names the very same G/S arrays.
+
+    A layer whose G or S array was replaced (or removed) no longer matches,
+    so the phasor caches recompute without anyone invalidating them. Weak
+    references keep the caches from holding replaced arrays alive, and
+    from mistaking a new array that reuses a freed one's ``id`` for it.
+    """
+
+    __slots__ = ("_refs",)
+
+    def __init__(self, layers):
+        self._refs = tuple(
+            None if array is None else weakref.ref(array)
+            for layer in layers
+            for array in (layer.metadata.get("G"), layer.metadata.get("S"))
+        )
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, _SameArrays)
+            and len(self._refs) == len(other._refs)
+            and all(
+                a is b or (a is not None and b is not None and a() is b())
+                for a, b in zip(self._refs, other._refs, strict=True)
+            )
+        )
+
+    __hash__ = None
 
 
 def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
@@ -1686,6 +1721,8 @@ class PlotterWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         # Initialize data attributes
+        # Whether the plot currently shows no layer at all.
+        self._showing_no_layer = False
         self._g_array = None
         self._s_array = None
         self._g_original_array = None
@@ -7345,10 +7382,23 @@ class PlotterWidget(QWidget):
 
             # If image layers were renamed, update selections and notify tabs
             old_image_layers_by_id = getattr(self, '_image_layers_by_id', {})
+            # Only phasor source images: renaming an analysis output (which
+            # the tabs do themselves when a component is renamed) is not a
+            # source rename.
+            phasor_layer_ids = {
+                id(layer)
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "G" in layer.metadata
+                and "S" in layer.metadata
+                and "G_original" in layer.metadata
+                and "S_original" in layer.metadata
+            }
             renamed_images = {
                 old_name: new_name
                 for layer_id, new_name in image_layers_by_id.items()
-                if layer_id in old_image_layers_by_id
+                if layer_id in phasor_layer_ids
+                and layer_id in old_image_layers_by_id
                 and (old_name := old_image_layers_by_id[layer_id]) != new_name
             }
             if renamed_images:
@@ -7426,10 +7476,14 @@ class PlotterWidget(QWidget):
 
             self.mask_layer_combobox.addItems(["None"] + mask_layer_names)
 
-            # Check if previously selected mask layer was deleted
+            # Check if a mask in use was deleted: the one the selector shows,
+            # or one assigned per layer through the assignment dialog.
             mask_layer_was_deleted = (
                 mask_layer_combobox_current_text != "None"
                 and mask_layer_combobox_current_text not in mask_layer_names
+            ) or any(
+                mask_name not in mask_layer_names
+                for mask_name in self._mask_assignments.values()
             )
 
             if mask_layer_combobox_current_text in mask_layer_names:
@@ -7537,14 +7591,12 @@ class PlotterWidget(QWidget):
             )
         ):
             return True
-        name = layer.name
-        if " fractions: " in name or " fraction: " in name:
-            return True
-        if name.startswith("FRET efficiency: "):
-            return True
-        return any(
-            name.startswith(f"{output_type}: ")
-            for output_type in (
+        analysis = split_analysis_layer_name(layer.name)[1]
+        return (
+            parse_component_analysis_label(analysis) is not None
+            or analysis == "FRET efficiency"
+            or analysis
+            in (
                 "Phase",
                 "Modulation",
                 "Apparent Phase Lifetime",
@@ -7621,6 +7673,11 @@ class PlotterWidget(QWidget):
         self._invalidate_features_cache()
 
         if not layer_name:
+            if self._showing_no_layer:
+                # Already torn down: the selection was emptied through the
+                # combobox and a caller re-applies it.
+                return
+            self._showing_no_layer = True
             self._g_array = None
             self._s_array = None
             self._g_original_array = None
@@ -7661,6 +7718,7 @@ class PlotterWidget(QWidget):
             self.canvas_widget.figure.canvas.draw_idle()
             return
 
+        self._showing_no_layer = False
         layer = self.viewer.layers[layer_name]
         layer_metadata = layer.metadata
 
@@ -7854,8 +7912,8 @@ class PlotterWidget(QWidget):
         their derived analysis layers.
 
         Association is determined by napari-phasors' layer naming
-        convention: analysis layers are named ``"<descriptor>: <intensity
-        layer name>"``. Layers that are not associated with any phasor
+        convention: analysis layers are named ``"<intensity layer name without
+        [Phasor]> [<analysis>]"``. Layers that are not associated with any phasor
         intensity layer (e.g. unrelated reference layers) are left
         untouched. Redundant writes to ``layer.visible`` are skipped so
         napari does not emit unnecessary redraw events.
@@ -7865,25 +7923,22 @@ class PlotterWidget(QWidget):
         selected_names : set of str
             Names of the currently selected intensity layers.
         """
-        # Intensity layer names sorted longest-first so the most specific
-        # suffix wins when one layer name is a suffix of another.
-        intensity_names = sorted(
-            (
-                layer.name
-                for layer in self.viewer.layers
-                if self._is_phasor_intensity_layer(layer)
-            ),
-            key=len,
-            reverse=True,
-        )
-        intensity_name_set = set(intensity_names)
+        intensity_name_set = {
+            layer.name
+            for layer in self.viewer.layers
+            if self._is_phasor_intensity_layer(layer)
+        }
+        intensity_by_base = {
+            phasor_layer_base_name(name): name
+            for name in sorted(intensity_name_set)
+        }
 
         def associated_intensity_name(layer_name):
             """Return the intensity layer this layer derives from, or None."""
-            for intensity_name in intensity_names:
-                if layer_name.endswith(f": {intensity_name}"):
-                    return intensity_name
-            return None
+            base, analysis = split_analysis_layer_name(layer_name)
+            if analysis is None:
+                return None
+            return intensity_by_base.get(base)
 
         for layer in self.viewer.layers:
             if layer.name in intensity_name_set:
@@ -8737,7 +8792,11 @@ class PlotterWidget(QWidget):
         return self._mask_assignments.get(layer_name, "None")
 
     def refresh_phasor_data(self):
-        """Reload phasor data from the current layer metadata and replot."""
+        """Reload phasor data from the current layer metadata and replot.
+
+        Needed after editing a layer's G/S arrays in place; arrays that were
+        replaced are picked up by the next plot anyway.
+        """
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -8960,8 +9019,8 @@ class PlotterWidget(QWidget):
         layer) keeps frames directly comparable, which is the point of
         stepping through them.
 
-        The result is cached; it only depends on the selected layers, the
-        harmonic, the bin count and the frame axis.
+        The result is cached; it only depends on the selected layers and
+        their G/S arrays, the harmonic, the bin count and the frame axis.
 
         Returns
         -------
@@ -8983,6 +9042,7 @@ class PlotterWidget(QWidget):
             self.histogram_bins,
             ctx.axis,
             ctx.n_frames,
+            _SameArrays(selected_layers),
         )
         if self._frame_histogram_cache_key == cache_key:
             return self._frame_histogram_cache
@@ -9058,10 +9118,9 @@ class PlotterWidget(QWidget):
     def _invalidate_features_cache(self):
         """Invalidate the merged-features cache.
 
-        Call this whenever a layer's G/S arrays are mutated (filter,
-        threshold, calibration, mask application/restoration, etc.) so
-        that the next call to :meth:`get_merged_features` recomputes
-        from the layer metadata instead of returning stale data.
+        Replacing a layer's G/S arrays is noticed without it (the caches are
+        keyed on the arrays themselves); call this when they are edited in
+        place, as :meth:`refresh_phasor_data` does.
         """
         self._features_cache = None
         self._features_cache_key = None
@@ -9088,9 +9147,9 @@ class PlotterWidget(QWidget):
         for unified plotting. Each layer's data is extracted at the current
         harmonic and merged together.
 
-        Results are cached and reused when the selected layers and harmonic
-        haven't changed (e.g. when only visual parameters like bins or
-        colormap are modified).
+        Results are cached and reused while the selected layers, their G/S
+        arrays and the harmonic are unchanged (e.g. when only visual
+        parameters like bins or colormap are modified).
 
         Returns
         -------
@@ -9104,6 +9163,7 @@ class PlotterWidget(QWidget):
         cache_key = (
             tuple(layer.name for layer in selected_layers),
             self.harmonic,
+            _SameArrays(selected_layers),
             self.frame_context.state_key(),
         )
         if (
