@@ -3291,6 +3291,17 @@ class CheckableComboBox(QComboBox):
         # Only emit signals if they weren't blocked by parent
         if not signals_were_blocked:
             self._refresh_primary_and_notify()
+        else:
+            self._mark_primary_announced()
+
+    def _mark_primary_announced(self):
+        """Record a primary set while the parent blocks the signals.
+
+        The parent announces that change itself, so it must neither be
+        announced again on the next refresh nor hide the next real change
+        (unchecking the last layer would otherwise go unnoticed).
+        """
+        self._last_emitted_primary = self._primary_layer_name
 
     def _set_primary_by_name(self, name, emit=True):
         """Set the primary layer and update role data on all items."""
@@ -3298,7 +3309,9 @@ class CheckableComboBox(QComboBox):
         self._primary_layer_name = name
         self._sync_primary_role()
         self._update_display_text()
-        if emit and old != name:
+        if self.signalsBlocked():
+            self._mark_primary_announced()
+        elif emit and old != name:
             self._last_emitted_primary = name
             self.primaryLayerChanged.emit(name)
 
@@ -4887,6 +4900,9 @@ class HistogramWidget(QWidget):
         self.fig = Figure(figsize=(8, 4), constrained_layout=True)
         self.ax = self.fig.add_subplot(111)
         self._style_axes()
+        # Whether the axes hold nothing but styling, so clearing them again
+        # (as every tab does when it resets) can skip ``ax.clear()``.
+        self._axes_blank = True
 
         canvas = FigureCanvas(self.fig)
         # Let the canvas grow with the window instead of staying a fixed
@@ -6339,8 +6355,10 @@ class HistogramWidget(QWidget):
         if clear_frame_source:
             self._frame_context = None
             self._frame_source_datasets = {}
-        self._clear_figure_legends()
-        self.ax.clear()
+        if not self._axes_blank:
+            self._clear_figure_legends()
+            self.ax.clear()
+            self._axes_blank = True
         self._style_axes()
         self.fig.canvas.draw_idle()
         self._settings_button.setEnabled(False)
@@ -6692,6 +6710,7 @@ class HistogramWidget(QWidget):
         """Re-draw the histogram using the active display mode."""
         self._clear_figure_legends()
         self.ax.clear()
+        self._axes_blank = False
 
         n_datasets = len(self._counts_per_dataset)
 

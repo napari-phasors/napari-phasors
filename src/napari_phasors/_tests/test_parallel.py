@@ -1,10 +1,12 @@
 """Tests for the shared thread-pool helpers."""
 
+import os
 import threading
 
 import numpy as np
 import pytest
 
+from napari_phasors import _parallel
 from napari_phasors._parallel import (
     band_bounds,
     default_workers,
@@ -38,6 +40,19 @@ def clear_worker_env(monkeypatch):
     silently rewrite every expectation in this module.
     """
     monkeypatch.delenv("NAPARI_PHASORS_WORKERS", raising=False)
+
+
+@pytest.fixture
+def small_split(monkeypatch):
+    """Let a few-hundred-row image take the band-splitting path.
+
+    Splitting normally waits for a megapixel and for more than one core.
+    Building and filtering megapixel arrays was most of this module's run
+    time, while the band and halo logic only needs several bands of real
+    rows, so the threshold is lowered and four cores are pinned.
+    """
+    monkeypatch.setattr(_parallel, "MIN_PARALLEL_PIXELS", 1 << 14)
+    monkeypatch.setattr(os, "cpu_count", lambda: 4)
 
 
 @pytest.fixture(autouse=True)
@@ -287,12 +302,12 @@ def test_parallel_bands_single_band_runs_inline():
     assert ran_on == [caller]
 
 
-def test_parallel_filter_median_matches_the_unsplit_call():
+def test_parallel_filter_median_matches_the_unsplit_call(small_split):
     """Band splitting is exact, not approximate: identical bits, NaNs too."""
     from phasorpy.filter import phasor_filter_median
 
     rng = np.random.default_rng(0)
-    shape = (1200, 1200)
+    shape = (240, 240)
     mean = (rng.random(shape) * 100).astype(np.float32)
     real = rng.random((2,) + shape).astype(np.float32)
     imag = rng.random((2,) + shape).astype(np.float32)
@@ -313,14 +328,14 @@ def test_parallel_filter_median_matches_the_unsplit_call():
             assert np.array_equal(have, want, equal_nan=True)
 
 
-def test_parallel_filter_median_handles_leading_axes():
+def test_parallel_filter_median_handles_leading_axes(small_split):
     """A stack keeps its leading axes; only the row axis is split."""
     from phasorpy.filter import phasor_filter_median
 
     rng = np.random.default_rng(1)
-    mean = (rng.random((3, 700, 700)) * 10).astype(np.float32)
-    real = rng.random((2, 3, 700, 700)).astype(np.float32)
-    imag = rng.random((2, 3, 700, 700)).astype(np.float32)
+    mean = (rng.random((3, 160, 160)) * 10).astype(np.float32)
+    real = rng.random((2, 3, 160, 160)).astype(np.float32)
+    imag = rng.random((2, 3, 160, 160)).astype(np.float32)
     skip_axis = (0,)
 
     expected = phasor_filter_median(
@@ -359,10 +374,10 @@ def test_parallel_filter_median_without_a_halo_is_passed_through():
     assert np.asarray(mean).shape == data.shape
 
 
-def test_parallel_filter_median_is_sequential_inside_a_pool():
+def test_parallel_filter_median_is_sequential_inside_a_pool(small_split):
     """A nested call must not multiply the thread count."""
     rng = np.random.default_rng(4)
-    data = rng.random((1200, 1200)).astype(np.float32)
+    data = rng.random((240, 240)).astype(np.float32)
 
     names = set()
 
@@ -663,10 +678,10 @@ def test_memory_budget_switch():
         assert items_for_memory(1 << 20) is not None
 
 
-def test_disabled_and_enabled_filtering_agree():
+def test_disabled_and_enabled_filtering_agree(small_split):
     """Switching parallelism off changes the timing, never the numbers."""
     rng = np.random.default_rng(21)
-    shape = (1200, 1000)
+    shape = (240, 200)
     mean = (rng.random(shape) * 100).astype(np.float32)
     real = rng.random(shape).astype(np.float32)
     imag = rng.random(shape).astype(np.float32)
@@ -689,7 +704,7 @@ def test_disabled_and_enabled_filtering_agree():
 )
 @pytest.mark.parametrize("gs_dtype", [np.float32, np.float64])
 def test_parallel_filter_median_keeps_each_array_own_dtype(
-    mean_dtype, gs_dtype
+    small_split, mean_dtype, gs_dtype
 ):
     """``mean``, ``real`` and ``imag`` are promoted independently.
 
@@ -701,7 +716,7 @@ def test_parallel_filter_median_keeps_each_array_own_dtype(
     from phasorpy.filter import phasor_filter_median
 
     rng = np.random.default_rng(22)
-    shape = (1200, 1000)
+    shape = (240, 200)
     mean = (rng.random(shape) * 1000).astype(mean_dtype)
     real = rng.random(shape).astype(gs_dtype)
     imag = rng.random(shape).astype(gs_dtype)
@@ -789,8 +804,10 @@ def test_parallel_stream_holds_at_most_the_in_flight_results():
         return payload
 
     peak_alive = 0
+    # Sixteen items: were they all submitted at once, every one of them
+    # would be resident at the end, far above the limit asserted below.
     for _index, _item, payload in parallel_stream(
-        work, range(50), workers=4, max_in_flight=4
+        work, range(16), workers=4, max_in_flight=4
     ):
         del payload
         import gc

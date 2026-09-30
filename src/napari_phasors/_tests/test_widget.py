@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from phasorpy.io import (
 )
 from qtpy.QtWidgets import QWidget
 
+from napari_phasors import _writer
 from napari_phasors._reader import napari_get_reader
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
@@ -41,6 +43,21 @@ from napari_phasors._widget import (
     _phasor_output_shape_from_signal,
     _reduce_ptu_signal_dims,
 )
+
+
+@pytest.fixture(autouse=True)
+def _low_export_dpi(monkeypatch):
+    """Render the writer widget's image exports at a low DPI.
+
+    The widget always exports at the 300 DPI default, which made these
+    tests spend most of their time encoding large images; they only check
+    that the files are written.
+    """
+    monkeypatch.setattr(
+        "napari_phasors._widget.export_layer_as_image",
+        functools.partial(_writer.export_layer_as_image, dpi=30),
+    )
+
 
 TEST_FORMATS = [
     (".fbd", FbdWidget),
@@ -255,20 +272,21 @@ def test_multi_file_preview_is_averaged(make_viewer_model, qtbot):
     np.testing.assert_array_equal(preview, np.array([2.0, 3.0, 4.0]))
 
 
-def test_phasor_transform_fbd_widget(make_viewer_model, qtbot):
-    """Test FbdWidget from PhasorTransfrom widget."""
+def test_fbd_widget_transforms_into_layers(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """The chosen frame, channel and harmonics reach the transformed layers.
+    Every channel can instead be stacked into one layer, an option offered
+    only while every channel is imported and rebuilt with the channels
+    row."""
     viewer = make_viewer_model()
     PhasorTransform(viewer)
     test_file_path = get_test_file_path("test_file$EI0S.fbd")
     widget = FbdWidget(viewer, path=test_file_path)
     assert widget.viewer is viewer
-    # Init values
-    assert isinstance(widget, AdvancedOptionsWidget)
     assert widget.path == test_file_path
     assert widget.reader_options == {"frame": -1, "channel": None}
     assert widget.harmonics == [1, 2]
-    assert widget.all_frames == 9
-    assert widget.all_channels == 2
     assert widget.harmonic_slider.value() == (1, 2)
     # Modify harmonic values
     widget.harmonic_slider.setValue((2, 2))
@@ -281,17 +299,8 @@ def test_phasor_transform_fbd_widget(make_viewer_model, qtbot):
     frames_combobox_values = [
         widget.frames.itemText(i) for i in range(widget.frames.count())
     ]
-    assert frames_combobox_values == [
-        "Average all frames",
-        "0",
-        "1",
-        "2",
-        "3",
-        "4",
-        "5",
-        "6",
-        "7",
-        "8",
+    assert frames_combobox_values == ["Average all frames"] + [
+        str(frame) for frame in range(9)
     ]
     assert widget.frames.currentIndex() == 0
     # Modify frames
@@ -328,11 +337,68 @@ def test_phasor_transform_fbd_widget(make_viewer_model, qtbot):
     assert viewer.layers[2].data.shape == (256, 256)
     assert viewer.layers[2].metadata["G"].shape == (1, 256, 256)
     assert list(viewer.layers[2].metadata["harmonics"]) == [2]
+
+    # Stacking every channel into one layer, with the default frame and
+    # harmonics again.
+    viewer.layers.clear()
+    widget.harmonic_slider.setValue((1, 2))
+    widget.frames.setCurrentIndex(0)
+
+    # Offered while every channel is imported...
+    assert widget.single_layer_checkbox is not None
+    assert widget.single_layer_checkbox.isChecked() is False
+    assert "single_layer" not in widget.reader_options
+    assert "(256, 256)" in widget.shape_preview_label.text()
+
+    errors = []
+    from napari_phasors import _widget as widget_module
+
+    monkeypatch.setattr(widget_module, "show_error", errors.append)
+
+    # ...and hidden as soon as a single channel is picked, since there is
+    # then nothing to stack.
+    widget.single_layer_checkbox.setChecked(True)
+    assert widget.reader_options["single_layer"] is True
+    assert errors == []
+    assert widget._get_signal_data() is not None
+    assert "(2, 256, 256)" in widget.shape_preview_label.text()
+    assert "(C, Y, X)" in widget.shape_preview_label.text()
+
+    widget.channels.setCurrentIndex(1)
+    assert widget.single_layer_checkbox.isHidden()
+    assert "single_layer" not in widget.reader_options
+    assert "(256, 256)" in widget.shape_preview_label.text()
+
+    widget.channels.setCurrentIndex(0)
+    assert widget.reader_options["single_layer"] is True
+    assert "(2, 256, 256)" in widget.shape_preview_label.text()
+
+    widget.btn.click()
+    assert errors == []
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    assert layer.name == "test_file$EI0S Intensity [Phasor]"
+    assert layer.data.shape == (2, 256, 256)
+    assert list(layer.metadata["channel_labels"]) == [0, 1]
+    assert layer.metadata["G"].shape == (2, 2, 256, 256)
+
+    # Rebuilding the channels row replaces the checkbox instead of stacking
+    # a second one: the old checkbox is detached, the new one is in the row.
+    first = widget.single_layer_checkbox
+    assert first.isChecked()
+    widget._update_channels_widget()
+    assert widget.single_layer_checkbox is not first
+    assert widget.single_layer_checkbox.isChecked() is False
+    assert first.parent() is None
+    assert widget.channels_layout.indexOf(widget.single_layer_checkbox) >= 0
+    assert "single_layer" not in widget.reader_options
+
     # TODO: test laser factor parameter
 
 
 def test_phasor_transform_ptu_widget(make_viewer_model, qtbot, caplog):
-    """Test PtuWidget from PhasorTransfrom widget."""
+    """PtuWidget transforms the chosen frame and harmonics; a single-channel
+    file has nothing to stack, and dtime only redraws once edited."""
     viewer = make_viewer_model()
     PhasorTransform(viewer)
     test_file_path = get_test_file_path("test_file.ptu")
@@ -347,6 +413,13 @@ def test_phasor_transform_ptu_widget(make_viewer_model, qtbot, caplog):
     assert widget.all_frames == 5
     assert widget.all_channels == 1
     assert widget.harmonic_slider.value() == (1, 2)
+
+    # A single-channel file has nothing to stack, so no checkbox, and the
+    # visibility update is a no-op.
+    assert widget.single_layer_checkbox is None
+    widget._update_single_layer_checkbox()
+    assert "single_layer" not in widget.reader_options
+
     # Modify harmonic values
     widget.harmonic_slider.setValue((2, 2))
     assert widget.harmonic_slider.value() == (2, 2)
@@ -399,11 +472,23 @@ def test_phasor_transform_ptu_widget(make_viewer_model, qtbot, caplog):
     assert viewer.layers[1].data.shape == (256, 256)
     assert viewer.layers[1].metadata["G"].shape == (1, 256, 256)
     assert list(viewer.layers[1].metadata["harmonics"]) == [2]
+
+    # dtime only updates the signal plot on editingFinished, not on each
+    # keystroke.
+    with patch.object(widget, "_update_signal_plot") as mock_update:
+        widget.dtime.setText("1")
+        widget.dtime.setText("10")
+        widget.dtime.setText("100")
+        mock_update.assert_not_called()
+        widget.dtime.editingFinished.emit()
+        mock_update.assert_called_once()
+
     # TODO: test dtime parameter
 
 
 def test_phasor_transform_sdt_widget(make_viewer_model, qtbot):
-    """Test SdtWidget from PhasorTransfrom widget."""
+    """SdtWidget previews the summed decay, transforms the chosen harmonics,
+    and tracks the dataset index, redrawing only once it is edited."""
     viewer = make_viewer_model()
     file_path = get_test_file_path("seminal_receptacle_FLIM_single_image.sdt")
     PhasorTransform(viewer)
@@ -415,6 +500,14 @@ def test_phasor_transform_sdt_widget(make_viewer_model, qtbot):
     assert widget.reader_options == {}
     assert widget.harmonics == [1, 2]
     assert widget.harmonic_slider.value() == (1, 2)
+
+    # The preview plots the summed decay.
+    signal_data = signal_from_sdt(file_path).sum(axis=(0, 1))
+    widget._update_signal_plot()
+    lines = widget.ax.get_lines()
+    assert len(lines) > 0
+    np.testing.assert_array_almost_equal(lines[0].get_ydata(), signal_data)
+
     # Modify harmonic values
     widget.harmonic_slider.setValue((2, 2))
     assert widget.harmonic_slider.value() == (2, 2)
@@ -450,6 +543,19 @@ def test_phasor_transform_sdt_widget(make_viewer_model, qtbot):
     assert viewer.layers[1].data.shape == (512, 512)
     assert viewer.layers[1].metadata["G"].shape == (1, 512, 512)
     assert list(viewer.layers[1].metadata["harmonics"]) == [2]
+
+    # The dataset index is part of the preview cache signature, but the
+    # plot only updates on editingFinished, not on each keystroke.
+    baseline = widget._preview_signature()
+    with patch.object(widget, "_update_signal_plot") as mock_update:
+        widget.index.setText("0")
+        widget.index.setText("1")
+        mock_update.assert_not_called()
+        assert widget._preview_signature() != baseline
+        assert widget._extra_preview_signature() == ("index", "1")
+        widget.index.editingFinished.emit()
+        mock_update.assert_called_once()
+
     # TODO: test index parameter
 
 
@@ -613,307 +719,39 @@ def test_phasor_transform_czi_widget(make_viewer_model, qtbot):
 
 
 def test_phasor_transform_ome_tif_widget(make_viewer_model, qtbot):
-    """Test OmeTifWidget from PhasorTransform widget."""
+    """PhasorTransform offers OmeTifWidget for OME-TIFF files. Its preview
+    plots the summed signal stored in the file, its harmonic range follows
+    the file, and its layers keep the reader's axis labels and scale."""
     viewer = make_viewer_model()
-    PhasorTransform(viewer)
     test_file_path = get_test_file_path("test_file.ome.tif")
+    transform = PhasorTransform(viewer)
+    try:
+        assert ".ome.tif" in transform.reader_options
+        with patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileNames",
+            return_value=([test_file_path], ""),
+        ):
+            transform.search_button.click()
+        assert transform.dynamic_widget_layout.count() == 1
+        added_widget = transform.dynamic_widget_layout.itemAt(0).widget()
+        assert isinstance(added_widget, OmeTifWidget)
+    finally:
+        transform.deleteLater()
+
     widget = OmeTifWidget(viewer, path=test_file_path)
     assert widget.viewer is viewer
-
     # Init values
     assert isinstance(widget, AdvancedOptionsWidget)
     assert widget.path == test_file_path
     assert widget.reader_options == {}
     assert widget.harmonics == [1, 2]
     assert widget.harmonic_slider.value() == (1, 2)
-
-    # Test signal plot initialization
     assert widget.canvas is not None
     assert widget.ax is not None
 
-    # Modify harmonic values
-    widget.harmonic_slider.setValue((2, 2))
-    assert widget.harmonic_slider.value() == (2, 2)
-    assert widget.harmonics == [2]
-
-    # Click button of phasor transform and check layers
-    widget.btn.click()
-    assert len(viewer.layers) == 1
-    assert "Intensity [Phasor]" in viewer.layers[0].name
-    # Check phasor data in metadata
-    assert "G" in viewer.layers[0].metadata
-    assert "S" in viewer.layers[0].metadata
-    assert "harmonics" in viewer.layers[0].metadata
-    assert list(viewer.layers[0].metadata["harmonics"]) == [2]
-
-
-def test_phasor_transform_ome_tif_preserves_axis_kwargs(
-    make_viewer_model, qtbot
-):
-    """OME-TIFF loaded from widget should preserve reader axis kwargs."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file.ome.tif")
-
-    reader = napari_get_reader(test_file_path, harmonics=[1])
-    assert reader is not None
-    expected_layer_data = reader(test_file_path)[0]
-    expected_data, expected_kwargs = expected_layer_data
-
-    widget = OmeTifWidget(viewer, path=test_file_path)
-    widget.harmonic_slider.setValue((1, 1))
-    widget.btn.click()
-
-    assert len(viewer.layers) == 1
-    loaded_layer = viewer.layers[0]
-    assert loaded_layer.data.shape == expected_data.shape
-
-    if "axis_labels" in expected_kwargs:
-        assert tuple(loaded_layer.axis_labels) == tuple(
-            expected_kwargs["axis_labels"]
-        )
-
-    if "scale" in expected_kwargs:
-        np.testing.assert_allclose(
-            loaded_layer.scale, expected_kwargs["scale"]
-        )
-
-
-def test_fbd_laser_factor_triggers_plot_only_on_editing_finished(
-    make_viewer_model,
-    qtbot,
-):
-    """FbdWidget laser_factor should only update the signal plot on editingFinished, not on each keystroke."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file$EI0S.fbd")
-    widget = FbdWidget(viewer, path=test_file_path)
-
-    with patch.object(widget, "_update_signal_plot") as mock_update:
-        # Simulate typing character by character (textChanged-like)
-        widget.laser_factor.setText("0")
-        widget.laser_factor.setText("0.")
-        widget.laser_factor.setText("0.0")
-        # None of the setText calls should have triggered a redraw
-        mock_update.assert_not_called()
-
-        # Finishing the edit should trigger exactly one redraw
-        widget.laser_factor.editingFinished.emit()
-        mock_update.assert_called_once()
-
-
-def test_ptu_dtime_triggers_plot_only_on_editing_finished(
-    make_viewer_model, qtbot, caplog
-):
-    """PtuWidget dtime should only update the signal plot on editingFinished, not on each keystroke."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file.ptu")
-    caplog.set_level(logging.ERROR, logger="ptufile")
-    widget = PtuWidget(viewer, path=test_file_path)
-
-    with patch.object(widget, "_update_signal_plot") as mock_update:
-        widget.dtime.setText("1")
-        widget.dtime.setText("10")
-        widget.dtime.setText("100")
-        mock_update.assert_not_called()
-
-        widget.dtime.editingFinished.emit()
-        mock_update.assert_called_once()
-
-
-def test_sdt_index_triggers_plot_only_on_editing_finished(
-    make_viewer_model, qtbot
-):
-    """SdtWidget index should only update the signal plot on editingFinished, not on each keystroke."""
-    viewer = make_viewer_model()
-    file_path = get_test_file_path("seminal_receptacle_FLIM_single_image.sdt")
-    widget = SdtWidget(viewer, path=file_path)
-
-    with patch.object(widget, "_update_signal_plot") as mock_update:
-        widget.index.setText("0")
-        widget.index.setText("1")
-        mock_update.assert_not_called()
-
-        widget.index.editingFinished.emit()
-        mock_update.assert_called_once()
-
-
-def test_json_channel_triggers_plot_only_on_editing_finished(
-    make_viewer_model,
-    qtbot,
-):
-    """JsonWidget channel_entry should only update the signal plot on editingFinished, not on each keystroke."""
-    from phasorpy.datasets import fetch
-
-    from napari_phasors._widget import JsonWidget
-
-    viewer = make_viewer_model()
-    file_path = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
-    widget = JsonWidget(viewer, path=file_path)
-
-    with patch.object(widget, "_update_signal_plot") as mock_update:
-        widget.channel_entry.setText("0")
-        widget.channel_entry.setText("1")
-        mock_update.assert_not_called()
-
-        widget.channel_entry.editingFinished.emit()
-        mock_update.assert_called_once()
-
-
-def test_harmonic_range_slider_functionality(make_viewer_model, qtbot):
-    """Test QRangeSlider functionality for harmonics in all widget types."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file$EI0S.fbd")
-    widget = FbdWidget(viewer, path=test_file_path)
-
-    # Test initial slider values
-    assert widget.harmonic_slider.value() == (1, 2)
-    assert widget.harmonic_start_edit.text() == "1"
-    assert widget.harmonic_end_edit.text() == str(2)
-
-    # Test slider value change
-    widget.harmonic_slider.setValue((2, 4))
-    assert widget.harmonics == [2, 3, 4]
-    assert widget.harmonic_start_edit.text() == "2"
-    assert widget.harmonic_end_edit.text() == "4"
-
-    # Test line edit changes
-    widget.harmonic_start_edit.setText("3")
-    widget.harmonic_start_edit.editingFinished.emit()
-    assert widget.harmonic_slider.value()[0] == 3
-    assert widget.harmonics == [3, 4]
-
-    widget.harmonic_end_edit.setText("5")
-    widget.harmonic_end_edit.editingFinished.emit()
-    assert widget.harmonic_slider.value()[1] == 5
-    assert widget.harmonics == [3, 4, 5]
-
-
-def test_signal_plot_fbd_single_channel_all_frames(make_viewer_model, qtbot):
-    """Test signal plot for FBD widget with single channel, all frames."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file$EI0S.fbd")
-    widget = FbdWidget(viewer, path=test_file_path)
-
-    # Set to single channel (channel 0), all frames
-    widget.channels.setCurrentIndex(1)  # Channel 0
-    widget.frames.setCurrentIndex(0)  # All frames
-
-    # Get signal data for verification
-    signal_data = signal_from_fbd(test_file_path, frame=-1, channel=0)
-    # Summ over all axis except last one
-    signal_data = signal_data.sum(axis=(0, 1))
-    assert signal_data is not None
-
-    # Update plot and verify it contains expected data
-    widget._update_signal_plot()
-
-    # Check that plot has data
-    lines = widget.ax.get_lines()
-    assert len(lines) > 0
-
-    # Verify plot data matches expected signal
-    plot_x_data = lines[0].get_xdata()
-    plot_y_data = lines[0].get_ydata()
-
-    # Expected data should match what _get_signal_data returns
-    np.testing.assert_array_almost_equal(plot_y_data, signal_data)
-    assert len(plot_x_data) == len(signal_data)
-
-
-def test_signal_plot_fbd_single_channel_single_frame(make_viewer_model, qtbot):
-    """Test signal plot for FBD widget with single channel, single frame."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file$EI0S.fbd")
-    widget = FbdWidget(viewer, path=test_file_path)
-
-    # Set to single channel (channel 1), single frame (frame 2)
-    widget.channels.setCurrentIndex(2)  # Channel 1
-    widget.frames.setCurrentIndex(3)  # Frame 2
-
-    # Get signal data for verification
-    signal_data = signal_from_fbd(test_file_path, frame=2, channel=1)
-    signal_data = signal_data.sum(axis=(0, 1))
-    assert signal_data is not None
-
-    # Update plot and verify
-    widget._update_signal_plot()
-
-    lines = widget.ax.get_lines()
-    assert len(lines) > 0
-
-    plot_y_data = lines[0].get_ydata()
-    np.testing.assert_array_almost_equal(plot_y_data, signal_data)
-
-
-def test_signal_plot_fbd_all_channels_single_frame(make_viewer_model, qtbot):
-    """Test signal plot for FBD widget with all channels, single frame."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file$EI0S.fbd")
-    widget = FbdWidget(viewer, path=test_file_path)
-
-    # Set to all channels, single frame (frame 1)
-    widget.channels.setCurrentIndex(0)  # All channels
-    widget.frames.setCurrentIndex(2)  # Frame 1
-
-    # Get signal data for verification
-    signal_data_channel_0 = signal_from_fbd(test_file_path, frame=1, channel=0)
-    signal_data_channel_1 = signal_from_fbd(test_file_path, frame=1, channel=1)
-
-    assert signal_data_channel_0 is not None
-    assert signal_data_channel_1 is not None
-
-    signal_data = np.array(
-        [
-            signal_data_channel_0.sum(axis=(0, 1)),
-            signal_data_channel_1.sum(axis=(0, 1)),
-        ]
-    )
-
-    # Update plot
-    widget._update_signal_plot()
-
-    lines = widget.ax.get_lines()
-    # Should have multiple lines for multiple channels
-    assert len(lines) == widget.all_channels
-
-    # Verify each line has correct data
-    for i, line in enumerate(lines):
-        plot_y_data = line.get_ydata()
-        # Signal data should be averaged across channels or individual channel data
-        np.testing.assert_array_almost_equal(plot_y_data, signal_data[i])
-
-
-def test_signal_plot_sdt_widget(make_viewer_model, qtbot):
-    """Test signal plot for SDT widget."""
-    viewer = make_viewer_model()
-    file_path = get_test_file_path("seminal_receptacle_FLIM_single_image.sdt")
-    widget = SdtWidget(viewer, path=file_path)
-
-    # Get signal data and verify plot
-    signal_data = signal_from_sdt(file_path)
-    signal_data = signal_data.sum(axis=(0, 1))
-    assert signal_data is not None
-
-    widget._update_signal_plot()
-
-    lines = widget.ax.get_lines()
-    assert len(lines) > 0
-
-    plot_y_data = lines[0].get_ydata()
-    np.testing.assert_array_almost_equal(plot_y_data, signal_data)
-
-
-def test_signal_plot_ometif_widget(make_viewer_model, qtbot):
-    """Test signal plot for OME-TIF widget."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file.ome.tif")
-    widget = OmeTifWidget(viewer, path=test_file_path)
-
+    # The preview plots the summed signal stored with the file's settings.
     signal_data = None
-
-    # Use phasorpy to read the OME-TIFF metadata
     _, _, _, attrs = phasor_from_ometiff(test_file_path, harmonic='all')
-
-    # Get harmonics from attrs
     if "harmonic" in attrs:
         harmonics = attrs["harmonic"]
     if "description" in attrs:
@@ -922,23 +760,271 @@ def test_signal_plot_ometif_widget(make_viewer_model, qtbot):
             raise ValueError("Description dictionary is too large.")
         if "napari_phasors_settings" in description:
             settings = json.loads(description["napari_phasors_settings"])
-
-            # Check if we have summed_signal data
             if 'summed_signal' in settings:
                 signal_data = (np.array(settings['summed_signal']),)
-
     assert signal_data is not None
-
     widget._update_signal_plot()
-
     lines = widget.ax.get_lines()
     assert len(lines) > 0
-
-    plot_y_data = lines[0].get_ydata()
-    np.testing.assert_array_almost_equal(plot_y_data, signal_data[0])
-
+    np.testing.assert_array_almost_equal(lines[0].get_ydata(), signal_data[0])
     # Assert max number of harmonics is correct
     assert widget.harmonic_slider.maximum() == np.max(harmonics)
+
+    # Modify harmonic values
+    widget.harmonic_slider.setValue((2, 2))
+    assert widget.harmonic_slider.value() == (2, 2)
+    assert widget.harmonics == [2]
+    widget.btn.click()
+    assert len(viewer.layers) == 1
+    assert "Intensity [Phasor]" in viewer.layers[0].name
+    assert "G" in viewer.layers[0].metadata
+    assert "S" in viewer.layers[0].metadata
+    assert "harmonics" in viewer.layers[0].metadata
+    assert list(viewer.layers[0].metadata["harmonics"]) == [2]
+
+    # A layer loaded from the widget keeps the reader's axis kwargs.
+    reader = napari_get_reader(test_file_path, harmonics=[1])
+    assert reader is not None
+    expected_data, expected_kwargs = reader(test_file_path)[0]
+    widget.harmonic_slider.setValue((1, 1))
+    widget.btn.click()
+    assert len(viewer.layers) == 2
+    loaded_layer = viewer.layers[1]
+    assert loaded_layer.data.shape == expected_data.shape
+    if "axis_labels" in expected_kwargs:
+        assert tuple(loaded_layer.axis_labels) == tuple(
+            expected_kwargs["axis_labels"]
+        )
+    if "scale" in expected_kwargs:
+        np.testing.assert_allclose(
+            loaded_layer.scale, expected_kwargs["scale"]
+        )
+
+
+def test_fbd_widget_options_and_preview(make_viewer_model, qtbot):
+    """FbdWidget reads its frames, channels and harmonics from the file,
+    previews the summed decay of any frame/channel choice, keeps harmonic
+    and z-spacing edits in range, collects extra reader kwargs, and only
+    redraws once a laser factor edit is finished."""
+    viewer = make_viewer_model()
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
+
+    # Frame integration is applied before the first preview decode so the
+    # preview matches the final transform, and the output shape is
+    # estimated without a second full decode + transform.
+    assert isinstance(widget, AdvancedOptionsWidget)
+    assert widget.reader_options == {"frame": -1, "channel": None}
+    assert widget._estimate_base_output_shape() == (256, 256)
+    assert widget.all_frames == 9
+    assert widget.all_channels == 2
+
+    # The preview canvas is transparent, with grey spines and labels
+    # (matplotlib converts 'grey' to RGBA for the spines).
+    assert widget.canvas.height() == 300
+    assert widget.figure.patch.get_alpha() == 0.0
+    assert widget.ax.get_facecolor() == (0.0, 0.0, 0.0, 0.0)
+    for spine in widget.ax.spines.values():
+        assert spine.get_edgecolor() == (
+            0.5019607843137255,
+            0.5019607843137255,
+            0.5019607843137255,
+            1.0,
+        )
+    assert widget.ax.xaxis.label.get_color() == 'grey'
+    assert widget.ax.yaxis.label.get_color() == 'grey'
+    assert widget.ax.title.get_color() == 'grey'
+
+    # The preview plots the summed decay of the chosen frame and channel,
+    # with one line per channel when every channel is shown.
+    def summed(frame, channel):
+        signal = signal_from_fbd(test_file_path, frame=frame, channel=channel)
+        return signal.sum(axis=(0, 1))
+
+    # (channel index, frame index) -> (channel, frame)
+    for channel_index, frame_index, channel, frame in (
+        (1, 0, 0, -1),
+        (2, 3, 1, 2),
+    ):
+        widget.channels.setCurrentIndex(channel_index)
+        widget.frames.setCurrentIndex(frame_index)
+        widget._update_signal_plot()
+        lines = widget.ax.get_lines()
+        assert len(lines) > 0
+        expected = summed(frame, channel)
+        np.testing.assert_array_almost_equal(lines[0].get_ydata(), expected)
+        assert len(lines[0].get_xdata()) == len(expected)
+
+    widget.channels.setCurrentIndex(0)  # All channels
+    widget.frames.setCurrentIndex(2)  # Frame 1
+    widget._update_signal_plot()
+    lines = widget.ax.get_lines()
+    assert len(lines) == widget.all_channels
+    for channel, line in enumerate(lines):
+        np.testing.assert_array_almost_equal(
+            line.get_ydata(), summed(1, channel)
+        )
+
+    # A failing decode must not raise; the plot ends up with no data lines.
+    with (
+        patch.object(
+            widget, '_get_signal_data', side_effect=Exception("Test error")
+        ),
+        patch("napari_phasors._widget.show_error"),
+    ):
+        # Invalidate the preview cache so the failing decode is actually
+        # exercised (a cached signal would otherwise be reused because the
+        # options are unchanged).
+        widget._preview_signal_cache_key = None
+        widget._update_signal_plot()
+        assert len(widget.ax.get_lines()) == 0
+    widget.frames.setCurrentIndex(0)
+
+    # The harmonic range slider and its line edits stay in step.
+    assert widget.harmonics == [1, 2]
+    assert widget.harmonic_slider.value() == (1, 2)
+    assert widget.harmonic_start_edit.text() == "1"
+    assert widget.harmonic_end_edit.text() == str(2)
+    widget.harmonic_slider.setValue((2, 4))
+    assert widget.harmonics == [2, 3, 4]
+    assert widget.harmonic_start_edit.text() == "2"
+    assert widget.harmonic_end_edit.text() == "4"
+    widget.harmonic_start_edit.setText("3")
+    widget.harmonic_start_edit.editingFinished.emit()
+    assert widget.harmonic_slider.value()[0] == 3
+    assert widget.harmonics == [3, 4]
+    widget.harmonic_end_edit.setText("5")
+    widget.harmonic_end_edit.editingFinished.emit()
+    assert widget.harmonic_slider.value()[1] == 5
+    assert widget.harmonics == [3, 4, 5]
+
+    # Harmonic line edits clamp below 1, above the maximum and start > end.
+    widget.harmonic_start_edit.setText("0")
+    widget.harmonic_end_edit.setText("2")
+    widget._on_harmonic_edit_changed()
+    assert widget.harmonics[0] == 1
+    widget.harmonic_end_edit.setText(str(widget.max_harmonic + 10))
+    widget._on_harmonic_edit_changed()
+    assert widget.harmonics[-1] == widget.max_harmonic
+    widget.harmonic_start_edit.setText("5")
+    widget.harmonic_end_edit.setText("2")
+    widget._on_harmonic_edit_changed()
+    assert widget.harmonics[0] <= widget.harmonics[-1]
+    # Non-numeric input falls back to the slider values.
+    widget.harmonic_start_edit.setText("abc")
+    widget._on_harmonic_edit_changed()
+    assert len(widget.harmonics) >= 1
+
+    # The stack z-spacing editor exists only in stack mode, and accepts
+    # only positive numbers.
+    widget._multi_file_paths = ["a.fbd", "b.fbd"]
+    widget._sync_stack_z_spacing_widget_visibility()
+    assert widget._stack_z_spacing_layout is not None
+    assert widget._stack_z_spacing_edit is not None
+    widget._stack_z_spacing_edit.setText("2.5")
+    widget._on_stack_z_spacing_changed()
+    assert widget._stack_z_spacing == 2.5
+    widget._stack_z_spacing_edit.setText("oops")
+    widget._on_stack_z_spacing_changed()
+    assert widget._stack_z_spacing == 1.0
+    widget._stack_z_spacing_edit.setText("-3")
+    widget._on_stack_z_spacing_changed()
+    assert widget._stack_z_spacing == 1.0
+    widget._multi_file_paths = []
+    widget._sync_stack_z_spacing_widget_visibility()
+    assert widget._stack_z_spacing_layout is None
+
+    # Extra reader kwargs are parsed as Python literals where possible,
+    # and rows can be removed.
+    assert len(widget.kwargs_widgets) == 0
+    widget.add_kwarg_btn.click()
+    key_edit, val_edit, row_widget = widget.kwargs_widgets[0]
+    key_edit.setText("test_key")
+    val_edit.setText("123")
+    options = {}
+    widget._apply_kwargs(options)
+    assert options == {"test_key": 123}
+
+    widget.add_kwarg_btn.click()
+    key_edit2, val_edit2, row_widget2 = widget.kwargs_widgets[1]
+    key_edit2.setText("list_key")
+    val_edit2.setText("[1, 2, 'three']")
+    # A string that fails ast.literal_eval is kept as a string.
+    widget.add_kwarg_btn.click()
+    key_edit3, val_edit3, row_widget3 = widget.kwargs_widgets[2]
+    key_edit3.setText("str_key")
+    val_edit3.setText("hello_world")
+    options = {}
+    widget._apply_kwargs(options)
+    assert options == {
+        "test_key": 123,
+        "list_key": [1, 2, "three"],
+        "str_key": "hello_world",
+    }
+
+    del_btn = row_widget.layout().itemAt(2).widget()
+    del_btn.click()
+    assert len(widget.kwargs_widgets) == 2
+    assert widget.kwargs_widgets[0][2] == row_widget2
+    assert widget.kwargs_widgets[1][2] == row_widget3
+    options = {}
+    widget._apply_kwargs(options)
+    assert options == {
+        "list_key": [1, 2, "three"],
+        "str_key": "hello_world",
+    }
+
+    # laser_factor is part of the preview cache signature, but the plot
+    # only updates on editingFinished, not on each keystroke.
+    baseline = widget._preview_signature()
+    widget.laser_factor.setText("0.00022")
+    assert widget._preview_signature() != baseline
+    assert widget._extra_preview_signature()[:2] == (
+        "laser_factor",
+        "0.00022",
+    )
+    with patch.object(widget, "_update_signal_plot") as mock_update:
+        widget.laser_factor.setText("0")
+        widget.laser_factor.setText("0.")
+        widget.laser_factor.setText("0.0")
+        mock_update.assert_not_called()
+        widget.laser_factor.editingFinished.emit()
+        mock_update.assert_called_once()
+
+    widget.close()
+
+
+def test_phasor_transform_of_fetched_formats(make_viewer_model, qtbot):
+    """FLIF, B&H (.b&h and .bhz), SimFCS and JSON files transform into
+    layers, and the JSON channel only redraws once its edit is finished."""
+    from napari_phasors._widget import (
+        BhWidget,
+        FlifWidget,
+        JsonWidget,
+        SimfcsWidget,
+    )
+
+    viewer = make_viewer_model()
+    PhasorTransform(viewer)
+    for dataset, widget_class in (
+        ("flimfast.flif", FlifWidget),
+        ("simfcs.b&h", BhWidget),
+        ("simfcs.bhz", BhWidget),
+        ("simfcs.r64", SimfcsWidget),
+        ("Fluorescein_Calibration_m2_1740751189_imaging.json", JsonWidget),
+    ):
+        n_layers = len(viewer.layers)
+        widget = widget_class(viewer, path=fetch(dataset))
+        widget.btn.click()
+        assert len(viewer.layers) > n_layers, dataset
+
+    # The last widget is the JSON one.
+    with patch.object(widget, "_update_signal_plot") as mock_update:
+        widget.channel_entry.setText("0")
+        widget.channel_entry.setText("1")
+        mock_update.assert_not_called()
+        widget.channel_entry.editingFinished.emit()
+        mock_update.assert_called_once()
 
 
 def test_signal_plot_lsm_widget(make_viewer_model, qtbot):
@@ -959,80 +1045,6 @@ def test_signal_plot_lsm_widget(make_viewer_model, qtbot):
 
     plot_y_data = lines[0].get_ydata()
     np.testing.assert_array_almost_equal(plot_y_data, signal_data)
-
-
-def test_signal_plot_error_handling(make_viewer_model, qtbot):
-    """Test signal plot error handling when data cannot be loaded."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file$EI0S.fbd")
-    widget = FbdWidget(viewer, path=test_file_path)
-
-    # Mock _get_signal_data to raise an exception
-    with (
-        patch.object(
-            widget, '_get_signal_data', side_effect=Exception("Test error")
-        ),
-        patch("napari_phasors._widget.show_error"),
-    ):
-        # Invalidate the preview cache so the failing decode is actually
-        # exercised (a cached signal from construction would otherwise be
-        # reused because the options are unchanged).
-        widget._preview_signal_cache_key = None
-        # Should not raise; the plot must end up with no data lines.
-        widget._update_signal_plot()
-        assert len(widget.ax.get_lines()) == 0
-
-
-def test_phasor_transform_with_ome_tif_reader_option(make_viewer_model, qtbot):
-    """Test PhasorTransform widget includes OmeTifWidget in reader options."""
-    viewer = make_viewer_model()
-    widget = PhasorTransform(viewer)
-
-    try:
-        # Verify OME-TIF reader option is included
-        assert ".ome.tif" in widget.reader_options
-
-        # Test with OME-TIF file
-        test_file_path = get_test_file_path("test_file.ome.tif")
-
-        with patch(
-            "napari_phasors._widget.QFileDialog.getOpenFileNames",
-            return_value=([test_file_path], ""),
-        ):
-            widget.search_button.click()
-
-            # Verify OmeTifWidget was added
-            assert widget.dynamic_widget_layout.count() == 1
-            added_widget = widget.dynamic_widget_layout.itemAt(0).widget()
-            assert isinstance(added_widget, OmeTifWidget)
-    finally:
-        widget.deleteLater()
-
-
-def test_signal_plot_canvas_properties(make_viewer_model, qtbot):
-    """Test signal plot canvas has correct properties."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file$EI0S.fbd")
-    widget = FbdWidget(viewer, path=test_file_path)
-
-    # Test canvas properties
-    assert widget.canvas.height() == 300
-    assert widget.figure.patch.get_alpha() == 0.0
-    assert widget.ax.get_facecolor() == (0.0, 0.0, 0.0, 0.0)
-
-    # Test spine colors are grey (matplotlib converts 'grey' to RGBA)
-    for spine in widget.ax.spines.values():
-        assert spine.get_edgecolor() == (
-            0.5019607843137255,
-            0.5019607843137255,
-            0.5019607843137255,
-            1.0,
-        )
-
-    # Test tick and label colors are grey (these return string values)
-    assert widget.ax.xaxis.label.get_color() == 'grey'
-    assert widget.ax.yaxis.label.get_color() == 'grey'
-    assert widget.ax.title.get_color() == 'grey'
 
 
 def test_signal_plot_data_consistency_across_widgets(make_viewer_model, qtbot):
@@ -1063,61 +1075,6 @@ def test_signal_plot_data_consistency_across_widgets(make_viewer_model, qtbot):
         assert isinstance(signal_array, np.ndarray)
         assert len(signal_array) > 0
         assert not np.isnan(signal_array).all()
-
-
-def test_phasor_transform_flif_widget(make_viewer_model, qtbot):
-    viewer = make_viewer_model()
-    file_path = fetch("flimfast.flif")
-    PhasorTransform(viewer)
-    from napari_phasors._widget import FlifWidget
-
-    widget = FlifWidget(viewer, path=file_path)
-    widget.btn.click()
-    assert len(viewer.layers) > 0
-
-
-def test_phasor_transform_bh_widget(make_viewer_model, qtbot):
-    viewer = make_viewer_model()
-    file_path = fetch("simfcs.b&h")
-    PhasorTransform(viewer)
-    from napari_phasors._widget import BhWidget
-
-    widget = BhWidget(viewer, path=file_path)
-    widget.btn.click()
-    assert len(viewer.layers) > 0
-
-
-def test_phasor_transform_bhz_widget(make_viewer_model, qtbot):
-    viewer = make_viewer_model()
-    file_path = fetch("simfcs.bhz")
-    PhasorTransform(viewer)
-    from napari_phasors._widget import BhWidget
-
-    widget = BhWidget(viewer, path=file_path)
-    widget.btn.click()
-    assert len(viewer.layers) > 0
-
-
-def test_phasor_transform_json_widget(make_viewer_model, qtbot):
-    viewer = make_viewer_model()
-    file_path = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
-    PhasorTransform(viewer)
-    from napari_phasors._widget import JsonWidget
-
-    widget = JsonWidget(viewer, path=file_path)
-    widget.btn.click()
-    assert len(viewer.layers) > 0
-
-
-def test_phasor_transform_simfcs_widget(make_viewer_model, qtbot):
-    viewer = make_viewer_model()
-    file_path = fetch("simfcs.r64")
-    PhasorTransform(viewer)
-    from napari_phasors._widget import SimfcsWidget
-
-    widget = SimfcsWidget(viewer, path=file_path)
-    widget.btn.click()
-    assert len(viewer.layers) > 0
 
 
 def test_writer_widget(make_viewer_model, qtbot, tmp_path):
@@ -1964,76 +1921,6 @@ def test_writer_widget_mask_checkbox(make_viewer_model, qtbot, tmp_path):
     widget.close()
 
 
-def test_advanced_options_widget_kwargs(make_viewer_model, qtbot):
-    """Test the dynamic kwargs functionality in AdvancedOptionsWidget."""
-    viewer = make_viewer_model()
-    widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
-
-    # Initially, kwargs_widgets should be empty
-    assert hasattr(widget, "kwargs_widgets")
-    assert len(widget.kwargs_widgets) == 0
-
-    # 1. Add a kwarg row
-    widget.add_kwarg_btn.click()
-    assert len(widget.kwargs_widgets) == 1
-
-    key_edit, val_edit, row_widget = widget.kwargs_widgets[0]
-    key_edit.setText("test_key")
-    val_edit.setText("123")
-
-    options = {}
-    widget._apply_kwargs(options)
-    assert options == {"test_key": 123}
-
-    # 2. Add another kwarg row with a list
-    widget.add_kwarg_btn.click()
-    assert len(widget.kwargs_widgets) == 2
-
-    key_edit2, val_edit2, row_widget2 = widget.kwargs_widgets[1]
-    key_edit2.setText("list_key")
-    val_edit2.setText("[1, 2, 'three']")
-
-    options = {}
-    widget._apply_kwargs(options)
-    assert options == {
-        "test_key": 123,
-        "list_key": [1, 2, "three"],
-    }
-
-    # 3. Add one more with string value that fails ast.literal_eval
-    widget.add_kwarg_btn.click()
-    key_edit3, val_edit3, row_widget3 = widget.kwargs_widgets[2]
-    key_edit3.setText("str_key")
-    val_edit3.setText("hello_world")
-
-    options = {}
-    widget._apply_kwargs(options)
-    assert options == {
-        "test_key": 123,
-        "list_key": [1, 2, "three"],
-        "str_key": "hello_world",
-    }
-
-    # 4. Remove a kwarg row (the first one)
-    layout = row_widget.layout()
-    del_btn = layout.itemAt(2).widget()
-    del_btn.click()
-
-    assert len(widget.kwargs_widgets) == 2
-    # Verify the remaining widgets are row_widget2 and row_widget3
-    assert widget.kwargs_widgets[0][2] == row_widget2
-    assert widget.kwargs_widgets[1][2] == row_widget3
-
-    options = {}
-    widget._apply_kwargs(options)
-    assert options == {
-        "list_key": [1, 2, "three"],
-        "str_key": "hello_world",
-    }
-
-    widget.close()
-
-
 def test_ifli_widget(make_viewer_model, qtbot):
     """Test IfliWidget UI initialization and kwargs integration."""
     from napari_phasors._widget import IfliWidget, ProcessedOnlyWidget
@@ -2150,82 +2037,28 @@ def test_czi_widget_get_signal_data_with_kwargs(make_viewer_model, qtbot):
     widget.close()
 
 
-def test_bh_widget_init(make_viewer_model, qtbot):
-    from unittest.mock import patch
-
-    from napari_phasors._widget import BhWidget
-
-    viewer = make_viewer_model()
-    with patch("napari_phasors._widget.BhWidget._update_signal_plot"):
-        widget = BhWidget(viewer, path="test.bh")
-    assert widget.path == "test.bh"
-    assert widget.reader_options == {}
-
-
-def test_pqbin_widget_init(make_viewer_model, qtbot):
-    from unittest.mock import patch
-
-    from napari_phasors._widget import PqbinWidget
+def test_reader_widgets_can_be_built_before_previewing(
+    make_viewer_model, qtbot
+):
+    """Every reader widget keeps the path it was built for."""
+    from napari_phasors import _widget as widget_module
 
     viewer = make_viewer_model()
-    with patch("napari_phasors._widget.PqbinWidget._update_signal_plot"):
-        widget = PqbinWidget(viewer, path="test.bin")
-    assert widget.path == "test.bin"
-
-
-def test_simfcs_widget_init(make_viewer_model, qtbot):
-    from unittest.mock import patch
-
-    from napari_phasors._widget import SimfcsWidget
-
-    viewer = make_viewer_model()
-    with patch("napari_phasors._widget.SimfcsWidget._update_signal_plot"):
-        widget = SimfcsWidget(viewer, path="test.r64")
-    assert widget.path == "test.r64"
-
-
-def test_ifli_widget_init(make_viewer_model, qtbot):
-    from unittest.mock import patch
-
-    from napari_phasors._widget import IfliWidget
-
-    viewer = make_viewer_model()
-    with patch("napari_phasors._widget.IfliWidget._update_signal_plot"):
-        widget = IfliWidget(viewer, path="test.ifli")
-    assert widget.path == "test.ifli"
-
-
-def test_flif_widget_init(make_viewer_model, qtbot):
-    from unittest.mock import patch
-
-    from napari_phasors._widget import FlifWidget
-
-    viewer = make_viewer_model()
-    with patch("napari_phasors._widget.FlifWidget._update_signal_plot"):
-        widget = FlifWidget(viewer, path="test.flif")
-    assert widget.path == "test.flif"
-
-
-def test_lif_widget_init(make_viewer_model, qtbot):
-    from unittest.mock import patch
-
-    from napari_phasors._widget import LifWidget
-
-    viewer = make_viewer_model()
-    with patch("napari_phasors._widget.LifWidget._update_signal_plot"):
-        widget = LifWidget(viewer, path="test.lif")
-    assert widget.path == "test.lif"
-
-
-def test_json_widget_init(make_viewer_model, qtbot):
-    from unittest.mock import patch
-
-    from napari_phasors._widget import JsonWidget
-
-    viewer = make_viewer_model()
-    with patch("napari_phasors._widget.JsonWidget._update_signal_plot"):
-        widget = JsonWidget(viewer, path="test.json")
-    assert widget.path == "test.json"
+    for class_name, path in (
+        ("BhWidget", "test.bh"),
+        ("PqbinWidget", "test.bin"),
+        ("SimfcsWidget", "test.r64"),
+        ("IfliWidget", "test.ifli"),
+        ("FlifWidget", "test.flif"),
+        ("LifWidget", "test.lif"),
+        ("JsonWidget", "test.json"),
+    ):
+        widget_class = getattr(widget_module, class_name)
+        with patch.object(widget_class, "_update_signal_plot"):
+            widget = widget_class(viewer, path=path)
+        assert widget.path == path, class_name
+        if class_name == "BhWidget":
+            assert widget.reader_options == {}
 
 
 def test_phasor_transform_open_multi_file_dialog_single_file(
@@ -2534,59 +2367,6 @@ def test_widget_pure_helpers(tmp_path):
     # --- _estimate_result_shape guards ---
     assert _estimate_result_shape([]) is None
     assert _estimate_result_shape(["nope.unsupported"]) is None
-
-
-def test_fbd_widget_stack_z_spacing_and_harmonic_edits(
-    make_viewer_model, qtbot
-):
-    """Piggyback on one FbdWidget build to cover stack z-spacing UI
-    lifecycle and harmonic line-edit clamping branches."""
-    viewer = make_viewer_model()
-    test_file_path = get_test_file_path("test_file$EI0S.fbd")
-    widget = FbdWidget(viewer, path=test_file_path)
-
-    # --- stack z-spacing editor: created in stack mode, removed otherwise ---
-    widget._multi_file_paths = ["a.fbd", "b.fbd"]
-    widget._sync_stack_z_spacing_widget_visibility()
-    assert widget._stack_z_spacing_layout is not None
-    assert widget._stack_z_spacing_edit is not None
-
-    # Valid, invalid and non-positive edits.
-    widget._stack_z_spacing_edit.setText("2.5")
-    widget._on_stack_z_spacing_changed()
-    assert widget._stack_z_spacing == 2.5
-    widget._stack_z_spacing_edit.setText("oops")
-    widget._on_stack_z_spacing_changed()
-    assert widget._stack_z_spacing == 1.0
-    widget._stack_z_spacing_edit.setText("-3")
-    widget._on_stack_z_spacing_changed()
-    assert widget._stack_z_spacing == 1.0
-
-    # Leaving stack mode tears the editor down.
-    widget._multi_file_paths = []
-    widget._sync_stack_z_spacing_widget_visibility()
-    assert widget._stack_z_spacing_layout is None
-
-    # --- harmonic line edits: clamping below 1, above max, start > end ---
-    if widget.harmonic_start_edit is not None:
-        widget.harmonic_start_edit.setText("0")
-        widget.harmonic_end_edit.setText("2")
-        widget._on_harmonic_edit_changed()
-        assert widget.harmonics[0] == 1
-
-        widget.harmonic_end_edit.setText(str(widget.max_harmonic + 10))
-        widget._on_harmonic_edit_changed()
-        assert widget.harmonics[-1] == widget.max_harmonic
-
-        widget.harmonic_start_edit.setText("5")
-        widget.harmonic_end_edit.setText("2")
-        widget._on_harmonic_edit_changed()
-        assert widget.harmonics[0] <= widget.harmonics[-1]
-
-        # Non-numeric input falls back to the slider values.
-        widget.harmonic_start_edit.setText("abc")
-        widget._on_harmonic_edit_changed()
-        assert len(widget.harmonics) >= 1
 
 
 # --------------------------------------------------------------------------
@@ -3275,41 +3055,6 @@ def test_ptu_preview_histogram_cache(make_viewer_model, qtbot):
     assert widget._preview_signal_dims()[1] == ("Y", "X", "C", "H")
 
 
-def test_fbd_preview_defaults_and_signature(make_viewer_model, qtbot):
-    """FBD sets reader defaults before previewing and tracks laser_factor."""
-    viewer = make_viewer_model()
-    widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
-
-    # Frame integration is applied before the first preview decode so the
-    # preview matches the final transform.
-    assert widget.reader_options["frame"] == -1
-    # Estimated shape derived without a second full decode + transform.
-    assert widget._estimate_base_output_shape() == (256, 256)
-
-    # laser_factor is part of the preview cache signature.
-    baseline = widget._preview_signature()
-    widget.laser_factor.setText("0.00022")
-    assert widget._preview_signature() != baseline
-    assert widget._extra_preview_signature()[:2] == (
-        "laser_factor",
-        "0.00022",
-    )
-
-
-def test_sdt_preview_signature(make_viewer_model, qtbot):
-    """SDT tracks the dataset index in the preview cache signature."""
-    viewer = make_viewer_model()
-    widget = SdtWidget(
-        viewer,
-        path=get_test_file_path("seminal_receptacle_FLIM_single_image.sdt"),
-    )
-
-    baseline = widget._preview_signature()
-    widget.index.setText("1")
-    assert widget._preview_signature() != baseline
-    assert widget._extra_preview_signature() == ("index", "1")
-
-
 def test_preview_shape_and_labels_without_dims(make_viewer_model, qtbot):
     """The axis selector derives labels for signals lacking dimension names."""
     viewer = make_viewer_model()
@@ -3928,94 +3673,6 @@ def test_tile_dialog_hands_czi_mosaic_positions_to_the_layout(
 
     assert captured["tile_shape"] == (8, 8)
     assert captured["tile_positions"] == positions
-
-
-def test_custom_import_single_layer_checkbox(
-    make_viewer_model, qtbot, monkeypatch
-):
-    """The custom import widget can stack all channels into one layer."""
-    viewer = make_viewer_model()
-    widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
-    assert widget.all_channels == 2
-
-    # Offered while every channel is imported...
-    assert widget.single_layer_checkbox is not None
-    assert widget.single_layer_checkbox.isChecked() is False
-    assert "single_layer" not in widget.reader_options
-    assert "(256, 256)" in widget.shape_preview_label.text()
-
-    errors = []
-    from napari_phasors import _widget as widget_module
-
-    monkeypatch.setattr(widget_module, "show_error", errors.append)
-
-    # ...and hidden as soon as a single channel is picked, since there is
-    # then nothing to stack.
-    widget.single_layer_checkbox.setChecked(True)
-    assert widget.reader_options["single_layer"] is True
-    assert errors == []
-    assert widget._get_signal_data() is not None
-    assert "(2, 256, 256)" in widget.shape_preview_label.text()
-    assert "(C, Y, X)" in widget.shape_preview_label.text()
-
-    widget.channels.setCurrentIndex(1)
-    assert widget.single_layer_checkbox.isHidden()
-    assert "single_layer" not in widget.reader_options
-    assert "(256, 256)" in widget.shape_preview_label.text()
-
-    widget.channels.setCurrentIndex(0)
-    assert widget.reader_options["single_layer"] is True
-    assert "(2, 256, 256)" in widget.shape_preview_label.text()
-
-    widget.btn.click()
-    assert errors == []
-    assert len(viewer.layers) == 1
-    layer = viewer.layers[0]
-    assert layer.name == "test_file$EI0S Intensity [Phasor]"
-    assert layer.data.shape == (2, 256, 256)
-    assert list(layer.metadata["channel_labels"]) == [0, 1]
-    assert layer.metadata["G"].shape == (2, 2, 256, 256)
-
-
-def test_custom_import_single_layer_checkbox_absent_for_one_channel(
-    make_viewer_model, qtbot, caplog
-):
-    """A single-channel file has nothing to stack, so no checkbox."""
-    viewer = make_viewer_model()
-    caplog.set_level(logging.ERROR, logger="ptufile")
-    widget = PtuWidget(viewer, path=get_test_file_path("test_file.ptu"))
-    assert widget.all_channels == 1
-    assert widget.single_layer_checkbox is None
-    assert "single_layer" not in widget.reader_options
-
-
-def test_custom_import_single_layer_checkbox_rebuilt(make_viewer_model, qtbot):
-    """Rebuilding the channels row replaces the checkbox instead of stacking."""
-    viewer = make_viewer_model()
-    widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
-    first = widget.single_layer_checkbox
-    first.setChecked(True)
-
-    widget._update_channels_widget()
-
-    assert widget.single_layer_checkbox is not first
-    assert widget.single_layer_checkbox.isChecked() is False
-    # The old checkbox is detached, the new one is in the row.
-    assert first.parent() is None
-    assert widget.channels_layout.indexOf(widget.single_layer_checkbox) >= 0
-    assert "single_layer" not in widget.reader_options
-
-
-def test_custom_import_single_layer_update_without_checkbox(
-    make_viewer_model, qtbot, caplog
-):
-    """The visibility update is a no-op when there is no checkbox."""
-    viewer = make_viewer_model()
-    caplog.set_level(logging.ERROR, logger="ptufile")
-    widget = PtuWidget(viewer, path=get_test_file_path("test_file.ptu"))
-    assert widget.single_layer_checkbox is None
-    widget._update_single_layer_checkbox()
-    assert "single_layer" not in widget.reader_options
 
 
 def _h5_product(label, path, shape, axes, default=False):

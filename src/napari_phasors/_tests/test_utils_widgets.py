@@ -2,6 +2,7 @@ import csv
 import sys
 import types
 from dataclasses import replace
+from unittest.mock import patch
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -70,6 +71,20 @@ def test_histogram_widget_update_data_and_clear(qtbot):
     assert widget._raw_valid_data is None
     assert not widget._settings_button.isEnabled()
     assert not widget.save_button.isEnabled()
+    assert not widget.ax.patches
+
+    # Clearing an already blank histogram (every tab resets its histogram
+    # when a layer is loaded) skips ax.clear(), but still restyles it.
+    with patch.object(widget.ax, "clear", wraps=widget.ax.clear) as ax_clear:
+        widget.xlabel = "Lifetime (ns)"
+        widget.clear()
+        ax_clear.assert_not_called()
+        assert widget.ax.get_xlabel() == "Lifetime (ns)"
+        widget.update_data(data)
+        ax_clear.reset_mock()
+        widget.clear()
+        ax_clear.assert_called_once()
+    assert not widget.ax.patches
 
 
 def test_histogram_empty_updates_reset_previous_data(qtbot):

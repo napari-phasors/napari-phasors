@@ -263,6 +263,10 @@ class LayerSettingsStore:
     layer and disappear with a deleted one. A draft replaces the whole
     top-level settings value it is stored under.
 
+    Stored values are always read from ``layer.metadata['settings']``, so
+    edits made there directly are seen at once; only a draft of the same
+    key takes precedence, until it is committed or discarded.
+
     Parameters
     ----------
     on_change : callable, optional

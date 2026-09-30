@@ -62,128 +62,92 @@ PREPARE = {
 }
 
 
-@pytest.mark.parametrize("tab_name", AUTOUPDATE_TABS)
-def test_tab_exposes_an_autoupdate_toggle(make_viewer_model, tab_name):
+def test_every_tab_exposes_an_autoupdate_toggle(make_viewer_model):
     """Each analysis tab owns an Autoupdate switch, off by default."""
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
-    tab = getattr(plotter, tab_name)
-
-    assert tab.autoupdate_check.text() == "Autoupdate"
-    assert not tab.autoupdate_check.isChecked()
-    assert not tab.autoupdate_enabled()
-    assert tab.autoupdate_check.toolTip()
-    # The toggle sits in the tab's own layout, under the primary button.
-    assert tab.autoupdate_container.parent() is not None
+    for tab_name in AUTOUPDATE_TABS:
+        tab = getattr(plotter, tab_name)
+        assert tab.autoupdate_check.text() == "Autoupdate"
+        assert not tab.autoupdate_check.isChecked()
+        assert not tab.autoupdate_enabled()
+        assert tab.autoupdate_check.toolTip()
+        # The toggle sits in the tab's own layout, under the primary button.
+        assert tab.autoupdate_container.parent() is not None
 
 
 @pytest.mark.parametrize("tab_name", AUTOUPDATE_TABS)
-def test_toggle_disables_the_primary_button(make_viewer_model, tab_name):
-    """The manual Run button steps aside while autoupdate is on."""
+def test_autoupdate_reacts_to_external_changes(make_viewer_model, tab_name):
+    """With the toggle on, a tab with complete inputs re-runs when the
+    Filter or Calibration tab rewrites the phasor data or the harmonic
+    changes; with it off, or with incomplete inputs, it does not."""
     viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = PREPARE[tab_name](plotter)
-    button = tab._autoupdate_run_button
+    plotter, sample = _plotter_with_layer(viewer)
+    tab = getattr(plotter, tab_name)
 
+    def apply_filter():
+        plotter.filter_tab.threshold_slider.setValue((5, 90))
+        plotter.filter_tab.apply_button_clicked()
+
+    # A tab with missing required inputs never runs on its own.
+    tab.autoupdate_check.setChecked(True)
+    assert tab._autoupdate_validator() is not None
+    with patch.object(tab, "_autoupdate_action") as action:
+        plotter.filter_tab.apply_button_clicked()
+    action.assert_not_called()
+    tab.autoupdate_check.setChecked(False)
+
+    # The manual Run button steps aside while autoupdate is on.
+    PREPARE[tab_name](plotter)
+    button = tab._autoupdate_run_button
     assert button.isEnabled()
     tab.autoupdate_check.setChecked(True)
     assert not button.isEnabled()
     tab.autoupdate_check.setChecked(False)
     assert button.isEnabled()
 
-
-@pytest.mark.parametrize("tab_name", AUTOUPDATE_TABS)
-def test_filter_change_triggers_an_autoupdate(make_viewer_model, tab_name):
-    """Applying a threshold in the Filter tab re-runs the analysis."""
-    viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = PREPARE[tab_name](plotter)
-    tab.autoupdate_check.setChecked(True)
-
+    # A filter change is ignored while autoupdate is off...
     with patch.object(tab, "_autoupdate_action") as action:
-        plotter.filter_tab.threshold_slider.setValue((5, 90))
-        plotter.filter_tab.apply_button_clicked()
-
-    action.assert_called()
-
-
-@pytest.mark.parametrize("tab_name", AUTOUPDATE_TABS)
-def test_no_autoupdate_while_the_toggle_is_off(make_viewer_model, tab_name):
-    """The same filter change is ignored while autoupdate is off."""
-    viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = PREPARE[tab_name](plotter)
-
-    with patch.object(tab, "_autoupdate_action") as action:
-        plotter.filter_tab.threshold_slider.setValue((5, 90))
-        plotter.filter_tab.apply_button_clicked()
-
+        apply_filter()
     action.assert_not_called()
 
+    # ...and re-runs the analysis while it is on.
+    tab.autoupdate_check.setChecked(True)
+    with patch.object(tab, "_autoupdate_action") as action:
+        apply_filter()
+    action.assert_called()
 
-@pytest.mark.parametrize("tab_name", AUTOUPDATE_TABS)
-def test_calibration_triggers_an_autoupdate(make_viewer_model, tab_name):
-    """A calibration rewrites G/S, so the analysis is recomputed."""
-    viewer = make_viewer_model()
-    plotter, sample = _plotter_with_layer(viewer)
+    # A new harmonic moves the phasor coordinates the analysis uses. Whether
+    # the tab then *runs* depends on its own inputs still being valid for
+    # that harmonic, so what is asserted here is the request.
+    with patch.object(tab, "request_autoupdate") as request:
+        plotter.harmonic_spinbox.setValue(2)
+    request.assert_called()
+
+    # Restoring a layer's stored harmonic is not a user-driven change.
+    plotter._updating_settings = True
+    try:
+        with patch.object(tab, "request_autoupdate") as request:
+            plotter.harmonic_spinbox.setValue(1)
+    finally:
+        plotter._updating_settings = False
+    request.assert_not_called()
+
+    # A calibration rewrites G/S, so the analysis is recomputed.
     calibration = create_image_layer_with_phasors()
     calibration.name = "calibration"
     viewer.add_layer(calibration)
-
-    tab = PREPARE[tab_name](plotter)
-    tab.autoupdate_check.setChecked(True)
-
+    PREPARE[tab_name](plotter)
     calibration_tab = plotter.calibration_tab
     calibration_tab.calibration_widget.frequency_input.setText("80")
     calibration_tab.calibration_widget.lifetime_line_edit_widget.setText("2")
     calibration_tab.calibration_widget.calibration_layer_combobox.setCurrentText(
         calibration.name
     )
-
     with patch.object(tab, "_autoupdate_action") as action:
         calibration_tab._on_click()
-
     assert "G_original" in sample.metadata
     action.assert_called()
-
-
-@pytest.mark.parametrize("tab_name", AUTOUPDATE_TABS)
-def test_harmonic_change_requests_an_autoupdate(make_viewer_model, tab_name):
-    """A new harmonic moves the phasor coordinates the analysis uses.
-
-    Whether the tab then *runs* depends on its own inputs still being valid
-    for that harmonic (the components tab, for instance, keeps a separate set
-    of components per harmonic), so what is asserted here is the request.
-    """
-    viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = PREPARE[tab_name](plotter)
-    tab.autoupdate_check.setChecked(True)
-
-    with patch.object(tab, "request_autoupdate") as request:
-        plotter.harmonic_spinbox.setValue(2)
-
-    request.assert_called()
-
-
-@pytest.mark.parametrize("tab_name", AUTOUPDATE_TABS)
-def test_no_harmonic_autoupdate_while_restoring_settings(
-    make_viewer_model, tab_name
-):
-    """Restoring a layer's stored harmonic is not a user-driven change."""
-    viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = PREPARE[tab_name](plotter)
-    tab.autoupdate_check.setChecked(True)
-
-    plotter._updating_settings = True
-    try:
-        with patch.object(tab, "request_autoupdate") as request:
-            plotter.harmonic_spinbox.setValue(2)
-    finally:
-        plotter._updating_settings = False
-
-    request.assert_not_called()
 
 
 def test_request_analysis_autoupdates_reports_the_tabs_that_ran(
@@ -259,14 +223,17 @@ def test_deferred_tab_updates_when_it_is_brought_forward(make_viewer_model):
     assert not fret._needs_update
 
 
-def test_components_autoupdate_follows_the_component_inputs(
-    make_viewer_model,
-):
-    """Editing, adding, removing or dragging components re-runs the fit."""
+def test_components_autoupdate_follows_its_own_inputs(make_viewer_model):
+    """Editing, adding, removing or dragging components, and switching
+    between projection and fit, re-run the analysis."""
     viewer = make_viewer_model()
     plotter, _ = _plotter_with_layer(viewer)
     tab = _prepare_components(plotter)
     tab.autoupdate_check.setChecked(True)
+
+    with patch.object(tab, "_autoupdate_action") as action:
+        tab._on_analysis_type_changed("Linear Projection")
+    action.assert_called()
 
     with patch.object(tab, "_autoupdate_action") as action:
         tab.components[1].g_edit.setText("0.55")
@@ -301,24 +268,30 @@ def test_components_autoupdate_follows_the_component_inputs(
     action.assert_called()
 
 
-def test_components_autoupdate_follows_the_analysis_type(make_viewer_model):
-    """Switching between projection and fit recomputes the result."""
-    viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = _prepare_components(plotter)
-    tab.autoupdate_check.setChecked(True)
-
-    with patch.object(tab, "_autoupdate_action") as action:
-        tab._on_analysis_type_changed("Linear Projection")
-    action.assert_called()
-
-
 def test_mapping_autoupdate_follows_its_own_inputs(make_viewer_model):
-    """The output type and the committed frequency drive the recalculation."""
+    """The output type and the committed frequency drive the recalculation,
+    which is silent and absorbs the tab's own debounced refresh."""
     viewer = make_viewer_model()
     plotter, _ = _plotter_with_layer(viewer)
     tab = _prepare_mapping(plotter)
+
+    # An automatic run is silent; only a click may raise a warning.
+    with patch.object(tab, "_calculate_and_display_output") as calculate:
+        calculate.return_value = True
+        tab._autoupdate_calculate_output()
+    calculate.assert_called_once_with(show_warnings=False)
+    assert tab._has_calculated_output
+    with patch.object(tab, "_calculate_and_display_output") as calculate:
+        calculate.return_value = True
+        tab._on_calculate_lifetime_clicked()
+    calculate.assert_called_once_with(show_warnings=True)
+
     tab.autoupdate_check.setChecked(True)
+
+    # The tab's own refresh timer is dropped when autoupdate just ran.
+    tab._output_refresh_timer.start()
+    tab._autoupdate_calculate_output()
+    assert not tab._output_refresh_timer.isActive()
 
     with patch.object(tab, "_autoupdate_action") as action:
         tab.output_mode_combobox.setCurrentText("Modulation")
@@ -340,38 +313,9 @@ def test_mapping_autoupdate_follows_its_own_inputs(make_viewer_model):
     action.assert_called()
 
 
-def test_mapping_autoupdate_absorbs_the_debounced_refresh(make_viewer_model):
-    """The tab's own refresh timer is dropped when autoupdate just ran."""
-    viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = _prepare_mapping(plotter)
-    tab.autoupdate_check.setChecked(True)
-
-    tab._output_refresh_timer.start()
-    tab._autoupdate_calculate_output()
-    assert not tab._output_refresh_timer.isActive()
-
-
-def test_mapping_autoupdate_does_not_pop_warnings(make_viewer_model):
-    """An automatic run is silent; only a click may raise a warning."""
-    viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = _prepare_mapping(plotter)
-
-    with patch.object(tab, "_calculate_and_display_output") as calculate:
-        calculate.return_value = True
-        tab._autoupdate_calculate_output()
-    calculate.assert_called_once_with(show_warnings=False)
-    assert tab._has_calculated_output
-
-    with patch.object(tab, "_calculate_and_display_output") as calculate:
-        calculate.return_value = True
-        tab._on_calculate_lifetime_clicked()
-    calculate.assert_called_once_with(show_warnings=True)
-
-
 def test_fret_autoupdate_follows_its_own_inputs(make_viewer_model):
-    """Committed donor/frequency values and released sliders trigger a run."""
+    """Committed donor/frequency values, released sliders and layer-derived
+    sources trigger a run."""
     viewer = make_viewer_model()
     plotter, _ = _plotter_with_layer(viewer)
     tab = _prepare_fret(plotter)
@@ -404,14 +348,7 @@ def test_fret_autoupdate_follows_its_own_inputs(make_viewer_model):
         tab.background_slider.sliderReleased.emit()
     action.assert_called_once()
 
-
-def test_fret_autoupdate_follows_the_layer_derived_sources(make_viewer_model):
-    """Deriving donor/background from layers fills fields programmatically."""
-    viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = _prepare_fret(plotter)
-    tab.autoupdate_check.setChecked(True)
-
+    # Deriving donor/background from layers fills fields programmatically.
     with patch.object(tab, "_autoupdate_action") as action:
         tab.donor_lifetime_combobox.selectionChanged.emit()
     action.assert_called()
@@ -419,18 +356,3 @@ def test_fret_autoupdate_follows_the_layer_derived_sources(make_viewer_model):
     with patch.object(tab, "_autoupdate_action") as action:
         tab.background_image_combobox.selectionChanged.emit()
     action.assert_called()
-
-
-@pytest.mark.parametrize("tab_name", AUTOUPDATE_TABS)
-def test_incomplete_inputs_block_the_autoupdate(make_viewer_model, tab_name):
-    """A tab with missing required inputs never runs on its own."""
-    viewer = make_viewer_model()
-    plotter, _ = _plotter_with_layer(viewer)
-    tab = getattr(plotter, tab_name)
-
-    tab.autoupdate_check.setChecked(True)
-    assert tab._autoupdate_validator() is not None
-
-    with patch.object(tab, "_autoupdate_action") as action:
-        plotter.filter_tab.apply_button_clicked()
-    action.assert_not_called()
