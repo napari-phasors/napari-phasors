@@ -217,6 +217,8 @@ class MaskAssignmentDialog(QDialog):
         self.setWindowTitle("Assign Mask Layers")
         self.setMinimumWidth(560)
 
+        self._user_resized = False
+
         if current_assignments is None:
             current_assignments = {}
         if current_invert_assignments is None:
@@ -260,6 +262,8 @@ class MaskAssignmentDialog(QDialog):
         form_widget = QWidget()
         form_layout = QFormLayout(form_widget)
         form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self._scroll = scroll
+        self._form_widget = form_widget
 
         self._combos = {}  # image_layer_name -> QComboBox
         self._invert_checks = {}  # image_layer_name -> QCheckBox
@@ -353,6 +357,7 @@ class MaskAssignmentDialog(QDialog):
                     container.setVisible(False)
                     lc.setVisible(False)
                 self._sync_invert_all_check()
+                self._fit_width_to_content()
 
             combo.currentTextChanged.connect(_on_mask_changed)
             combo.currentTextChanged.connect(self._sync_apply_all_combo)
@@ -399,6 +404,54 @@ class MaskAssignmentDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _fit_width_to_content(self):
+        """Widen the dialog so every row is fully visible.
+
+        The width is capped at the available screen width. It is skipped
+        once the user has resized the dialog by hand.
+        """
+        if self._user_resized or not self.isVisible():
+            return
+        self._form_widget.layout().activate()
+        margins = self.layout().contentsMargins()
+        extra = (
+            self._scroll.frameWidth() * 2
+            + self._scroll.verticalScrollBar().sizeHint().width()
+            + margins.left()
+            + margins.right()
+        )
+        wanted = max(
+            self.minimumWidth(), self._form_widget.sizeHint().width() + extra
+        )
+        screen = self.screen()
+        if screen is not None:
+            frame = self.frameGeometry().width() - self.width()
+            wanted = min(wanted, screen.availableGeometry().width() - frame)
+        if wanted != self.width():
+            self.resize(wanted, self.height())
+            screen = self.screen()
+            if screen is not None:
+                geo = self.frameGeometry()
+                avail = screen.availableGeometry()
+                if geo.right() > avail.right() or geo.left() < avail.left():
+                    geo.moveLeft(
+                        max(avail.left(), avail.right() - geo.width())
+                    )
+                    self.move(geo.topLeft())
+
+    def showEvent(self, event):
+        """Fit the width to the content when first shown."""
+        super().showEvent(event)
+        self._fit_width_to_content()
+        # Combo boxes settle on their final size once shown; fit again.
+        QTimer.singleShot(0, self._fit_width_to_content)
+
+    def resizeEvent(self, event):
+        """Stop auto-fitting once the window system resizes the dialog."""
+        super().resizeEvent(event)
+        if event.spontaneous():
+            self._user_resized = True
 
     def _on_auto_assign(self):
         """Pair each image layer with the best matching mask layer by name.
