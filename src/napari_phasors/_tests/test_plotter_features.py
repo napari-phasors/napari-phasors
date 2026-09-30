@@ -466,31 +466,8 @@ def test_docked_plotter_layout(make_napari_viewer, qtbot):
     assert plotter.maximumHeight() == PlotterWidget._NO_HEIGHT_LIMIT
     plotter._analysis_dock.show()
 
-    # The bar you drag the panel by must not cover the toolbar icons:
-    # napari's QtCustomTitleBar reports a hard-coded 20 px size hint while
-    # laying itself out taller, and QDockWidget puts the content at the
-    # hinted height.
-    qt_window.resize(1200, 900)
-    # The overlap can only be measured once Qt has laid the dock out.
-    qt_window.show()
-    plotter._reserve_title_bar_overlap()
-    qt_window.layout().activate()
-    title_bar = dock.titleBarWidget()
-    assert title_bar is not None
-
-    def _bottom(widget):
-        return widget.mapTo(qt_window, widget.rect().bottomLeft()).y() + 1
-
-    def _top(widget):
-        return widget.mapTo(qt_window, widget.rect().topLeft()).y()
-
-    qtbot.waitUntil(
-        lambda: _top(plotter.canvas_widget.toolbar) >= _bottom(title_bar)
-    )
-
-    # Laid out in a shown window, a plot entitled to more height than its
-    # dock has takes it from the analysis tabs below. The re-split itself is
-    # mocked: really resizing docks in a shown window crashed Windows CI.
+    # A plot entitled to more height than its dock has takes it from the
+    # analysis tabs below.
     plotter_dock = plotter._find_plotter_dock()
     wanted_height = plotter_dock.height() + 100
     with (
@@ -562,6 +539,45 @@ def test_docked_plotter_layout(make_napari_viewer, qtbot):
     assert plotter._analysis_dock is None
     assert plotter._histogram_dock is None
     assert plotter._statistics_dock is None
+
+
+def test_toolbar_clears_the_dock_title_bar(make_napari_viewer, qtbot):
+    """The bar you drag the panel by must not cover the toolbar icons.
+
+    napari's ``QtCustomTitleBar`` reports a hard-coded 20 px size hint while
+    laying itself out taller, and ``QDockWidget`` puts the content at the
+    hinted height.
+
+    Kept apart from ``test_docked_plotter_layout`` on purpose: this is the
+    only test that shows the napari window, and it must do nothing else with
+    it. Adding the analysis docks and a layer, then floating and closing the
+    plotter dock in a shown window made Windows CI crash with an access
+    violation while napari tore the window down.
+    """
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    dock = viewer.window.add_dock_widget(
+        plotter, name="Phasor Plot", area="right"
+    )
+    qt_window = viewer.window._qt_window
+    qt_window.resize(1200, 900)
+    # The overlap can only be measured once Qt has laid the dock out.
+    qt_window.show()
+    plotter._reserve_title_bar_overlap()
+    qt_window.layout().activate()
+    title_bar = dock.titleBarWidget()
+    assert title_bar is not None
+
+    def _bottom(widget):
+        return widget.mapTo(qt_window, widget.rect().bottomLeft()).y() + 1
+
+    def _top(widget):
+        return widget.mapTo(qt_window, widget.rect().topLeft()).y()
+
+    qtbot.waitUntil(
+        lambda: _top(plotter.canvas_widget.toolbar) >= _bottom(title_bar)
+    )
 
 
 def _table_rows_by_name(table):
