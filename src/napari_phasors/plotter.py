@@ -3512,6 +3512,7 @@ class PlotterWidget(QWidget):
                         image_layer.metadata['mask'],
                         name=matching_mask_layer_name,
                         scale=image_layer.scale,
+                        units=image_layer.units,
                     )
                 self.mask_layer_combobox.setCurrentText(
                     matching_mask_layer_name
@@ -8321,6 +8322,7 @@ class PlotterWidget(QWidget):
             np.asarray(mask_data).copy(),
             name=name,
             scale=reference_layer.scale,
+            units=reference_layer.units,
         )
         return name
 

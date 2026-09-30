@@ -6335,6 +6335,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             data,
             name=name,
             scale=source.scale,
+            units=source.units,
             colormap=colormap,
             metadata={
                 COMPONENT_LABELS_TAG: {
@@ -6652,6 +6653,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             fraction_comp1,
             name=comp1_fractions_layer_name,
             scale=layer.scale,
+            units=layer.units,
             colormap=comp1_colormap,
             contrast_limits=contrast_limits,
         )
@@ -7159,6 +7161,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     fraction,
                     name=fraction_layer_name,
                     scale=layer.scale,
+                    units=layer.units,
                     colormap=colormap,
                 )
                 new_layer.metadata['fraction_data_original'] = fraction.copy()

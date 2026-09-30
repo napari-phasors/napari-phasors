@@ -2914,6 +2914,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
                     fret_efficiency,
                     name=fret_layer_name,
                     scale=layer.scale,
+                    units=layer.units,
                     colormap=display_colormap,
                     contrast_limits=display_contrast_limits,
                 )
@@ -2921,6 +2922,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
             else:
                 fret_layer.data = fret_efficiency
                 fret_layer.scale = layer.scale
+                fret_layer.units = layer.units
                 fret_layer.colormap = display_colormap
                 fret_layer.contrast_limits = display_contrast_limits
             if display_gamma is not None:
