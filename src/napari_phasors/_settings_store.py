@@ -98,18 +98,7 @@ ANALYSIS_SETTINGS_KEYS = {
     "selection_tab": ["selections"],
 }
 
-#: Human-readable name of each analysis, used in the overwrite notes.
-ANALYSIS_LABELS = {
-    "settings_tab": "plot settings",
-    "calibration_tab": "Calibration",
-    "filter_tab": "Filter",
-    "phasor_mapping_tab": "Phasor Mapping",
-    "fret_tab": "FRET",
-    "components_tab": "Components",
-    "selection_tab": "Selection",
-}
-
-#: How many layer names an overwrite note lists before summarising.
+#: How many layer names a note lists before summarising.
 _MAX_NAMED_LAYERS = 4
 
 
@@ -271,7 +260,7 @@ class LayerSettingsStore:
     ----------
     on_change : callable, optional
         Called without arguments after drafts or committed settings change,
-        e.g. to refresh the overwrite notes.
+        e.g. to refresh the notes about the layers' frequencies.
     """
 
     def __init__(self, on_change: Callable | None = None):
@@ -448,33 +437,6 @@ class LayerSettingsStore:
                 _set_path(draft, path, copy.deepcopy(value))
                 self._drop_if_unchanged(layer, key)
         self._notify()
-
-    def overwritten_layers(self, layers, keys, values, merge=None):
-        """Return the layers whose stored *keys* a commit would change.
-
-        *values* holds the values that would be committed; a key missing
-        from it means they are unknown (the tab shows unsaved defaults), in
-        which case any stored value counts as overwritten. Layers that have
-        none of *keys* stored lose nothing and are never returned.
-        """
-        merge = merge or {}
-        result = []
-        for layer in layers:
-            stored = self.committed(layer)
-            for key in keys:
-                if key not in stored or stored[key] in (None, {}, []):
-                    continue
-                if key not in values:
-                    result.append(layer)
-                    break
-                new_value = values[key]
-                rule = merge.get(key)
-                if rule is not None:
-                    new_value = rule(stored[key], copy.deepcopy(new_value))
-                if not settings_equal(stored[key], new_value):
-                    result.append(layer)
-                    break
-        return result
 
     def notify(self):
         """Tell the owner that drafts changed after an in-place edit."""

@@ -84,13 +84,11 @@ from ._utils import (
     analysis_layer_name,
     analysis_section_stylesheet,
     component_analysis_label,
-    create_settings_note_label,
     is_component_fit_label,
     make_section,
     parse_component_analysis_label,
     phasor_layer_base_name,
     required_component_harmonics,
-    set_settings_note,
     setup_primary_button,
     split_analysis_layer_name,
 )
@@ -810,10 +808,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         # Select the first component by default
         self._select_component_item(0)
-
-        # Caution shown when a run would replace other layers' settings.
-        self._settings_note = create_settings_note_label(self)
-        layout.addWidget(self._settings_note)
 
         # Calculate button (validated: greyed out until components are set)
         self.calculate_button = QPushButton("Run Component Analysis")
@@ -1866,28 +1860,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             return merged
 
         return merge
-
-    def _refresh_settings_note(self):
-        """Warn when a run would replace other selected layers' settings."""
-        note = getattr(self, '_settings_note', None)
-        if note is None or self._settings_store() is None:
-            return
-        if getattr(self, '_needs_update', False):
-            # The controls still show another layer; refreshed on restore.
-            return
-        block = self._read_component_settings(
-            self.parent_widget.get_primary_layer()
-        )
-        harmonic = getattr(self.parent_widget, 'harmonic', 1)
-        message = self.parent_widget.settings_overwrite_message(
-            'components_tab',
-            values={} if block is None else {'component_analysis': block},
-            merge={
-                'component_analysis': self._components_merge_rule([harmonic])
-            },
-            action="Running the analysis",
-        )
-        set_settings_note(note, [message])
 
     def _update_components_setting_in_metadata(self, key_path, value):
         """Keep an edited component setting as the primary's unsaved one."""
@@ -5192,8 +5164,6 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                             comp.lifetime_edit.clear()
             finally:
                 self._updating_settings = False
-
-        self._refresh_settings_note()
 
     def _ensure_component_metadata(self, idx: int, harmonic: int = None):
         """Ensure component metadata structure exists and return component data dict."""

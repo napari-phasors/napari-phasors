@@ -1033,6 +1033,50 @@ def test_copy_mask_from_layer_shapes_mask_different_image_sizes(
     plotter.deleteLater()
 
 
+def test_copy_masking_to_several_layers_keeps_invert(make_viewer_model):
+    """Copying an inverted mask onto several layers keeps the invert flag.
+
+    Regression: restoring the plot settings re-applied the primary layer's
+    mask to every selected layer with the (unsynced) invert checkbox,
+    silently turning the invert off.
+    """
+
+    def _layer(name):
+        raw = make_raw_flim_data(
+            time_constants=[0.1, 1, 2, 3, 4, 5, 10], shape=(10, 10)
+        )
+        layer = make_intensity_layer_with_phasors(raw, harmonic=[1, 2, 3])
+        layer.name = name
+        return layer
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    source, first, second = _layer("SRC"), _layer("T1"), _layer("T2")
+    for layer in (source, first, second):
+        viewer.add_layer(layer)
+    mask = np.zeros((10, 10), dtype=int)
+    mask[:, :5] = 1
+    viewer.add_labels(mask, name="mask")
+
+    combobox = plotter.image_layers_checkable_combobox
+    combobox.setCheckedItems(["SRC"])
+    plotter.mask_layer_combobox.setCurrentText("mask")
+    plotter.mask_invert_checkbox.setChecked(True)
+    source_nan = np.isnan(source.metadata["G"])
+
+    combobox.setCheckedItems(["T1", "T2"])
+    plotter._copy_metadata_from_layer("SRC", selected_tabs=["masking"])
+
+    for target in (first, second):
+        assert target.metadata["mask_invert"] is True
+        assert plotter._mask_invert_assignments[target.name] is True
+        np.testing.assert_array_equal(
+            np.isnan(target.metadata["G"]), source_nan
+        )
+
+    plotter.deleteLater()
+
+
 # -- Coverage gaps: masking toggle in the import dialog --------------------
 
 

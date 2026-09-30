@@ -440,7 +440,7 @@ _PRIMARY_BUTTON_BLOCKED_QSS = (
 )
 
 
-#: Text colour of the notes warning that a run replaces stored settings.
+#: Text colour of the notes cautioning about the layers' settings.
 SETTINGS_NOTE_COLOR = "#e67e22"
 
 
@@ -448,8 +448,8 @@ def create_settings_note_label(parent=None):
     """Return a hidden, word-wrapped label for settings cautions.
 
     Tabs place it next to their run button and fill it through
-    :func:`set_settings_note`, e.g. with "running will overwrite the
-    parameters stored in ..." when several layers are selected.
+    :func:`set_settings_note`, e.g. with the frequencies stored in the other
+    selected layers.
     """
     label = QLabel(parent)
     label.setObjectName("settings_note")
