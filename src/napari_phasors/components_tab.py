@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -21,7 +22,11 @@ from napari.utils.colormaps import (
     ensure_colormap,
 )
 from napari.utils.notifications import show_error, show_info, show_warning
-from phasorpy.component import phasor_component_fit, phasor_component_fraction
+from phasorpy.component import (
+    phasor_component_concentration,
+    phasor_component_fit,
+    phasor_component_fraction,
+)
 from phasorpy.lifetime import (
     phasor_from_lifetime,
     phasor_semicircle_intersect,
@@ -38,6 +43,7 @@ from qtpy.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -74,7 +80,7 @@ from ._mapping_filters import (
     set_filters,
 )
 from ._parallel import parallel_map, parallel_rowwise
-from ._settings_store import replace_keyed_entries
+from ._settings_store import replace_keyed_entries, settings_equal
 from ._timelapse import slice_datasets
 from ._utils import (
     BUILTIN_COLORMAP_NAMES,
@@ -84,9 +90,11 @@ from ._utils import (
     analysis_layer_name,
     analysis_section_stylesheet,
     component_analysis_label,
+    concentration_analysis_label,
     is_component_fit_label,
     make_section,
     parse_component_analysis_label,
+    parse_concentration_analysis_label,
     phasor_layer_base_name,
     required_component_harmonics,
     setup_primary_button,
@@ -157,6 +165,20 @@ COMPONENT_COLOR_TOOLTIP = (
     "colour of the pixels it paints in a labels layer.\n"
     "Click to choose another one."
 )
+
+#: Analysis method turning a two-component mixture into absolute
+#: concentrations, calibrated on a solution of one of the components.
+ABSOLUTE_CONCENTRATION = "Absolute Concentration"
+#: Series name (and layer name prefix) of the summed concentration of both
+#: components.
+TOTAL_CONCENTRATION = "Total"
+#: Units offered for a reference concentration; any other text can be typed.
+CONCENTRATION_UNITS = ("mM", "µM", "nM", "M")
+#: Reference-solution entry meaning its intensity and phasor are typed in.
+MANUAL_REFERENCE = "Manual values"
+#: Default colormap of the total-concentration layers; each component's
+#: concentration uses that component's own colormap.
+TOTAL_CONCENTRATION_COLORMAP = "viridis"
 
 
 def _as_hex(color):
@@ -337,6 +359,139 @@ def _fit_components(mean, real, imag, component_g, component_s):
         real,
         imag,
     )
+
+
+def _finite_or_nan(values):
+    """Return *values* with every non-finite entry replaced by NaN, in place.
+
+    The model divides by the distance between the calibrated component and
+    a point derived from each pixel, which vanishes for some phasors. An
+    infinite concentration is not a measurement, and it would also stretch
+    every display range to nothing.
+    """
+    values = np.asarray(values, dtype=float)
+    values[~np.isfinite(values)] = np.nan
+    return values
+
+
+def component_concentrations(
+    mean,
+    real,
+    imag,
+    component_real,
+    component_imag,
+    reference,
+    reference_concentration,
+    brightness_ratio=None,
+):
+    """Return absolute concentrations of a two-component mixture per pixel.
+
+    Wraps :func:`phasorpy.component.phasor_component_concentration`: the
+    first component is the calibrated one, whose pure solution at
+    *reference_concentration* was measured as *reference*. The model is
+    evaluated pixel by pixel, so large images are split into row bands on
+    threads with a bit-identical result.
+
+    Parameters
+    ----------
+    mean, real, imag : np.ndarray
+        Intensity and phasor coordinates of the sample, one harmonic.
+    component_real, component_imag : sequence of float
+        ``(calibrated, other)`` component coordinates.
+    reference : tuple of float
+        ``(mean, real, imag)`` of the calibration solution.
+    reference_concentration : float
+        Known concentration of the calibration solution; the results share
+        its units.
+    brightness_ratio : float, optional
+        Molecular brightness of the other component relative to the
+        calibrated one. When given, the other component's concentration and
+        the total are returned as well.
+
+    Returns
+    -------
+    tuple
+        ``(first, second, total)``; ``second`` and ``total`` are ``None``
+        without *brightness_ratio*. Non-finite values are NaN.
+
+    Raises
+    ------
+    ValueError
+        When phasorpy rejects the model inputs (equal component G, a
+        non-positive reference, a degenerate calibration line, ...).
+    """
+    reference_mean, reference_real, reference_imag = reference
+
+    def kernel(m, r, i):
+        with np.errstate(divide='ignore', invalid='ignore'):
+            result = phasor_component_concentration(
+                m,
+                r,
+                i,
+                component_real,
+                component_imag,
+                reference_mean,
+                reference_real,
+                reference_imag,
+                reference_concentration,
+                brightness_ratio=brightness_ratio,
+            )
+        if brightness_ratio is None:
+            return _finite_or_nan(result)
+        first, second = (_finite_or_nan(values) for values in result)
+        return first, second, first + second
+
+    result = parallel_rowwise(kernel, mean, real, imag)
+    if brightness_ratio is None:
+        return result, None, None
+    return result
+
+
+def harmonic_plane(layer, harmonic):
+    """Return *layer*'s ``(real, imag)`` phasor plane at *harmonic*.
+
+    Returns ``(None, None)`` when the layer has no phasor data or never
+    computed that harmonic, rather than silently falling back to another
+    one: a concentration is only meaningful at the harmonic its components
+    and reference were placed at.
+    """
+    g_array = layer.metadata.get('G')
+    s_array = layer.metadata.get('S')
+    if g_array is None or s_array is None:
+        return None, None
+    g_array = np.asarray(g_array)
+    s_array = np.asarray(s_array)
+    if g_array.ndim <= np.ndim(layer.data):
+        return g_array, s_array
+    harmonics = layer.metadata.get('harmonics')
+    if harmonics is None:
+        return None, None
+    match = np.where(np.atleast_1d(harmonics) == harmonic)[0]
+    if match.size == 0 or match[0] >= g_array.shape[0]:
+        return None, None
+    return g_array[match[0]], s_array[match[0]]
+
+
+def phasor_reference_from_layer(layer, harmonic):
+    """Return the calibration solution's ``(mean, real, imag)`` from *layer*.
+
+    The mean intensity and phasor center of the layer's current (filtered,
+    thresholded, calibrated) data at *harmonic*, which is how the reference
+    of an absolute concentration is measured. Returns ``None`` when the
+    layer has no usable phasor data there.
+    """
+    real, imag = harmonic_plane(layer, harmonic)
+    if real is None:
+        return None
+    mean = np.asarray(layer.data, dtype=float)
+    if mean.shape != np.shape(real):
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        values = tuple(float(v) for v in phasor_center(mean, real, imag))
+    if not all(np.isfinite(values)) or values[0] <= 0:
+        return None
+    return values
 
 
 @dataclass
@@ -692,6 +847,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # criterion while the component list is halfway through a removal.
         self._syncing_filter_ui = False
         self._removing_component = False
+        # Absolute concentration: a guard set while the section is filled
+        # from a layer's settings so that filling it is not taken for an
+        # edit.
+        self._restoring_concentration = False
 
         # Dialog / event flags
         self.plot_dialog = None
@@ -808,6 +967,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         # Select the first component by default
         self._select_component_item(0)
+
+        # Calibration inputs of an absolute concentration, only shown while
+        # that method is selected.
+        layout.addWidget(self._build_concentration_section())
 
         # Calculate button (validated: greyed out until components are set)
         self.calculate_button = QPushButton("Run Component Analysis")
@@ -945,6 +1108,179 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # Update component visibility and button states
         self._update_component_visibility()
         self._update_button_states()
+
+    def _build_concentration_section(self):
+        """Build the calibration inputs of an absolute concentration.
+
+        The model needs a solution of one of the two components (the
+        *calibrated* one) at a known concentration: its mean intensity and
+        phasor, measured from a layer or typed in, set the scale that turns
+        each pixel's intensity into a concentration. The section is hidden
+        unless *Absolute Concentration* is the analysis method.
+        """
+        box, box_layout = make_section("Concentration calibration")
+        self.concentration_box = box
+
+        intro = QLabel(
+            "Turns each pixel's intensity into an absolute concentration, "
+            "calibrated on a solution of one component at a known "
+            "concentration, measured with the same instrument settings as "
+            "the samples."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(
+            "color: rgba(128, 128, 128, 0.9); font-size: 11px;"
+        )
+        box_layout.addWidget(intro)
+
+        grid = QGridLayout()
+        grid.setColumnStretch(1, 1)
+
+        grid.addWidget(QLabel("Calibrated component:"), 0, 0)
+        self.calibrated_component_combo = QComboBox()
+        self.calibrated_component_combo.setToolTip(
+            "The component whose pure solution was measured as the "
+            "reference (for NADH, free NADH). Its concentration is always "
+            "computed."
+        )
+        grid.addWidget(self.calibrated_component_combo, 0, 1)
+
+        grid.addWidget(QLabel("Reference solution:"), 1, 0)
+        self.reference_source_combo = QComboBox()
+        self.reference_source_combo.addItem(MANUAL_REFERENCE)
+        self.reference_source_combo.setToolTip(
+            "Layer of the calibration solution: its mean intensity and "
+            "phasor center at the current harmonic are the reference, "
+            "measured again at every run. Acquire it with the same "
+            "instrument settings as the samples and process it the same way "
+            "(calibration, filter and threshold).\n"
+            f"Choose '{MANUAL_REFERENCE}' to type them in."
+        )
+        grid.addWidget(self.reference_source_combo, 1, 1)
+
+        self._reference_edits = {}
+        self._reference_exact = {}
+        grid.addWidget(QLabel("Intensity:"), 2, 0)
+        mean_edit = QLineEdit()
+        mean_edit.setPlaceholderText("Mean intensity")
+        mean_edit.setToolTip(
+            "Mean fluorescence intensity of the calibration solution, in "
+            "the same units as the samples' intensity."
+        )
+        self._reference_edits['mean'] = mean_edit
+        grid.addWidget(mean_edit, 2, 1)
+
+        grid.addWidget(QLabel("Phasor:"), 3, 0)
+        phasor_row = QHBoxLayout()
+        for key, label, placeholder in (
+            ('g', "G:", "Real"),
+            ('s', "S:", "Imaginary"),
+        ):
+            edit = QLineEdit()
+            edit.setPlaceholderText(placeholder)
+            edit.setToolTip(
+                "Phasor coordinate of the calibration solution at the "
+                "current harmonic."
+            )
+            phasor_row.addWidget(QLabel(label))
+            phasor_row.addWidget(edit, 1)
+            self._reference_edits[key] = edit
+        grid.addLayout(phasor_row, 3, 1)
+        self.reference_mean_edit = self._reference_edits['mean']
+        self.reference_g_edit = self._reference_edits['g']
+        self.reference_s_edit = self._reference_edits['s']
+
+        grid.addWidget(QLabel("Concentration:"), 4, 0)
+        concentration_row = QHBoxLayout()
+        self.reference_concentration_edit = QLineEdit("1")
+        self.reference_concentration_edit.setToolTip(
+            "Known concentration of the calibration solution. The results "
+            "are in the same units."
+        )
+        concentration_row.addWidget(self.reference_concentration_edit, 1)
+        self.concentration_units_combo = QComboBox()
+        self.concentration_units_combo.setEditable(True)
+        self.concentration_units_combo.addItems(CONCENTRATION_UNITS)
+        self.concentration_units_combo.setToolTip(
+            "Unit of the reference concentration, used to label the "
+            "results. Type another one if it is not listed."
+        )
+        concentration_row.addWidget(self.concentration_units_combo)
+        grid.addLayout(concentration_row, 4, 1)
+        box_layout.addLayout(grid)
+
+        self.second_component_checkbox = QCheckBox()
+        self.second_component_checkbox.setToolTip(
+            "Also compute the concentration of the other component, and the "
+            "total of both. Needs the brightness ratio of the two."
+        )
+        box_layout.addWidget(self.second_component_checkbox)
+
+        ratio_row = QHBoxLayout()
+        ratio_row.setContentsMargins(20, 0, 0, 0)
+        self.brightness_ratio_label = QLabel("Brightness ratio:")
+        ratio_row.addWidget(self.brightness_ratio_label)
+        self.brightness_ratio_edit = QLineEdit("1")
+        ratio_row.addWidget(self.brightness_ratio_edit, 1)
+        box_layout.addLayout(ratio_row)
+
+        self.total_histogram_checkbox = QCheckBox(
+            "Show total in histogram and statistics"
+        )
+        self.total_histogram_checkbox.setEnabled(False)
+        self.total_histogram_checkbox.setToolTip(
+            "Plot the total concentration of each analysed image in the "
+            "histogram and statistics docks, next to the components checked "
+            "on their cards."
+        )
+        box_layout.addWidget(self.total_histogram_checkbox)
+
+        self.reference_note = QLabel()
+        self.reference_note.setWordWrap(True)
+        self.reference_note.setStyleSheet(
+            "color: rgba(128, 128, 128, 0.9); font-size: 11px;"
+        )
+        self.reference_note.setVisible(False)
+        box_layout.addWidget(self.reference_note)
+
+        self._refresh_concentration_names()
+        self._set_brightness_ratio_enabled(False)
+        self._set_reference_editable(True)
+
+        self.calibrated_component_combo.currentIndexChanged.connect(
+            self._on_calibrated_component_changed
+        )
+        self.reference_source_combo.currentIndexChanged.connect(
+            self._on_reference_source_changed
+        )
+        for edit in (
+            *self._reference_edits.values(),
+            self.reference_concentration_edit,
+            self.brightness_ratio_edit,
+        ):
+            edit.textChanged.connect(
+                lambda _=None: self._refresh_run_button_if_ready()
+            )
+            edit.editingFinished.connect(
+                self._on_concentration_setting_changed
+            )
+        # An editable combobox reports every keystroke as a text change, so
+        # only a finished edit or a pick from the list counts.
+        self.concentration_units_combo.activated.connect(
+            lambda _=None: self._on_concentration_setting_changed()
+        )
+        self.concentration_units_combo.lineEdit().editingFinished.connect(
+            self._on_concentration_setting_changed
+        )
+        self.second_component_checkbox.toggled.connect(
+            self._on_second_component_toggled
+        )
+        self.total_histogram_checkbox.toggled.connect(
+            self._on_total_histogram_toggled
+        )
+
+        box.setVisible(False)
+        return box
 
     def _select_component_item(self, idx_or_comp):
         """Highlight card for the selected component."""
@@ -1566,6 +1902,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 float(s_text)
             except ValueError:
                 return "Component coordinates must be valid numbers."
+        if self._is_concentration():
+            return self._concentration_problem()
         return None
 
     def _refresh_run_button_if_ready(self):
@@ -1661,6 +1999,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # have to be re-matched against the components that have data.
         self._sync_component_histogram_toggles()
         self._refresh_editor_title()
+        self._refresh_concentration_names()
 
     def _get_default_components_settings(self):
         """Get default settings dictionary for components parameters."""
@@ -1838,7 +2177,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         """Return how a run for *harmonics* merges into stored settings.
 
         The run's components replace the stored ones, but each keeps the
-        coordinates stored for harmonics the run did not use.
+        coordinates stored for harmonics the run did not use, and so does
+        the reference phasor of an absolute concentration.
         """
 
         def merge(old, new):
@@ -1856,6 +2196,18 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     old_component.get('gs_harmonics') or {},
                     component.get('gs_harmonics') or {},
                     harmonics,
+                )
+            old_concentration = (old or {}).get('concentration')
+            concentration = merged.get('concentration')
+            if isinstance(concentration, dict) and isinstance(
+                old_concentration, dict
+            ):
+                concentration['reference_gs_harmonics'] = (
+                    replace_keyed_entries(
+                        old_concentration.get('reference_gs_harmonics') or {},
+                        concentration.get('reference_gs_harmonics') or {},
+                        harmonics,
+                    )
                 )
             return merged
 
@@ -2007,6 +2359,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                             self._create_component_at_coordinates(idx, g, s)
 
             self._restore_line_and_label_settings(settings)
+            self._restore_concentration_ui(settings, current_harmonic)
 
             # Draw visual elements (lines between components) but do NOT
             # run analysis or create fraction layers.
@@ -2156,6 +2509,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                             self._create_component_at_coordinates(idx, g, s)
 
             self._restore_line_and_label_settings(settings)
+            self._restore_concentration_ui(settings, current_harmonic)
 
             components_created = [
                 c
@@ -2169,7 +2523,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 )
 
                 if (
-                    analysis_type == 'Linear Projection'
+                    analysis_type
+                    in ('Linear Projection', ABSOLUTE_CONCENTRATION)
                     and len(components_created) == 2
                 ) or (
                     analysis_type == 'Component Fit'
@@ -2586,8 +2941,13 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self.analysis_type_combo.clear()
 
         if num_components == 2:
+            # An absolute concentration models a two-component mixture.
             self.analysis_type_combo.addItems(
-                ["Linear Projection", "Component Fit"]
+                [
+                    "Linear Projection",
+                    "Component Fit",
+                    ABSOLUTE_CONCENTRATION,
+                ]
             )
         else:
             self.analysis_type_combo.addItems(["Component Fit"])
@@ -2600,17 +2960,32 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
     def _on_analysis_type_changed(self, analysis_type):
         """Handle analysis type change."""
+        # Refilling the combobox passes through an empty selection first.
+        if not analysis_type:
+            return
+        was_concentration = self._is_concentration()
         self.analysis_type = analysis_type
 
         if analysis_type == "Linear Projection":
             self.calculate_button.setText("Display Component Fraction Images")
+        elif analysis_type == ABSOLUTE_CONCENTRATION:
+            self.calculate_button.setText("Calculate Absolute Concentrations")
         else:
             self.calculate_button.setText("Run Multi-Component Analysis")
 
+        self._update_concentration_visibility()
         self.draw_line_between_components()
-        # A linear projection only has the first two components' fractions,
-        # so switching method can leave a criterion without a component.
-        self._sync_filter_ui()
+        if was_concentration != self._is_concentration():
+            # Fractions and concentrations are different quantities: the
+            # histogram, its axis and the layers it follows all switch over.
+            self._configure_histogram_for_mode()
+            self.on_layer_selection_changed()
+        else:
+            # A linear projection only has the first two components'
+            # fractions, so switching method can leave a criterion without
+            # a component.
+            self._sync_filter_ui()
+        self._refresh_run_button_if_ready()
         self.request_autoupdate()
 
     def _on_harmonic_changed(self, new_harmonic):
@@ -2620,6 +2995,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         self._refresh_components_info_label()
         self._restore_components_for_harmonic(new_harmonic)
+        if self._is_concentration():
+            # The reference phasor belongs to a harmonic, as the
+            # components' positions do.
+            self._restore_reference_for_harmonic(new_harmonic)
         self._update_component_visibility()
 
         if self._analysis_attempted:
@@ -3511,6 +3890,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         if getattr(comp, 'name_label', None) is not None:
             comp.name_label.setText(name if name else f"Component {idx + 1}")
         self._refresh_editor_title()
+        self._refresh_concentration_names()
 
     def _on_component_name_changed(self, idx: int):
         """Apply a committed component name (Enter pressed or focus lost)."""
@@ -3619,6 +3999,20 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                             )
                         else:
                             entry['name'] = stored_name
+                # A concentration map is named after its component, unless
+                # the user renamed it.
+                if tag.get('analysis_type') == ABSOLUTE_CONCENTRATION:
+                    new_layer_name = analysis_layer_name(
+                        concentration_analysis_label(new_display), source
+                    )
+                    if (
+                        layer.name
+                        == analysis_layer_name(
+                            concentration_analysis_label(old_display), source
+                        )
+                        and new_layer_name not in self.viewer.layers
+                    ):
+                        layer.name = new_layer_name
                 continue
 
             # Linear Projection: the display name is part of the layer name.
@@ -4547,6 +4941,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         if getattr(self, '_updating_linked_layers', False):
             return
 
+        if self._is_total_concentration_layer(layer):
+            self._on_total_display_changed(layer)
+            return
+
         comp_idx = self._find_component_index_for_layer(layer)
         if comp_idx is None:
             return
@@ -4630,6 +5028,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         # Prevent recursion when we're updating linked layers
         if getattr(self, '_updating_linked_layers', False):
+            return
+
+        if self._is_total_concentration_layer(layer):
+            self._on_total_display_changed(layer)
             return
 
         comp_idx = self._find_component_index_for_layer(layer)
@@ -4744,6 +5146,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
     def _find_component_index_for_layer(self, layer):
         """Find which component index a layer belongs to based on its name."""
+        # A concentration map says whose it is in its tag; the total belongs
+        # to no component.
+        tag = self._concentration_tag(layer)
+        if tag is not None:
+            return tag.get('component_index')
+
         layer_name = layer.name
 
         for i, comp in enumerate(self.components):
@@ -4765,6 +5173,16 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             or self.components[comp_idx] is None
         ):
             return []
+
+        if self._is_concentration():
+            return [
+                layer
+                for layer in self.viewer.layers
+                if (self._concentration_tag(layer) or {}).get(
+                    'component_index', -1
+                )
+                == comp_idx
+            ]
 
         comp = self.components[comp_idx]
         name = comp.name_edit.text().strip() or f"Component {comp_idx + 1}"
@@ -5308,6 +5726,873 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         comp_data['gs_harmonics'][harmonic_key].update(entry)
         self._component_settings_edited(self._current_layer())
 
+    # ------------------------------------------------ absolute concentration
+
+    @staticmethod
+    def _format_reference_value(value):
+        """Return how a reference value is shown in its field."""
+        return f"{float(value):.6g}"
+
+    @staticmethod
+    def _positive_field(edit):
+        """Return *edit*'s text as a positive finite number, or ``None``."""
+        try:
+            value = float(edit.text().strip())
+        except ValueError:
+            return None
+        if not np.isfinite(value) or value <= 0:
+            return None
+        return value
+
+    def _is_concentration(self):
+        """Return whether absolute concentration is the analysis method."""
+        return self.analysis_type == ABSOLUTE_CONCENTRATION
+
+    def _fraction_method(self):
+        """Return the method a fraction filter measures its fraction with.
+
+        An absolute concentration models a two-component mixture, so the
+        fraction of either component is the two components' linear
+        projection.
+        """
+        if self._is_concentration():
+            return "Linear Projection"
+        return self.analysis_type
+
+    def _components_tab_is_active(self):
+        """Return whether this tab is the one the plotter shows."""
+        parent = self.parent_widget
+        return (
+            parent is not None
+            and getattr(parent, "tab_widget", None) is not None
+            and parent.tab_widget.currentWidget() is self
+        )
+
+    def _component_position(self, idx):
+        """Return component *idx*'s exact ``(g, s)`` on the plot, or ``None``."""
+        comp = self.components[idx]
+        if comp is None or comp.dot is None:
+            return None
+        x_data, y_data = comp.dot.get_data()
+        return float(x_data[0]), float(y_data[0])
+
+    def _calibrated_index(self):
+        """Return the index (0 or 1) of the calibrated component."""
+        return 1 if self.calibrated_component_combo.currentIndex() == 1 else 0
+
+    def _concentration_units(self):
+        """Return the unit the concentrations are expressed in."""
+        return self.concentration_units_combo.currentText().strip()
+
+    def _refresh_concentration_names(self):
+        """Name the two components in the section's choices and labels."""
+        combo = self.calibrated_component_combo
+        names = [self._component_display_name(index) for index in (0, 1)]
+        for index, name in enumerate(names):
+            if index < combo.count():
+                combo.setItemText(index, name)
+            else:
+                combo.addItem(name)
+        calibrated = names[self._calibrated_index()]
+        other = names[1 - self._calibrated_index()]
+        self.second_component_checkbox.setText(
+            f"Also compute {other} and total concentrations"
+        )
+        tooltip = (
+            f"Molecular brightness of {other} relative to {calibrated}. "
+            "Bound NADH, for instance, is about 3 to 5 times brighter than "
+            "free NADH; 1 treats both as equally bright."
+        )
+        self.brightness_ratio_label.setToolTip(tooltip)
+        self.brightness_ratio_edit.setToolTip(tooltip)
+
+    def _set_brightness_ratio_enabled(self, enabled):
+        """Enable the brightness ratio only when it is used."""
+        self.brightness_ratio_label.setEnabled(enabled)
+        self.brightness_ratio_edit.setEnabled(enabled)
+
+    def _set_reference_editable(self, editable):
+        """Let the reference be typed in, or show it as measured on a layer."""
+        for edit in self._reference_edits.values():
+            edit.setReadOnly(not editable)
+            edit.setStyleSheet(
+                "" if editable else "color: rgba(128, 128, 128, 0.95);"
+            )
+
+    def _set_reference_note(self, text):
+        """Show *text* under the section, or hide the note when empty."""
+        self.reference_note.setText(text or "")
+        self.reference_note.setVisible(bool(text))
+
+    def _uses_reference_layer(self):
+        """Return whether the reference is measured on a layer."""
+        return self.reference_source_combo.currentIndex() > 0
+
+    def _reference_layer(self):
+        """Return the reference-solution layer chosen, or ``None`` if the
+        entry names a layer that is no longer open."""
+        name = self.reference_source_combo.currentText()
+        if name in self.viewer.layers:
+            return self.viewer.layers[name]
+        return None
+
+    def _set_reference_field(self, key, value):
+        """Show *value* in the reference field *key*, remembering it exactly.
+
+        The field shows six significant digits; the exact value is what the
+        analysis uses and stores for as long as the text is not edited.
+        """
+        edit = self._reference_edits[key]
+        if value is None:
+            self._reference_exact.pop(key, None)
+            edit.setText("")
+            return
+        self._reference_exact[key] = float(value)
+        edit.setText(self._format_reference_value(value))
+
+    def _reference_field(self, key):
+        """Return the value of the reference field *key*, or ``None``."""
+        text = self._reference_edits[key].text().strip()
+        exact = self._reference_exact.get(key)
+        if exact is not None and text == self._format_reference_value(exact):
+            return exact
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+        return value if np.isfinite(value) else None
+
+    def _reference_values(self):
+        """Return the reference solution's ``(mean, real, imag)``, or ``None``."""
+        values = tuple(
+            self._reference_field(key) for key in ('mean', 'g', 's')
+        )
+        if any(value is None for value in values):
+            return None
+        return values
+
+    def _load_reference_from_layer(self, harmonic=None):
+        """Measure the reference solution on its layer.
+
+        Fills the fields with the layer's mean intensity and phasor center
+        at *harmonic* (the current one by default) and returns whether it
+        could be measured; if not, the fields are emptied and the note says
+        why.
+        """
+        harmonic = self._current_harmonic() if harmonic is None else harmonic
+        layer = self._reference_layer()
+        values = (
+            None
+            if layer is None
+            else phasor_reference_from_layer(layer, harmonic)
+        )
+        if values is None:
+            for key in self._reference_edits:
+                self._set_reference_field(key, None)
+            self._set_reference_note(
+                "No usable phasor data in "
+                f"{self.reference_source_combo.currentText()} at harmonic "
+                f"{harmonic}."
+            )
+            return False
+        for key, value in zip(('mean', 'g', 's'), values, strict=True):
+            self._set_reference_field(key, value)
+        self._set_reference_note("")
+        return True
+
+    def _refresh_reference_layer_choices(self):
+        """List the layers a reference solution can be measured on.
+
+        Called whenever the viewer's layers change. A reference layer that
+        disappears leaves its last measurement behind as manual values, so
+        the analysis can still run and be reproduced.
+        """
+        combo = self.reference_source_combo
+        names = [MANUAL_REFERENCE] + [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, Image)
+            and 'G' in layer.metadata
+            and 'S' in layer.metadata
+        ]
+        if [combo.itemText(i) for i in range(combo.count())] == names:
+            return
+        current = combo.currentText()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItems(names)
+            combo.setCurrentIndex(max(combo.findText(current), 0))
+        finally:
+            combo.blockSignals(False)
+        if combo.currentText() != current:
+            self._set_reference_editable(True)
+            self._set_reference_note(
+                f"{current} was removed: its intensity and phasor are kept "
+                "as manual values."
+            )
+            self._on_concentration_setting_changed()
+
+    def _rename_reference_layer(self, old_name, new_name):
+        """Keep a renamed reference-solution layer the reference.
+
+        The name is also what the settings record, stored and unsaved
+        alike, so they keep pointing at the layer rather than at a name
+        that no longer exists.
+        """
+        combo = self.reference_source_combo
+        index = combo.findText(old_name)
+        if index > 0 and combo.findText(new_name) < 0:
+            combo.setItemText(index, new_name)
+        store = self._settings_store()
+        for layer in self.viewer.layers:
+            settings = layer.metadata.get('settings') or {}
+            block = (settings.get('component_analysis') or {}).get(
+                'concentration'
+            )
+            if isinstance(block, dict) and block.get('reference_layer') == (
+                old_name
+            ):
+                block['reference_layer'] = new_name
+            if store is None or not store.has_draft(
+                layer, ['component_analysis']
+            ):
+                continue
+            draft = store.draft_block(layer, 'component_analysis')
+            block = draft.get('concentration')
+            if isinstance(block, dict) and block.get('reference_layer') == (
+                old_name
+            ):
+                block['reference_layer'] = new_name
+                store.settle_draft(layer, 'component_analysis')
+
+    def _restore_reference_for_harmonic(self, harmonic, block=None):
+        """Show the reference phasor at *harmonic*: measured, or as stored.
+
+        The phasor of the reference depends on the harmonic just like the
+        component positions do, so typed values are kept per harmonic.
+        """
+        if self._uses_reference_layer():
+            self._load_reference_from_layer(harmonic)
+            return
+        if block is None:
+            settings = self._read_component_settings(self._current_layer())
+            block = (settings or {}).get('concentration') or {}
+        entry = (block.get('reference_gs_harmonics') or {}).get(
+            str(harmonic)
+        ) or {}
+        self._set_reference_field('g', entry.get('g'))
+        self._set_reference_field('s', entry.get('s'))
+
+    def _collect_concentration_settings(self, harmonic=None):
+        """Return the section's inputs as the ``concentration`` settings.
+
+        The reference phasor is stored per harmonic, like the component
+        coordinates; the entries of the other harmonics are carried over
+        from the layer's settings.
+        """
+        harmonic = self._current_harmonic() if harmonic is None else harmonic
+        settings = self._read_component_settings(self._current_layer())
+        block = (settings or {}).get('concentration') or {}
+        per_harmonic = copy.deepcopy(block.get('reference_gs_harmonics') or {})
+        g = self._reference_field('g')
+        s = self._reference_field('s')
+        if g is None or s is None:
+            per_harmonic.pop(str(harmonic), None)
+        else:
+            per_harmonic[str(harmonic)] = {'g': g, 's': s}
+        collected = {
+            'calibrated_component': self._calibrated_index(),
+            'reference_layer': (
+                self.reference_source_combo.currentText()
+                if self._uses_reference_layer()
+                else None
+            ),
+            'reference_mean': self._reference_field('mean'),
+            'reference_gs_harmonics': per_harmonic,
+            'reference_concentration': self._positive_field(
+                self.reference_concentration_edit
+            ),
+            'units': self._concentration_units(),
+            'second_component': self.second_component_checkbox.isChecked(),
+            'brightness_ratio': self._positive_field(
+                self.brightness_ratio_edit
+            ),
+        }
+        if isinstance(block.get('total_display'), dict):
+            collected['total_display'] = copy.deepcopy(block['total_display'])
+        return collected
+
+    def _stage_concentration_settings(self):
+        """Keep the section's inputs as the primary layer's unsaved settings.
+
+        Nothing is staged while the components are being restored from a
+        layer's settings: showing settings must never change them.
+        """
+        if self._updating_settings:
+            return
+        self._update_components_setting_in_metadata(
+            'concentration', self._collect_concentration_settings()
+        )
+
+    def _restore_concentration_ui(self, settings, harmonic):
+        """Fill the section from the ``concentration`` block of *settings*.
+
+        A reference layer that is no longer open is replaced by the values
+        stored with the analysis, so reopening a saved layer reproduces it.
+        The section is left alone when *settings* has no block, keeping
+        whatever is being typed for a new analysis.
+        """
+        block = (settings or {}).get('concentration')
+        if not isinstance(block, dict):
+            return
+        self._restoring_concentration = True
+        try:
+            self.calibrated_component_combo.setCurrentIndex(
+                1 if block.get('calibrated_component') == 1 else 0
+            )
+            concentration = block.get('reference_concentration')
+            self.reference_concentration_edit.setText(
+                "" if concentration is None else f"{float(concentration):g}"
+            )
+            self.concentration_units_combo.setCurrentText(
+                block.get('units') or ""
+            )
+            second = bool(block.get('second_component'))
+            self.second_component_checkbox.setChecked(second)
+            self._set_brightness_ratio_enabled(second)
+            ratio = block.get('brightness_ratio')
+            if ratio is not None:
+                self.brightness_ratio_edit.setText(f"{float(ratio):g}")
+
+            self._refresh_reference_layer_choices()
+            name = block.get('reference_layer')
+            index = self.reference_source_combo.findText(name) if name else -1
+            self.reference_source_combo.setCurrentIndex(max(index, 0))
+            self._set_reference_editable(index <= 0)
+            if index > 0:
+                self._load_reference_from_layer(harmonic)
+            else:
+                self._set_reference_field('mean', block.get('reference_mean'))
+                self._restore_reference_for_harmonic(harmonic, block)
+                self._set_reference_note(
+                    f"{name} is not open: the intensity and phasor stored "
+                    "with the analysis are used."
+                    if name
+                    else ""
+                )
+            self._refresh_concentration_names()
+        finally:
+            self._restoring_concentration = False
+
+    def _on_concentration_setting_changed(self):
+        """Keep an edited input and follow it in the run."""
+        if self._restoring_concentration:
+            return
+        self._stage_concentration_settings()
+        self._refresh_run_button_if_ready()
+        self.request_autoupdate()
+
+    def _on_calibrated_component_changed(self, _index=None):
+        """Rename the section's labels after the newly calibrated component."""
+        self._refresh_concentration_names()
+        self._on_concentration_setting_changed()
+
+    def _on_reference_source_changed(self, _index=None):
+        """Measure the reference on the chosen layer, or let it be typed in."""
+        from_layer = self._uses_reference_layer()
+        self._set_reference_editable(not from_layer)
+        if from_layer:
+            self._load_reference_from_layer()
+        else:
+            self._set_reference_note("")
+        self._on_concentration_setting_changed()
+
+    def _on_second_component_toggled(self, checked):
+        """Enable the brightness ratio together with the second component."""
+        self._set_brightness_ratio_enabled(checked)
+        self._on_concentration_setting_changed()
+
+    def _update_concentration_visibility(self):
+        """Show the calibration inputs only while they are used."""
+        active = self._is_concentration()
+        self.concentration_box.setVisible(active)
+        # The model takes exactly two components.
+        self.add_component_btn.setVisible(not active)
+        if active:
+            self._refresh_reference_layer_choices()
+            self._refresh_concentration_names()
+            # The harmonic may have changed while another method was shown.
+            self._restore_reference_for_harmonic(self._current_harmonic())
+
+    def _concentration_problem(self):
+        """Return why an absolute concentration cannot run yet, or ``None``."""
+        positions = [self._component_position(index) for index in (0, 1)]
+        if None not in positions and positions[0][0] == positions[1][0]:
+            return (
+                "The two components need different G coordinates for an "
+                "absolute concentration."
+            )
+        values = self._reference_values()
+        if values is None:
+            if self._uses_reference_layer():
+                return (
+                    "No usable phasor data in "
+                    f"{self.reference_source_combo.currentText()} at "
+                    f"harmonic {self._current_harmonic()}: choose another "
+                    "reference solution or type its values in."
+                )
+            return (
+                "Choose the reference solution's layer, or enter its "
+                "intensity, G and S."
+            )
+        if values[0] <= 0:
+            return "The reference intensity must be a positive number."
+        if self._positive_field(self.reference_concentration_edit) is None:
+            return "Enter the reference concentration as a positive number."
+        if (
+            self.second_component_checkbox.isChecked()
+            and self._positive_field(self.brightness_ratio_edit) is None
+        ):
+            return "Enter the brightness ratio as a positive number."
+        return None
+
+    def _concentration_parameters(self):
+        """Return what an absolute-concentration run needs, from the tab.
+
+        The components are ordered calibrated first, as the model expects.
+        ``calibration`` gathers what scales the maps: a run that changes it
+        measures their display ranges again instead of keeping them.
+        """
+        calibrated = self._calibrated_index()
+        order = (calibrated, 1 - calibrated)
+        positions = [self._component_position(index) for index in order]
+        reference = self._reference_values()
+        concentration = self._positive_field(self.reference_concentration_edit)
+        if None in positions or reference is None or concentration is None:
+            return None
+        ratio = (
+            self._positive_field(self.brightness_ratio_edit)
+            if self.second_component_checkbox.isChecked()
+            else None
+        )
+        units = self._concentration_units()
+        return {
+            'indices': order,
+            'names': [self._component_display_name(index) for index in order],
+            'component_real': [position[0] for position in positions],
+            'component_imag': [position[1] for position in positions],
+            'reference': reference,
+            'reference_concentration': concentration,
+            'brightness_ratio': ratio,
+            'units': units,
+            'calibration': {
+                'reference': list(reference),
+                'reference_concentration': concentration,
+                'brightness_ratio': ratio,
+                'units': units,
+            },
+        }
+
+    @staticmethod
+    def _compute_layer_concentrations(layer, params, harmonic):
+        """Return one layer's ``(first, second, total)`` maps, or ``None``.
+
+        Pure array work on the layer's current intensity and phasor data,
+        safe to run in a worker thread. *harmonic* is passed in because the
+        parent's harmonic is a Qt spinbox read.
+        """
+        real, imag = harmonic_plane(layer, harmonic)
+        if real is None:
+            return None
+        mean = np.asarray(layer.data)
+        if mean.shape != np.shape(real):
+            return None
+        return component_concentrations(
+            mean,
+            real,
+            imag,
+            params['component_real'],
+            params['component_imag'],
+            params['reference'],
+            params['reference_concentration'],
+            params['brightness_ratio'],
+        )
+
+    def _run_concentration(self):
+        """Compute absolute concentrations on every selected layer.
+
+        The maps are computed in a thread pool, one layer per task (a lone
+        layer is split into row bands instead); the napari layers showing
+        them are created or updated on this thread.
+        """
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
+            return
+        params = self._concentration_parameters()
+        if params is None:
+            return
+        harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        results = parallel_map(
+            lambda layer: self._compute_layer_concentrations(
+                layer, params, harmonic
+            ),
+            selected_layers,
+            on_error="collect",
+        )
+
+        by_index = {}
+        for layer, result in zip(selected_layers, results, strict=True):
+            if isinstance(result, BaseException):
+                show_error(
+                    f"Absolute concentration failed for {layer.name}: "
+                    f"{result}"
+                )
+                continue
+            if result is None:
+                show_warning(
+                    f"{layer.name} has no phasor data at harmonic "
+                    f"{harmonic}."
+                )
+                continue
+            shown = self._show_concentration_layers(
+                layer, params, harmonic, result
+            )
+            by_index = {
+                output.metadata['phasor_component_fraction'][
+                    'component_index'
+                ]: output
+                for output in shown
+            }
+
+        # The dots take the top colour of their concentration colormaps, as
+        # a fit's dots take their fractions'.
+        self.fraction_layers = (
+            [by_index[0], by_index[1]]
+            if 0 in by_index and 1 in by_index
+            else []
+        )
+        self._update_component_colors()
+        self.draw_line_between_components()
+
+    def _show_concentration_layers(self, source, params, harmonic, result):
+        """Show one image's concentration maps and return their layers.
+
+        Maps of a previous run that this one no longer makes (the second
+        component was switched off) are removed.
+        """
+        first, second, total = result
+        outputs = [(params['indices'][0], params['names'][0], first)]
+        if second is not None:
+            outputs.append((params['indices'][1], params['names'][1], second))
+            outputs.append((None, TOTAL_CONCENTRATION, total))
+        settings = (source.metadata.get('settings') or {}).get(
+            'component_analysis'
+        )
+        shown = [
+            self._put_concentration_layer(
+                source, index, name, data, params, harmonic, settings
+            )
+            for index, name, data in outputs
+        ]
+        for existing in list(self.viewer.layers):
+            tag = self._concentration_tag(existing)
+            if (
+                tag is not None
+                and tag.get('source_layer') == source.name
+                and not any(existing is layer for layer in shown)
+            ):
+                with contextlib.suppress(KeyError, ValueError):
+                    self.viewer.layers.remove(existing)
+        return shown
+
+    def _find_concentration_layer(self, source_name, index):
+        """Return *source_name*'s concentration layer for *index*.
+
+        *index* is a component index, or ``None`` for the total. Matched on
+        the layer's tag, so a layer the user renamed is still updated in
+        place rather than duplicated.
+        """
+        for layer in self.viewer.layers:
+            tag = self._concentration_tag(layer)
+            if (
+                tag is not None
+                and tag.get('source_layer') == source_name
+                and tag.get('component_index', -1) == index
+            ):
+                return layer
+        return None
+
+    @staticmethod
+    def _value_limits(values):
+        """Return the ``(low, high)`` display range of a concentration map."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            low = float(np.nanmin(values)) if np.size(values) else np.nan
+            high = float(np.nanmax(values)) if np.size(values) else np.nan
+        if not (np.isfinite(low) and np.isfinite(high)):
+            return 0.0, 1.0
+        if high <= low:
+            high = low + max(abs(low) * 0.01, 1e-6)
+        return low, high
+
+    def _layer_display_entry(self, layer):
+        """Return how *layer* is displayed, as stored in the settings.
+
+        A colormap is stored by name only when that name is sure to mean
+        the same colours in another session; otherwise by its colours.
+        """
+        name = getattr(layer.colormap, 'name', 'custom')
+        standard = name in BUILTIN_COLORMAP_NAMES
+        return {
+            'colormap_name': name if standard else None,
+            'colormap_colors': (
+                None
+                if standard
+                else np.asarray(layer.colormap.colors).tolist()
+            ),
+            'contrast_limits': [float(v) for v in layer.contrast_limits],
+            'gamma': float(layer.gamma),
+        }
+
+    @staticmethod
+    def _concentration_display(settings, index, harmonic):
+        """Return the stored display of a concentration map, or ``None``."""
+        if not isinstance(settings, dict):
+            return None
+        if index is None:
+            entry = (settings.get('concentration') or {}).get('total_display')
+        else:
+            entry = (
+                ((settings.get('components') or {}).get(str(index)) or {})
+                .get('gs_harmonics', {})
+                .get(str(harmonic))
+            )
+        if (
+            not isinstance(entry, dict)
+            or entry.get('analysis_type') != ABSOLUTE_CONCENTRATION
+        ):
+            return None
+        return entry
+
+    def _store_concentration_display(
+        self, settings, index, harmonic, layer, calibration
+    ):
+        """Store how a concentration map is displayed with the analysis."""
+        if self._updating_settings or not isinstance(settings, dict):
+            return
+        entry = self._layer_display_entry(layer)
+        entry['analysis_type'] = ABSOLUTE_CONCENTRATION
+        entry['calibration'] = copy.deepcopy(calibration)
+        if index is None:
+            block = settings.get('concentration')
+            if isinstance(block, dict):
+                block['total_display'] = entry
+            return
+        component = (settings.get('components') or {}).get(str(index))
+        if isinstance(component, dict):
+            component.setdefault('gs_harmonics', {}).setdefault(
+                str(harmonic), {}
+            ).update(entry)
+
+    def _put_concentration_layer(
+        self, source, index, name, data, params, harmonic, settings
+    ):
+        """Create or update one concentration map of *source*; return it.
+
+        An existing map is updated in place, keeping its place in the layer
+        list, its name if the user renamed it, and how it is displayed. Its
+        display range is only measured again when the calibration changed,
+        since that rescales every value.
+        """
+        tag = {
+            'source_layer': source.name,
+            'component_index': index,
+            'total': index is None,
+            'harmonic': int(harmonic),
+            'analysis_type': ABSOLUTE_CONCENTRATION,
+            'units': params['units'],
+            'calibration': copy.deepcopy(params['calibration']),
+        }
+        default_name = analysis_layer_name(
+            concentration_analysis_label(name), source.name
+        )
+        limits = self._value_limits(data)
+        layer = self._find_concentration_layer(source.name, index)
+
+        if layer is not None:
+            previous = layer.metadata.get('phasor_component_fraction') or {}
+            rescaled = not settings_equal(
+                previous.get('calibration'), tag['calibration']
+            )
+            self._updating_linked_layers = True
+            try:
+                layer.data = data
+                layer.metadata['fraction_data_original'] = data
+                layer.metadata['phasor_component_fraction'] = tag
+                if rescaled:
+                    layer.contrast_limits_range = limits
+                    layer.contrast_limits = limits
+                else:
+                    low, high = layer.contrast_limits_range
+                    layer.contrast_limits_range = (
+                        min(low, limits[0]),
+                        max(high, limits[1]),
+                    )
+                # A layer renamed by hand keeps its name; one still named
+                # after its component follows a renamed component.
+                base, label = split_analysis_layer_name(layer.name)
+                if (
+                    parse_concentration_analysis_label(label) is not None
+                    and base == split_analysis_layer_name(default_name)[0]
+                    and layer.name != default_name
+                    and default_name not in self.viewer.layers
+                ):
+                    layer.name = default_name
+            finally:
+                self._updating_linked_layers = False
+        else:
+            stored = self._concentration_display(settings, index, harmonic)
+            colormap = (
+                TOTAL_CONCENTRATION_COLORMAP
+                if index is None
+                else self.component_colormap_names[
+                    index % len(self.component_colormap_names)
+                ]
+            )
+            gamma = None
+            if stored is not None:
+                if stored.get('colormap_colors') is not None:
+                    colormap = Colormap(
+                        colors=np.asarray(stored['colormap_colors']),
+                        name=stored.get('colormap_name') or "saved_custom",
+                    )
+                elif stored.get('colormap_name'):
+                    colormap = stored['colormap_name']
+                gamma = stored.get('gamma')
+                if stored.get('contrast_limits') and settings_equal(
+                    stored.get('calibration'), tag['calibration']
+                ):
+                    limits = tuple(stored['contrast_limits'])
+            with contextlib.suppress(KeyError, ValueError):
+                self.viewer.layers.remove(self.viewer.layers[default_name])
+            layer = self.viewer.add_image(
+                data,
+                name=default_name,
+                scale=source.scale,
+                colormap=colormap,
+                contrast_limits=limits,
+            )
+            if gamma is not None:
+                layer.gamma = gamma
+            layer.metadata['fraction_data_original'] = data
+            layer.metadata['phasor_component_fraction'] = tag
+
+        # Connecting a handler that is connected already is a no-op.
+        layer.events.colormap.connect(self._on_colormap_changed)
+        layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
+        layer.events.gamma.connect(self._on_colormap_changed)
+        self._store_concentration_display(
+            settings, index, harmonic, layer, tag['calibration']
+        )
+        return layer
+
+    @staticmethod
+    def _concentration_tag(layer):
+        """Return *layer*'s tag if it is a concentration map, else ``None``."""
+        if not isinstance(layer, Image):
+            return None
+        tag = layer.metadata.get('phasor_component_fraction')
+        if (
+            isinstance(tag, dict)
+            and tag.get('analysis_type') == ABSOLUTE_CONCENTRATION
+        ):
+            return tag
+        return None
+
+    def _is_total_concentration_layer(self, layer):
+        """Return whether *layer* shows a total concentration."""
+        return bool((self._concentration_tag(layer) or {}).get('total'))
+
+    def _on_total_display_changed(self, layer):
+        """Follow a total map's display on the others, and store it.
+
+        The total belongs to no component card, so its display is kept in
+        its own entry of the analysis settings.
+        """
+        self._updating_linked_layers = True
+        try:
+            for other in self.viewer.layers:
+                if other is layer or not isinstance(other, Image):
+                    continue
+                if not self._is_total_concentration_layer(other):
+                    continue
+                if other.colormap != layer.colormap:
+                    other.colormap = layer.colormap
+                if other.gamma != layer.gamma:
+                    other.gamma = layer.gamma
+                if not np.allclose(
+                    other.contrast_limits, layer.contrast_limits
+                ):
+                    other.contrast_limits = layer.contrast_limits
+        finally:
+            self._updating_linked_layers = False
+
+        store = self._settings_store()
+        analysed = self._analysed_component_layers()
+        if store is not None and analysed and not self._updating_settings:
+            for key, value in self._layer_display_entry(layer).items():
+                store.update_committed(
+                    analysed,
+                    'component_analysis',
+                    ('concentration', 'total_display', key),
+                    value,
+                )
+        if self._primary_histogram_component() == TOTAL_CONCENTRATION:
+            self.histogram_widget.update_colormap(
+                colormap_colors=layer.colormap.colors,
+                contrast_limits=list(layer.contrast_limits),
+                gamma=layer.gamma,
+            )
+        self._refresh_histogram_series_colormaps()
+
+    def _on_total_histogram_toggled(self, checked):
+        """Add or drop the total from the plotted selection."""
+        if self._syncing_component_toggles:
+            return
+        self._toggle_histogram_component(TOTAL_CONCENTRATION, checked)
+
+    def _configure_histogram_for_mode(self, units=None):
+        """Label the histogram's axis and range slider with what it shows."""
+        histogram = self.histogram_widget
+        if self._is_concentration():
+            units = self._concentration_units() if units is None else units
+            suffix = f" ({units})" if units else ""
+            xlabel = f"Concentration{suffix}"
+            prefix = f"Concentration range{suffix}"
+        else:
+            xlabel = "Fraction"
+            prefix = "Fraction range"
+            histogram.range_factor = 1000
+        histogram.xlabel = xlabel
+        histogram._range_label_prefix = prefix
+        histogram.range_label.setText(f"{prefix}:")
+
+    def _histogram_range_factor(self, low, high):
+        """Return the range slider's resolution for values in ``[low, high]``.
+
+        The slider stores ``value * factor`` in a 32-bit integer. Fractions
+        keep the fixed factor of 1000; a concentration can be in any unit,
+        so its factor is picked to give about a million steps up to its
+        largest magnitude.
+        """
+        if not self._is_concentration():
+            return 1000
+        magnitude = max(abs(low), abs(high))
+        if not np.isfinite(magnitude) or magnitude <= 0:
+            return 1000
+        return float(10.0 ** np.floor(np.log10(1e6 / magnitude)))
+
     # ------------------------------------------------------- fraction filters
 
     def _current_harmonic(self):
@@ -5543,7 +6828,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         active = self._active_component_indices()
         if len(active) < 2:
             return []
-        if self.analysis_type == "Linear Projection":
+        if self._fraction_method() == "Linear Projection":
             active = active[:2]
         colors = self._component_filter_colors()
         return [
@@ -5568,12 +6853,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         params = {
             'component_index': int(index),
             'component_name': self._component_display_name(index),
-            'analysis_type': self.analysis_type,
+            'analysis_type': self._fraction_method(),
         }
         harmonic = self._current_harmonic()
         active = self._active_component_indices()
 
-        if self.analysis_type == "Linear Projection":
+        if self._fraction_method() == "Linear Projection":
             if index not in active[:2]:
                 return params
             coords_g, coords_s, _names = (
@@ -6173,7 +7458,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         # and by the components they were measured from, so they are reused
         # only while both are still the ones on screen.
         token = (
-            self.analysis_type,
+            self._fraction_method(),
             _params_token(
                 {
                     index: self._component_filter_params(index)
@@ -6333,6 +7618,16 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self._analysis_attempted = True
         self._update_all_component_styling()
 
+        if self._is_concentration():
+            # Measured again, so a reference layer processed since it was
+            # picked counts as it is now.
+            if self._uses_reference_layer():
+                self._load_reference_from_layer()
+            problem = self._concentration_problem()
+            if problem is not None:
+                show_warning(problem)
+                return
+
         selected_layers = self.parent_widget.get_selected_layers()
         if not self._updating_settings and selected_layers:
             self._commit_components_settings(selected_layers)
@@ -6340,6 +7635,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         self._invalidate_pixel_counts()
         if self.analysis_type == "Linear Projection":
             self._run_linear_projection()
+        elif self._is_concentration():
+            self._run_concentration()
         else:
             self._run_component_fit()
 
@@ -6436,6 +7733,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 comp_data['gs_harmonics'][harmonic_key]['lifetime'] = None
 
         settings['analysis_type'] = self.analysis_type
+        if self._is_concentration():
+            # The reference as measured for this run, so the layers can be
+            # reanalysed without the reference layer.
+            settings['concentration'] = self._collect_concentration_settings(
+                current_harmonic
+            )
 
         block = copy.deepcopy(settings)
         if self._settings_store() is None:
@@ -7208,13 +8511,22 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
     def rename_layer(self, old_name: str, new_name: str):
         """Rename derived layers when base layer is renamed."""
+        # A rename is not a layer change, so nothing else updates the name
+        # the tab reads its settings through.
+        if (
+            self.current_image_layer_name == old_name
+            and new_name in self.viewer.layers
+        ):
+            self.current_image_layer_name = new_name
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
                 continue
             base, label = split_analysis_layer_name(layer.name)
-            if parse_component_analysis_label(
-                label
-            ) is not None and base == phasor_layer_base_name(old_name):
+            concentration = parse_concentration_analysis_label(label)
+            if (
+                parse_component_analysis_label(label) is not None
+                or concentration is not None
+            ) and base == phasor_layer_base_name(old_name):
                 layer.name = analysis_layer_name(label, new_name)
             # Keep the identifying metadata tag in sync too. Matched by tag
             # (not name) so fraction layers the user renamed manually still
@@ -7237,6 +8549,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     comp.idx, comp.phasor_center_layers
                 )
 
+        self._rename_reference_layer(old_name, new_name)
+
         # Refresh the histogram/statistics component selectors so a renamed
         # fraction layer keeps its component listed (discovery is metadata
         # aware). The current selection is preserved by name.
@@ -7256,6 +8570,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         """
         if not isinstance(tag, dict):
             return None
+        if tag.get('total'):
+            return TOTAL_CONCENTRATION
         idx = tag.get('component_index')
         source = tag.get('source_layer')
         if source and source in self.viewer.layers:
@@ -7279,20 +8595,24 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         layers are untagged and use ``"<image> [(Linear Projection) <comp>]"``.
         Filtering by the active ``analysis_type`` keeps the histogram selector
         showing only the current method's components, even when stale layers
-        from the other method are still present in the viewer.
+        from the other method are still present in the viewer. Absolute
+        concentration maps are always tagged.
         """
-        has_tag = isinstance(
-            layer.metadata.get('phasor_component_fraction'), dict
-        )
+        tag = layer.metadata.get('phasor_component_fraction')
+        if isinstance(tag, dict):
+            return (
+                tag.get('analysis_type', 'Component Fit') == self.analysis_type
+            )
         label = split_analysis_layer_name(layer.name)[1]
+        if self.analysis_type == ABSOLUTE_CONCENTRATION:
+            return parse_concentration_analysis_label(label) is not None
         if self.analysis_type == "Component Fit":
-            return has_tag or is_component_fit_label(label)
-        # Linear Projection
-        return (
-            not has_tag
-            and parse_component_analysis_label(label) is not None
-            and not is_component_fit_label(label)
-        )
+            return is_component_fit_label(label)
+        if self.analysis_type == "Linear Projection":
+            return parse_component_analysis_label(
+                label
+            ) is not None and not is_component_fit_label(label)
+        return False
 
     def _get_selected_image_layer_names(self) -> set:
         """Get the names of the image layers currently selected in the plotter.
@@ -7367,7 +8687,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             tag = layer.metadata.get('phasor_component_fraction')
             if (
                 isinstance(tag, dict)
-                and tag.get('analysis_type') == 'Component Fit'
+                and tag.get('analysis_type')
+                in ('Component Fit', ABSOLUTE_CONCENTRATION)
                 and self._component_display_name_from_tag(tag)
                 == component_name
             ):
@@ -7411,9 +8732,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             # display name from it so a manually renamed layer still surfaces
             # its component in the combobox.
             tag = layer.metadata.get('phasor_component_fraction')
-            if (
-                isinstance(tag, dict)
-                and tag.get('analysis_type') == 'Component Fit'
+            if isinstance(tag, dict) and tag.get('analysis_type') in (
+                'Component Fit',
+                ABSOLUTE_CONCENTRATION,
             ):
                 display = self._component_display_name_from_tag(tag)
                 if display is not None:
@@ -7776,6 +9097,17 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     if available
                     else HISTOGRAM_TOGGLE_DISABLED_TOOLTIP
                 )
+            # The total of an absolute concentration has no card of its own.
+            total = getattr(self, 'total_histogram_checkbox', None)
+            if total is not None:
+                available = (
+                    TOTAL_CONCENTRATION in self._available_histogram_components
+                )
+                total.setEnabled(available)
+                total.setChecked(
+                    available
+                    and TOTAL_CONCENTRATION in self._histogram_components
+                )
         finally:
             self._syncing_component_toggles = False
 
@@ -7783,7 +9115,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         """Add or drop the component at *idx* from the plotted selection."""
         if self._syncing_component_toggles:
             return
-        name = self._component_display_name(idx)
+        self._toggle_histogram_component(
+            self._component_display_name(idx), checked
+        )
+
+    def _toggle_histogram_component(self, name, checked):
+        """Add or drop the series *name* from the plotted selection."""
         # A component with no fraction data has nothing to plot: its toggle is
         # disabled, so only a programmatic call can land here.
         if not name or name not in self._available_histogram_components:
@@ -8080,6 +9417,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         """
         resolved = self._resolve_selected_components()
         if not resolved:
+            self._configure_histogram_for_mode()
             # Keep the empty axes on screen — spines, labels and all — the way
             # every other tab's histogram looks before an analysis has run,
             # rather than collapsing the dock to nothing.
@@ -8088,6 +9426,15 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             return
 
         _primary_name, primary_layers, primary_invert = resolved[0]
+        # Concentrations are labelled in the units they were computed in,
+        # which the maps carry, not in whatever is typed in the tab now.
+        primary_tag = (
+            next(iter(primary_layers.values())).metadata.get(
+                'phasor_component_fraction'
+            )
+            or {}
+        )
+        self._configure_histogram_for_mode(primary_tag.get('units'))
         colormap_colors, contrast_limits, gamma = self._component_colormap(
             primary_layers, primary_invert
         )
@@ -8145,6 +9492,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 gamma=gamma,
             )
 
+            self.histogram_widget.range_factor = self._histogram_range_factor(
+                data_min, data_max
+            )
             self.histogram_widget.set_range(
                 range_min,
                 range_max,

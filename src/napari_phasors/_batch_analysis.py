@@ -84,10 +84,12 @@ from ._utils import (
     apply_filter_and_threshold,
     component_analysis_label,
     compute_calibration_parameters,
+    concentration_analysis_label,
     make_solid_contour_cmap,
     normalize_legend_location,
     normalize_rgb,
     parse_component_analysis_label,
+    parse_concentration_analysis_label,
     populate_colormap_combobox,
     rank_mask_candidates,
     read_ome_tiff_settings,
@@ -100,6 +102,16 @@ from ._writer import (
     export_layer_as_csv,
     export_layer_as_image,
     write_ome_tiff,
+)
+from .components_tab import (
+    ABSOLUTE_CONCENTRATION,
+    CONCENTRATION_UNITS,
+    MANUAL_REFERENCE,
+    TOTAL_CONCENTRATION,
+    TOTAL_CONCENTRATION_COLORMAP,
+    component_concentrations,
+    harmonic_plane,
+    phasor_reference_from_layer,
 )
 from .selection_tab import ColorButton
 
@@ -430,10 +442,15 @@ def _apply_component_fraction(layer, components):
       harmonic: ``components["harmonics"]`` then lists the harmonics and
       ``component_real``/``component_imag`` are 2-D ``(n_harmonics,
       n_components)`` arrays of the component locations at each harmonic.
+    - ``"concentration"`` (exactly 2 components): absolute concentrations,
+      see :func:`_apply_component_concentration`.
 
     Returns a list of :class:`napari.layers.Image` (empty if the layer lacks
     usable phasor data).
     """
+    if components["analysis_type"] == "concentration":
+        return _apply_component_concentration(layer, components)
+
     names = components["names"]
     component_real = components["component_real"]
     component_imag = components["component_imag"]
@@ -517,6 +534,67 @@ def _apply_component_fraction(layer, components):
             )
         )
     return layers
+
+
+def _apply_component_concentration(layer, components):
+    """Return the absolute-concentration images of ``layer``.
+
+    Mirrors the interactive Components tab: ``components["concentration"]``
+    holds the calibration (which of the two components the reference
+    solution is made of, its ``(mean, real, imag)`` and concentration, the
+    units and an optional brightness ratio). The calibrated component's
+    concentration is always returned; with a brightness ratio, the other
+    component's and the total follow. Each image carries an ``axis_label``
+    with the units, used for its exported histograms.
+    """
+    calibration = components["concentration"]
+    real, imag = harmonic_plane(layer, components["harmonic"])
+    if real is None:
+        return []
+    mean = np.asarray(layer.data)
+    if mean.shape != np.shape(real):
+        return []
+
+    calibrated = 1 if calibration.get("calibrated_component") == 1 else 0
+    order = (calibrated, 1 - calibrated)
+    component_real = [float(components["component_real"][i]) for i in order]
+    component_imag = [float(components["component_imag"][i]) for i in order]
+    first, second, total = component_concentrations(
+        mean,
+        real,
+        imag,
+        component_real,
+        component_imag,
+        tuple(calibration["reference"]),
+        calibration["reference_concentration"],
+        calibration.get("brightness_ratio"),
+    )
+
+    names = components["names"]
+    colormaps = components.get("colormaps") or []
+    outputs = [(order[0], names[order[0]], first)]
+    if second is not None:
+        outputs.append((order[1], names[order[1]], second))
+        outputs.append((None, TOTAL_CONCENTRATION, total))
+    units = calibration.get("units") or ""
+    images = []
+    for index, name, data in outputs:
+        if index is None:
+            colormap = TOTAL_CONCENTRATION_COLORMAP
+        else:
+            colormap = colormaps[index] if index < len(colormaps) else None
+        image = _make_output_image(
+            data,
+            analysis_layer_name(
+                concentration_analysis_label(name), layer.name
+            ),
+            colormap=colormap,
+            contrast_limits=components.get("contrast_limits"),
+        )
+        label = f"{name} concentration"
+        image.metadata["axis_label"] = f"{label} ({units})" if units else label
+        images.append(image)
+    return images
 
 
 def _reversed_colormap(name):
@@ -1204,6 +1282,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._global_contrast = {}
         self._global_contrast_acc = {}
         self._auto_tabs = set()
+        # ``{output label: histogram axis label}`` of the current run.
+        self._output_axis_labels = {}
         self._deferred_exports = []
         self._deferred_store = None
         self._deferred_dir = None
@@ -2403,8 +2483,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.components_group, body, content = self._enable_section(
             "Enable component analysis",
             "Decompose each pixel into fractional contributions of known "
-            "phasor components. Two components support a linear projection "
-            "or a fit; three or more use a fit (more than three need "
+            "phasor components. Two components support a linear projection, "
+            "a fit, or absolute concentrations calibrated on a reference "
+            "solution; three or more use a fit (more than three need "
             "locations at several harmonics).",
         )
         group_layout = QVBoxLayout(body)
@@ -2417,7 +2498,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.analysis_type_combo = QComboBox()
         self.analysis_type_combo.setToolTip(
             "How fractions are computed from the component locations: a linear "
-            "projection (two components) or a multi-component fit."
+            "projection (two components) or a multi-component fit. Absolute "
+            "Concentration (two components) scales the intensity to the "
+            "concentration of each component instead."
+        )
+        self.analysis_type_combo.currentTextChanged.connect(
+            lambda _=None: self._update_concentration_box()
         )
         type_row.addWidget(self.analysis_type_combo, 1)
         inputs_layout.addLayout(type_row)
@@ -2467,6 +2553,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         inputs_layout.addWidget(self.components_note)
         group_layout.addWidget(inputs_box)
 
+        self.concentration_box = self._build_concentration_box()
+        group_layout.addWidget(self.concentration_box)
+
         style_section_box, style_section_layout = self._section(
             "Fraction images and phasor plot styling"
         )
@@ -2474,9 +2563,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         contrast_row.addWidget(QLabel("Range (image && histogram):"))
         self.components_contrast = self._contrast_controls()
         self.components_contrast["widget"].setToolTip(
-            "Fraction range for the colormapped fraction images and the "
-            "histogram. Uncheck 'Auto' to set fixed min/max limits; 'Auto' "
-            "pools a single range across every file so they are comparable."
+            "Fraction (or concentration) range for the colormapped images "
+            "and the histogram. Uncheck 'Auto' to set fixed min/max limits; "
+            "'Auto' pools a single range across every file so they are "
+            "comparable."
         )
         contrast_row.addWidget(self.components_contrast["widget"])
         contrast_row.addStretch()
@@ -3988,6 +4078,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._components_layout.addWidget(row)
         self._component_rows.append(entry)
         remove.clicked.connect(lambda: self._remove_component_row(entry))
+        name_edit.textChanged.connect(
+            lambda _=None: self._refresh_concentration_names()
+        )
         lifetime_edit.editingFinished.connect(
             lambda e=entry: self._on_component_lifetime_edited(e)
         )
@@ -4063,8 +4156,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
     def _on_component_harmonic_changed(self, value):
         """Swap the visible G/S fields to a different harmonic's locations."""
         self._sync_component_coords()
+        self._store_concentration_reference()
         self._component_current_harmonic = value
         self._load_component_coords()
+        self._load_concentration_reference()
         self._update_component_controls()
 
     def _active_component_harmonics(self):
@@ -4128,7 +4223,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.analysis_type_combo.clear()
         if count == 2:
             self.analysis_type_combo.addItems(
-                ["Linear Projection", "Component Fit"]
+                ["Linear Projection", "Component Fit", ABSOLUTE_CONCENTRATION]
             )
         else:
             self.analysis_type_combo.addItems(["Component Fit"])
@@ -4138,6 +4233,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.analysis_type_combo.blockSignals(False)
 
         self._update_component_note()
+        self._update_concentration_box()
 
     def _update_component_note(self):
         """Refresh the components guidance note (incl. multi-harmonic state)."""
@@ -4146,7 +4242,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if required <= 1:
             self.components_note.setText(
                 "Linear Projection (2 components) outputs one fraction image; "
-                "Component Fit outputs one fraction image per component."
+                "Component Fit outputs one fraction image per component; "
+                "Absolute Concentration (2 components) outputs the calibrated "
+                "component's concentration, plus the other component's and "
+                "the total with a brightness ratio."
             )
             self.components_note.setStyleSheet("color: gray; font-size: 11px;")
             return
@@ -4170,6 +4269,366 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.components_note.setStyleSheet(
                 "color: #d35400; font-size: 11px;"
             )
+
+    def _build_concentration_box(self):
+        """Build the calibration inputs of an absolute concentration.
+
+        Mirrors the interactive Components tab, and is only shown while
+        *Absolute Concentration* is the analysis type. The reference
+        solution is measured on a viewer layer when the batch starts, or
+        typed in (per harmonic, like the component locations).
+        """
+        box, layout = self._section("Concentration calibration")
+        layout.addWidget(
+            self._note(
+                "Turns each pixel's intensity into an absolute "
+                "concentration, calibrated on a solution of one component "
+                "at a known concentration, acquired with the same instrument "
+                "settings and processed like the files."
+            )
+        )
+        form = self._form()
+
+        self.concentration_calibrated_combo = QComboBox()
+        self.concentration_calibrated_combo.setToolTip(
+            "The component whose pure solution was measured as the "
+            "reference (for NADH, free NADH). Its concentration is always "
+            "exported."
+        )
+        self.concentration_calibrated_combo.currentIndexChanged.connect(
+            lambda _=None: self._refresh_concentration_names()
+        )
+        form.addRow(
+            "Calibrated component:", self.concentration_calibrated_combo
+        )
+
+        self.concentration_reference_combo = QComboBox()
+        self.concentration_reference_combo.addItem(MANUAL_REFERENCE)
+        self.concentration_reference_combo.setToolTip(
+            "Layer of the calibration solution, loaded in the viewer and "
+            "processed like the files: its mean intensity and phasor center "
+            "at the component harmonic are measured when the batch starts.\n"
+            f"Choose '{MANUAL_REFERENCE}' to type them in."
+        )
+        self.concentration_reference_combo.currentIndexChanged.connect(
+            lambda _=None: self._on_concentration_reference_changed()
+        )
+        form.addRow(
+            self._required_label("Reference solution:"),
+            self.concentration_reference_combo,
+        )
+
+        self.concentration_mean_edit = QLineEdit()
+        self.concentration_mean_edit.setPlaceholderText("Mean intensity")
+        self.concentration_mean_edit.setToolTip(
+            "Mean fluorescence intensity of the calibration solution, in the "
+            "same units as the files' intensity."
+        )
+        form.addRow("Intensity:", self.concentration_mean_edit)
+
+        phasor_row = QHBoxLayout()
+        phasor_row.setContentsMargins(0, 0, 0, 0)
+        self.concentration_g_edit = QLineEdit()
+        self.concentration_s_edit = QLineEdit()
+        for label, edit in (
+            ("G", self.concentration_g_edit),
+            ("S", self.concentration_s_edit),
+        ):
+            edit.setToolTip(
+                "Phasor coordinate of the calibration solution at the "
+                "harmonic selected above."
+            )
+            edit.editingFinished.connect(self._store_concentration_reference)
+            phasor_row.addWidget(QLabel(label))
+            phasor_row.addWidget(edit)
+        phasor_container = QWidget()
+        phasor_container.setLayout(phasor_row)
+        form.addRow("Phasor:", phasor_container)
+
+        value_row = QHBoxLayout()
+        value_row.setContentsMargins(0, 0, 0, 0)
+        self.concentration_value_edit = QLineEdit("1")
+        self.concentration_value_edit.setToolTip(
+            "Known concentration of the calibration solution. The exported "
+            "concentrations are in the same units."
+        )
+        self.concentration_units_combo = QComboBox()
+        self.concentration_units_combo.setEditable(True)
+        self.concentration_units_combo.addItems(CONCENTRATION_UNITS)
+        self.concentration_units_combo.setToolTip(
+            "Unit of the reference concentration, used to label the exported "
+            "histograms."
+        )
+        value_row.addWidget(self.concentration_value_edit, 1)
+        value_row.addWidget(self.concentration_units_combo)
+        value_container = QWidget()
+        value_container.setLayout(value_row)
+        form.addRow(self._required_label("Concentration:"), value_container)
+
+        self.concentration_second_checkbox = QCheckBox()
+        self.concentration_second_checkbox.setToolTip(
+            "Also export the concentration of the other component, and the "
+            "total of both. Needs their brightness ratio."
+        )
+        form.addRow(self.concentration_second_checkbox)
+        self.concentration_ratio_edit = QLineEdit("1")
+        self.concentration_ratio_edit.setEnabled(False)
+        self.concentration_ratio_edit.setToolTip(
+            "Molecular brightness of the other component relative to the "
+            "calibrated one (bound NADH is about 3 to 5 times brighter than "
+            "free NADH)."
+        )
+        self.concentration_second_checkbox.toggled.connect(
+            self.concentration_ratio_edit.setEnabled
+        )
+        form.addRow("Brightness ratio:", self.concentration_ratio_edit)
+        layout.addLayout(form)
+
+        self.concentration_note = self._note("")
+        self.concentration_note.setVisible(False)
+        layout.addWidget(self.concentration_note)
+
+        # Typed reference phasors, ``{harmonic: (g, s)}``.
+        self._concentration_reference_coords = {}
+        box.setVisible(False)
+        return box
+
+    def _uses_concentration_layer(self):
+        """Return whether the concentration reference is a viewer layer."""
+        return self.concentration_reference_combo.currentIndex() > 0
+
+    def _set_concentration_note(self, text):
+        """Show *text* under the concentration inputs, or hide the note."""
+        self.concentration_note.setText(text)
+        self.concentration_note.setVisible(bool(text))
+
+    def _update_concentration_box(self):
+        """Show the concentration inputs only for that analysis type."""
+        active = (
+            self.analysis_type_combo.currentText() == ABSOLUTE_CONCENTRATION
+        )
+        self.concentration_box.setVisible(active)
+        self._refresh_concentration_names()
+        if active and self._uses_concentration_layer():
+            self._show_concentration_reference()
+
+    def _refresh_concentration_names(self):
+        """Name the two components in the concentration inputs."""
+        combo = self.concentration_calibrated_combo
+        names = [
+            entry["name"].text().strip() or f"Component {index}"
+            for index, entry in enumerate(self._component_rows[:2], start=1)
+        ]
+        combo.blockSignals(True)
+        try:
+            for index, name in enumerate(names):
+                if index < combo.count():
+                    combo.setItemText(index, name)
+                else:
+                    combo.addItem(name)
+        finally:
+            combo.blockSignals(False)
+        other = (
+            names[1 - combo.currentIndex()]
+            if len(names) == 2 and combo.currentIndex() in (0, 1)
+            else "the other component"
+        )
+        self.concentration_second_checkbox.setText(
+            f"Also export {other} and total concentrations"
+        )
+
+    def _on_concentration_reference_changed(self):
+        """Measure the reference on its layer, or let it be typed in."""
+        from_layer = self._uses_concentration_layer()
+        for edit in (
+            self.concentration_mean_edit,
+            self.concentration_g_edit,
+            self.concentration_s_edit,
+        ):
+            edit.setReadOnly(from_layer)
+        if from_layer:
+            self._show_concentration_reference()
+        else:
+            # The last measurement is a good start for typed values.
+            self._store_concentration_reference()
+            self._set_concentration_note("")
+
+    def _show_concentration_reference(self):
+        """Show the reference measured on its layer at the edited harmonic."""
+        name = self.concentration_reference_combo.currentText()
+        harmonic = self._component_current_harmonic
+        values = None
+        if name in self.viewer.layers:
+            values = phasor_reference_from_layer(
+                self.viewer.layers[name], harmonic
+            )
+        edits = (
+            self.concentration_mean_edit,
+            self.concentration_g_edit,
+            self.concentration_s_edit,
+        )
+        if values is None:
+            for edit in edits:
+                edit.clear()
+            self._set_concentration_note(
+                f"No usable phasor data in {name} at harmonic {harmonic}."
+            )
+            return
+        for edit, value in zip(edits, values, strict=True):
+            edit.setText(f"{value:.6g}")
+        self._set_concentration_note("")
+
+    def _store_concentration_reference(self):
+        """Keep the typed reference phasor for the edited harmonic."""
+        if self._uses_concentration_layer():
+            return
+        g = self._parse_float(self.concentration_g_edit.text())
+        s = self._parse_float(self.concentration_s_edit.text())
+        harmonic = self._component_current_harmonic
+        if g is None or s is None:
+            self._concentration_reference_coords.pop(harmonic, None)
+        else:
+            self._concentration_reference_coords[harmonic] = (g, s)
+
+    def _load_concentration_reference(self):
+        """Show the reference phasor of the edited harmonic."""
+        if self._uses_concentration_layer():
+            self._show_concentration_reference()
+            return
+        stored = self._concentration_reference_coords.get(
+            self._component_current_harmonic
+        )
+        for edit, value in zip(
+            (self.concentration_g_edit, self.concentration_s_edit),
+            stored if stored else (None, None),
+            strict=True,
+        ):
+            edit.setText("" if value is None else str(value))
+
+    def _collect_concentration(self, harmonic):
+        """Return the calibration of an absolute-concentration run.
+
+        A reference layer is measured now, at *harmonic*, so the batch uses
+        it as it is processed when the run starts.
+
+        Raises
+        ------
+        ValueError
+            When an input is missing or invalid; the message says which.
+        """
+        name = self.concentration_reference_combo.currentText()
+        if self._uses_concentration_layer():
+            if name not in self.viewer.layers:
+                raise ValueError(
+                    f"The concentration reference layer '{name}' is no "
+                    "longer open."
+                )
+            reference = phasor_reference_from_layer(
+                self.viewer.layers[name], harmonic
+            )
+            if reference is None:
+                raise ValueError(
+                    f"No usable phasor data in '{name}' at harmonic "
+                    f"{harmonic} for the concentration reference."
+                )
+        else:
+            self._store_concentration_reference()
+            g, s = self._concentration_reference_coords.get(
+                harmonic, (None, None)
+            )
+            mean = self._parse_float(self.concentration_mean_edit.text())
+            if mean is None or g is None or s is None:
+                raise ValueError(
+                    "Enter the concentration reference's intensity, G and S "
+                    f"at harmonic {harmonic}, or choose its layer."
+                )
+            reference = (mean, g, s)
+        if reference[0] <= 0:
+            raise ValueError(
+                "The concentration reference intensity must be positive."
+            )
+        concentration = self._parse_float(self.concentration_value_edit.text())
+        if concentration is None or concentration <= 0:
+            raise ValueError(
+                "Enter the reference concentration as a positive number."
+            )
+        ratio = None
+        if self.concentration_second_checkbox.isChecked():
+            ratio = self._parse_float(self.concentration_ratio_edit.text())
+            if ratio is None or ratio <= 0:
+                raise ValueError(
+                    "Enter the brightness ratio as a positive number."
+                )
+        return {
+            "calibrated_component": (
+                1
+                if self.concentration_calibrated_combo.currentIndex() == 1
+                else 0
+            ),
+            "reference": [float(value) for value in reference],
+            "reference_layer": (
+                name if self._uses_concentration_layer() else None
+            ),
+            "reference_concentration": concentration,
+            "units": self.concentration_units_combo.currentText().strip(),
+            "brightness_ratio": ratio,
+        }
+
+    def _apply_concentration_settings(self, block, harmonic):
+        """Fill the concentration inputs from copied ``concentration`` settings.
+
+        The measured reference was stored with the analysis, so it is copied
+        as typed values unless its layer is open here.
+        """
+        self.concentration_calibrated_combo.setCurrentIndex(
+            1 if block.get("calibrated_component") == 1 else 0
+        )
+        concentration = block.get("reference_concentration")
+        if concentration is not None:
+            self.concentration_value_edit.setText(f"{float(concentration):g}")
+        self.concentration_units_combo.setCurrentText(block.get("units") or "")
+        self.concentration_second_checkbox.setChecked(
+            bool(block.get("second_component"))
+        )
+        ratio = block.get("brightness_ratio")
+        if ratio is not None:
+            self.concentration_ratio_edit.setText(f"{float(ratio):g}")
+
+        coords = {}
+        for key, entry in (block.get("reference_gs_harmonics") or {}).items():
+            if isinstance(entry, dict) and None not in (
+                entry.get("g"),
+                entry.get("s"),
+            ):
+                coords[int(key)] = (float(entry["g"]), float(entry["s"]))
+        self._concentration_reference_coords = coords
+        mean = block.get("reference_mean")
+        self.concentration_mean_edit.setText(
+            "" if mean is None else str(float(mean))
+        )
+
+        name = block.get("reference_layer")
+        index = (
+            self.concentration_reference_combo.findText(name) if name else -1
+        )
+        self.concentration_reference_combo.blockSignals(True)
+        self.concentration_reference_combo.setCurrentIndex(max(index, 0))
+        self.concentration_reference_combo.blockSignals(False)
+        for edit in (
+            self.concentration_mean_edit,
+            self.concentration_g_edit,
+            self.concentration_s_edit,
+        ):
+            edit.setReadOnly(index > 0)
+        # Shown before the harmonic moves, since moving it stores what is
+        # shown for the harmonic it leaves.
+        self._load_concentration_reference()
+        # The analysis ran at one harmonic; reproducing it means using that
+        # one.
+        if harmonic is not None and int(harmonic) != (
+            self._component_current_harmonic
+        ):
+            self.components_harmonic_spin.setValue(int(harmonic))
 
     def _open_component_line_style_dialog(self):
         """Edit the component dot/line style used in the exported plot."""
@@ -4366,7 +4825,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         event.accept()
 
     def _populate_layer_comboboxes(self):
-        """Refill the reference layer combobox, keeping any valid selection."""
+        """Refill the reference layer comboboxes, keeping valid selections."""
         names = self._phasor_layer_names()
         combo = getattr(self, "calib_reference_combo", None)
         if combo is None:
@@ -4378,6 +4837,18 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if current in names:
             combo.setCurrentText(current)
         combo.blockSignals(False)
+
+        # The concentration reference: a layer that is gone falls back to
+        # typed values.
+        combo = self.concentration_reference_combo
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems([MANUAL_REFERENCE, *names])
+        combo.setCurrentIndex(max(combo.findText(current), 0))
+        combo.blockSignals(False)
+        if combo.currentText() != current:
+            self._on_concentration_reference_changed()
 
     def _on_select_folder(self):
         """Prompt for the input folder and rescan it."""
@@ -4927,6 +5398,17 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if index >= 0:
                 self.analysis_type_combo.setCurrentIndex(index)
 
+        concentration = component_analysis.get("concentration")
+        if isinstance(concentration, dict):
+            self._apply_concentration_settings(
+                concentration,
+                (
+                    component_analysis.get("last_analysis_harmonic")
+                    if analysis_type == ABSOLUTE_CONCENTRATION
+                    else None
+                ),
+            )
+
     def _load_reference_layer(self, path, harmonics):
         """Load the first phasor layer from a file as an in-memory Image."""
         reader = napari_get_reader(
@@ -5085,11 +5567,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             colormaps.append(entry["colormap"].currentText())
 
         count = len(self._component_rows)
-        if (
-            count == 2
-            and self.analysis_type_combo.currentText() == "Linear Projection"
-        ):
+        chosen = self.analysis_type_combo.currentText()
+        if count == 2 and chosen == "Linear Projection":
             analysis_type = "linear"
+        elif count == 2 and chosen == ABSOLUTE_CONCENTRATION:
+            analysis_type = "concentration"
         else:
             analysis_type = "fit"
 
@@ -5118,6 +5600,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     "harmonic": harmonic,
                 }
             )
+            if analysis_type == "concentration":
+                if reals[0] == reals[1]:
+                    raise ValueError(
+                        "The two components need different G coordinates "
+                        "for an absolute concentration."
+                    )
+                config["concentration"] = self._collect_concentration(harmonic)
             return config
 
         active = self._active_component_harmonics()
@@ -5384,6 +5873,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._auto_tabs = self._auto_contrast_tabs()
         self._global_contrast = {}
         self._global_contrast_acc = {}
+        self._output_axis_labels = {}
         self._deferred_exports = []
         self._deferred_dir = (
             tempfile.mkdtemp(prefix="napari_phasors_defer_")
@@ -5611,7 +6101,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
     def _subfolder_for_layer(self, layer_name):
         """Return the analysis-tab *key* that produced ``layer_name``."""
         analysis = split_analysis_layer_name(layer_name)[1]
-        if parse_component_analysis_label(analysis) is not None:
+        if (
+            parse_component_analysis_label(analysis) is not None
+            or parse_concentration_analysis_label(analysis) is not None
+        ):
             return "components"
         if analysis in (
             "Phase",
@@ -5630,11 +6123,15 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
     def _clean_layer_name(self, layer_name):
         """Return the analysis label of *layer_name* (its bracketed tag).
 
-        A component-analysis layer yields ``"<component> fraction"``.
+        A component-analysis layer yields ``"<component> fraction"`` and an
+        absolute-concentration layer ``"<component> concentration"``.
         """
         analysis = split_analysis_layer_name(layer_name)[1]
         if analysis is None:
             return layer_name
+        concentration = parse_concentration_analysis_label(analysis)
+        if concentration is not None:
+            return f"{concentration} concentration"
         parsed = parse_component_analysis_label(analysis)
         if parsed is not None:
             return f"{parsed[1]} fraction"
@@ -5903,6 +6400,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         tab = self._subfolder_for_layer(output.name)
         label = self._clean_layer_name(output.name)
         safe_label = _safe_suffix(label)
+        # A histogram axis says more than the output's name when it can (a
+        # concentration's units).
+        axis_label = output.metadata.get("axis_label")
+        if axis_label:
+            self._output_axis_labels[label] = axis_label
         is_auto = tab in self._auto_tabs
         job = job_by_tab.get(tab)
 
@@ -6041,7 +6543,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 valid,
                 self._group_config.get("bins", 150),
                 f"{png_base}_{safe_label}_histogram.png",
-                label,
+                self._output_axis_labels.get(label, label),
                 colormap_colors=cmap_colors,
                 contrast_limits=value_range,
                 value_range=value_range,
@@ -6693,6 +7195,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     self._group_config,
                     path,
                     dpi=self._export_dpi(),
+                    axis_label=self._output_axis_labels.get(label),
                 )
                 stats_rows.extend(rows)
             if stats_rows:
@@ -7729,13 +8232,13 @@ def _add_phasor_overlay(plot, overlay):
         from .components_tab import draw_components_overlay
 
         components = overlay["components"]
-        # The pipeline stores "linear"/"fit"; draw_components_overlay expects
-        # the interactive labels to decide colormap-line vs polygon rendering.
-        analysis_type = (
-            "Linear Projection"
-            if components.get("analysis_type") == "linear"
-            else "Component Fit"
-        )
+        # The pipeline stores "linear"/"fit"/"concentration";
+        # draw_components_overlay expects the interactive labels to decide
+        # colormap-line vs polygon rendering.
+        analysis_type = {
+            "linear": "Linear Projection",
+            "concentration": ABSOLUTE_CONCENTRATION,
+        }.get(components.get("analysis_type"), "Component Fit")
         line_style = components.get("line_style") or {}
         label_style = components.get("label_style") or {}
         fractions_colormap = components.get("fractions_colormap")
@@ -8140,7 +8643,14 @@ def _save_combined_contour(
 
 
 def _save_grouped_histogram(
-    group_items, group_meta, colors, label, config, path, dpi=300
+    group_items,
+    group_meta,
+    colors,
+    label,
+    config,
+    path,
+    dpi=300,
+    axis_label=None,
 ):
     """Save a combined histogram and return exact per-group statistics rows.
 
@@ -8158,6 +8668,9 @@ def _save_grouped_histogram(
       the interactive Plotter's grouped histogram.
     - ``"Merged"`` / ``"Individual layers"`` draw one pooled curve per group
       key, as before.
+
+    ``axis_label`` titles the x axis when it says more than ``label`` does
+    (the units of a concentration); ``label`` still names the statistics.
     """
     mode = config.get("mode", "Merged")
     stats_rows = []
@@ -8195,7 +8708,7 @@ def _save_grouped_histogram(
                     assignments[member_label] = gid
 
         if datasets:
-            hw = _new_export_histogram(config, label)
+            hw = _new_export_histogram(config, axis_label or label)
             hw.display_mode = "Grouped"
             hw._group_assignments = assignments
             hw._group_names = group_names
@@ -8220,7 +8733,7 @@ def _save_grouped_histogram(
             datasets[name] = pooled
 
     if datasets:
-        hw = _new_export_histogram(config, label)
+        hw = _new_export_histogram(config, axis_label or label)
         hw.display_mode = "Individual layers"
         layer_colors = {}
         for key, color in colors.items():

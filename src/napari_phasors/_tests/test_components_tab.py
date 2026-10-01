@@ -1,3 +1,4 @@
+import copy
 from unittest.mock import MagicMock, patch
 
 import matplotlib.colors as mcolors
@@ -28,21 +29,29 @@ from napari_phasors._utils import (
     StatisticsTableWidget,
     analysis_layer_name,
     component_analysis_label,
+    concentration_analysis_label,
     is_component_fit_label,
     split_analysis_layer_name,
 )
 from napari_phasors.components_tab import (
+    ABSOLUTE_CONCENTRATION,
     COMPONENT_LABELS_TAG,
     LABELS_DOMINANT,
     LABELS_PER_COMPONENT,
+    MANUAL_REFERENCE,
+    TOTAL_CONCENTRATION,
     CenterFillSlider,
     ComponentsWidget,
     _as_hex,
+    _finite_or_nan,
     _label_color_dict,
+    component_concentrations,
     component_label_map,
     dominant_component_label_map,
     draw_components_overlay,
     draw_fraction_histogram_overlay,
+    harmonic_plane,
+    phasor_reference_from_layer,
 )
 from napari_phasors.plotter import PlotterWidget
 
@@ -782,14 +791,11 @@ def test_components_adding_and_removing_components(make_viewer_model, qtbot):
     assert comp.add_component_btn.isEnabled()
     assert not comp.components[0].remove_button.isEnabled()
 
-    # With 2 components, both analyses are available.
-    assert comp.analysis_type_combo.count() == 2
-    items = [
+    # With 2 components, every two-component method is available.
+    assert [
         comp.analysis_type_combo.itemText(i)
         for i in range(comp.analysis_type_combo.count())
-    ]
-    assert "Linear Projection" in items
-    assert "Component Fit" in items
+    ] == ["Linear Projection", "Component Fit", ABSOLUTE_CONCENTRATION]
 
     # The run button's text follows the analysis type.
     assert comp.calculate_button.text() == "Display Component Fraction Images"
@@ -870,6 +876,116 @@ def test_components_adding_and_removing_components(make_viewer_model, qtbot):
     comp._refresh_editor_title()
     comp._update_row_coords_label(0)
     comp._update_all_row_coords_labels()
+
+    # Absolute concentration: an incomplete calibration warns and stores
+    # nothing.
+    _concentration_ready(viewer, layer, parent, comp, reference=False)
+    with patch("napari_phasors.components_tab.show_warning") as warn:
+        comp._run_analysis()
+    warn.assert_called_once()
+    assert "reference solution" in warn.call_args[0][0]
+    assert _concentration_maps(viewer) == {}
+    assert 'component_analysis' not in (layer.metadata.get('settings') or {})
+
+    # Choosing the method swaps in its inputs, labels and histogram axis.
+    assert not comp.concentration_box.isHidden()
+    assert comp.add_component_btn.isHidden()
+    assert comp.calculate_button.text() == "Calculate Absolute Concentrations"
+    assert comp.histogram_widget.xlabel == "Concentration (mM)"
+    assert comp.histogram_widget.range_label.text() == (
+        "Concentration range (mM):"
+    )
+    assert [
+        comp.calibrated_component_combo.itemText(i)
+        for i in range(comp.calibrated_component_combo.count())
+    ] == ["Component 1", "Component 2"]
+    assert "Component 2" in comp.second_component_checkbox.text()
+    assert [
+        comp.reference_source_combo.itemText(i)
+        for i in range(comp.reference_source_combo.count())
+    ] == [MANUAL_REFERENCE, layer.name, "reference"]
+    assert not comp.reference_mean_edit.isReadOnly()
+    assert not comp.brightness_ratio_edit.isEnabled()
+    comp.second_component_checkbox.setChecked(True)
+    assert comp.brightness_ratio_edit.isEnabled()
+    comp.calibrated_component_combo.setCurrentIndex(1)
+    assert "Component 1" in comp.second_component_checkbox.text()
+    comp.reference_source_combo.setCurrentText("reference")
+    assert comp.reference_mean_edit.isReadOnly()
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    assert comp.concentration_box.isHidden()
+    assert comp.histogram_widget.xlabel == "Fraction"
+    assert comp.histogram_widget.range_factor == 1000
+    assert not comp.add_component_btn.isHidden()
+    comp.analysis_type_combo.setCurrentText(ABSOLUTE_CONCENTRATION)
+    assert comp.add_component_btn.isHidden()
+    comp._add_component()
+    assert comp.analysis_type == "Component Fit"
+    assert comp.concentration_box.isHidden()
+    assert not comp.add_component_btn.isHidden()
+
+    # The run button says which calibration input is missing or wrong.
+    _concentration_ready(viewer, layer, parent, comp, reference=False)
+    assert "reference solution's layer" in comp._components_validation()
+    _type_reference(comp, -3, 0.8, 0.3)
+    assert "intensity must be a positive" in comp._components_validation()
+    _type_reference(comp, 3, 0.8, 0.3)
+    assert comp._components_validation() is None
+    comp.reference_concentration_edit.setText("0")
+    assert "reference concentration" in comp._components_validation()
+    comp.reference_concentration_edit.setText("1")
+    comp.second_component_checkbox.setChecked(True)
+    comp.brightness_ratio_edit.setText("abc")
+    assert "brightness ratio" in comp._components_validation()
+    comp.brightness_ratio_edit.setText("1.5")
+    assert comp._components_validation() is None
+    # The model needs the two components apart along G.
+    comp.components[1].g_edit.setText(str(_CONC_COMPONENTS[0][0]))
+    comp._on_component_coords_changed(1)
+    assert "different G" in comp._components_validation()
+    comp.components[1].g_edit.setText(str(_CONC_COMPONENTS[1][0]))
+    comp._on_component_coords_changed(1)
+    # A reference layer with nothing to measure is named, and so is an
+    # entry naming a layer that is not there.
+    with patch(
+        "napari_phasors.components_tab.phasor_reference_from_layer",
+        return_value=None,
+    ):
+        comp.reference_source_combo.setCurrentText("reference")
+    assert "No usable phasor data in reference" in (
+        comp._components_validation()
+    )
+    assert not comp.reference_note.isHidden()
+    assert comp.reference_mean_edit.text() == ""
+    comp.reference_source_combo.addItem("closed layer")
+    comp.reference_source_combo.setCurrentText("closed layer")
+    assert comp._reference_layer() is None
+    assert "No usable phasor data in closed layer" in (
+        comp._components_validation()
+    )
+
+    # Fraction filters stay fraction filters on the two components.
+    _concentration_ready(viewer, layer, parent, comp)
+    params = comp._component_filter_params(0)
+    assert params['analysis_type'] == "Linear Projection"
+    assert params['component_real'] == [0.9, 0.25]
+    assert [index for index, *_ in comp._filterable_components()] == [0, 1]
+    assert "Run the component analysis" in comp._filter_enable_blocked_reason()
+    _enable_second_component(comp)
+    comp._run_analysis()
+    assert comp._has_analysed_fractions()
+    assert comp._filter_enable_blocked_reason() is None
+
+    # Concentration maps are never another method's data.
+    total = viewer.layers[_cname(layer, "Total")]
+    assert comp._find_component_index_for_layer(total) is None
+    assert comp._layer_matches_analysis_type(total)
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    assert not comp._layer_matches_analysis_type(total)
+    assert comp._get_component_names_from_fraction_layers() == []
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    assert not comp._layer_matches_analysis_type(total)
+    assert comp._get_all_layers_for_component(0) == []
 
 
 def test_components_three_component_fit(make_viewer_model, qtbot):
@@ -1572,6 +1688,36 @@ def test_components_rename_follows_into_histogram_and_statistics(
     ]
     assert headers()[1] == "Free NADH Center of Mass"
 
+    # Absolute concentration: renaming the reference, the sample or a
+    # component carries through.
+    comp = comp_widget
+    sample = viewer.layers["img0"]
+    _concentration_ready(viewer, sample, parent, comp)
+    comp._run_analysis()
+    # An unsaved edit names the reference too.
+    comp.reference_concentration_edit.setText("2")
+    comp.reference_concentration_edit.editingFinished.emit()
+    assert parent.settings_store.has_draft(sample, ['component_analysis'])
+    viewer.layers['reference'].name = "NADH 1 mM"
+    assert comp.reference_source_combo.currentText() == "NADH 1 mM"
+    assert _stored_concentration(sample)['reference_layer'] == "NADH 1 mM"
+    draft = parent.layer_settings(sample)['component_analysis'][
+        'concentration'
+    ]
+    assert draft['reference_layer'] == "NADH 1 mM"
+    assert draft['reference_concentration'] == 2.0
+    sample.name = "cell"
+    maps = _concentration_maps(viewer)
+    assert list(maps) == [_cname(sample, "Component 1")]
+    tag = maps[_cname(sample, "Component 1")].metadata[
+        'phasor_component_fraction'
+    ]
+    assert tag['source_layer'] == "cell"
+    _rename_component(comp, 0, "Free NADH")
+    assert list(_concentration_maps(viewer)) == [_cname(sample, "Free NADH")]
+    assert comp.calibrated_component_combo.itemText(0) == "Free NADH"
+    assert "Free NADH" in comp._available_histogram_components
+
 
 def test_components_layer_visibility_follows_checked_components(
     make_napari_viewer,
@@ -2172,6 +2318,137 @@ def test_linear_projection_layer_names(make_viewer_model, qtbot):
         == f"renamed Intensity [(Linear Projection) {name1}]"
     )
 
+    # Absolute concentration: a run adds one tagged map per quantity and
+    # stores its calibration.
+    reference = _concentration_ready(viewer, layer, parent, comp)
+    _enable_second_component(comp)
+    comp._run_analysis()
+    maps = _concentration_maps(viewer)
+    assert list(maps) == [
+        _cname(layer, "Component 1"),
+        _cname(layer, "Component 2"),
+        _cname(layer, "Total"),
+    ]
+    first, second, total = _expected_concentrations(
+        layer, reference, ratio=2.0
+    )
+    for name, want in zip(maps, (first, second, total), strict=True):
+        np.testing.assert_array_equal(maps[name].data, want)
+        np.testing.assert_array_equal(
+            maps[name].metadata['fraction_data_original'], want
+        )
+    total_map = maps[_cname(layer, "Total")]
+    tag = total_map.metadata['phasor_component_fraction']
+    assert tag['total'] is True
+    assert tag['component_index'] is None
+    assert tag['units'] == "mM"
+    assert tag['harmonic'] == 1
+    assert tag['source_layer'] == layer.name
+    assert total_map.colormap.name == "viridis"
+    block = layer.metadata['settings']['component_analysis']
+    assert block['analysis_type'] == ABSOLUTE_CONCENTRATION
+    stored = block['concentration']
+    measured = phasor_reference_from_layer(reference, 1)
+    assert stored['reference_layer'] == "reference"
+    assert stored['reference_mean'] == measured[0]
+    assert stored['reference_gs_harmonics'] == {
+        '1': {'g': measured[1], 's': measured[2]}
+    }
+    assert stored['calibrated_component'] == 0
+    assert stored['reference_concentration'] == 1.0
+    assert stored['units'] == "mM"
+    assert stored['second_component'] is True
+    assert stored['brightness_ratio'] == 2.0
+    # How each map is shown is stored too: the components' with their
+    # coordinates, the total's on its own.
+    display = block['components']['0']['gs_harmonics']['1']
+    assert display['analysis_type'] == ABSOLUTE_CONCENTRATION
+    assert display['colormap_name'] == comp.component_colormap_names[0]
+    assert stored['total_display']['colormap_name'] == "viridis"
+    assert comp.fraction_layers == [
+        maps[_cname(layer, "Component 1")],
+        maps[_cname(layer, "Component 2")],
+    ]
+    # The histogram offers both components and the total.
+    assert comp._available_histogram_components == [
+        "Component 1",
+        "Component 2",
+        TOTAL_CONCENTRATION,
+    ]
+    assert comp.histogram_widget.xlabel == "Concentration (mM)"
+    assert comp.total_histogram_checkbox.isEnabled()
+    comp.total_histogram_checkbox.setChecked(True)
+    assert comp._histogram_components == ["Component 1", TOTAL_CONCENTRATION]
+    comp.total_histogram_checkbox.setChecked(False)
+    assert comp._histogram_components == ["Component 1"]
+
+    # A rerun updates the maps in place, keeping their identity, name and
+    # display until the concentration scale changes.
+    first_map = viewer.layers[_cname(layer, "Component 1")]
+    first_map.contrast_limits = (0.1, 0.2)
+    comp._run_analysis()
+    assert viewer.layers[_cname(layer, "Component 1")] is first_map
+    assert tuple(first_map.contrast_limits) == pytest.approx((0.1, 0.2))
+    old = np.array(first_map.data)
+    comp.reference_concentration_edit.setText("1000")
+    comp.reference_concentration_edit.editingFinished.emit()
+    comp.concentration_units_combo.setCurrentText("µM")
+    comp.concentration_units_combo.lineEdit().editingFinished.emit()
+    comp._run_analysis()
+    np.testing.assert_allclose(first_map.data, old * 1000, rtol=1e-12)
+    assert first_map.contrast_limits[1] == pytest.approx(
+        np.nanmax(first_map.data)
+    )
+    assert first_map.metadata['phasor_component_fraction']['units'] == "µM"
+    assert comp.histogram_widget.xlabel == "Concentration (µM)"
+    # A map still named after a component is named after it again, and one
+    # the user renamed keeps its name.
+    first_map.name = _cname(layer, "Other")
+    comp._run_analysis()
+    assert first_map.name == _cname(layer, "Component 1")
+    first_map.name = "my free map"
+    comp._run_analysis()
+    assert viewer.layers["my free map"] is first_map
+    # Without the second component, its maps and the total go.
+    comp.second_component_checkbox.setChecked(False)
+    comp._run_analysis()
+    assert list(_concentration_maps(viewer)) == ["my free map"]
+    assert comp.fraction_layers == []
+
+    # Calibrating on the second component puts it first in the model.
+    _concentration_ready(viewer, layer, parent, comp)
+    comp.calibrated_component_combo.setCurrentIndex(1)
+    comp._run_analysis()
+    maps = _concentration_maps(viewer)
+    assert list(maps) == [_cname(layer, "Component 2")]
+    want, _second, _total = _expected_concentrations(
+        layer, reference, order=(1, 0)
+    )
+    only = maps[_cname(layer, "Component 2")]
+    np.testing.assert_array_equal(only.data, want)
+    assert only.metadata['phasor_component_fraction']['component_index'] == 1
+    assert comp._find_component_index_for_layer(only) == 1
+    assert _stored_concentration(layer)['calibrated_component'] == 1
+
+    # The histogram range slider stays within its integer range at any
+    # magnitude.
+    _concentration_ready(viewer, layer, parent, comp)
+    comp.reference_concentration_edit.setText("1000000")
+    comp.reference_concentration_edit.editingFinished.emit()
+    comp.concentration_units_combo.setCurrentText("nM")
+    comp.concentration_units_combo.lineEdit().editingFinished.emit()
+    comp._run_analysis()
+    histogram = comp.histogram_widget
+    assert histogram.xlabel == "Concentration (nM)"
+    assert histogram.range_label.text() == "Concentration range (nM):"
+    assert histogram.range_slider.maximum() <= 10_000_000
+    assert histogram.range_factor < 1000
+    assert comp._histogram_range_factor(0.0, 1.47) == 1e5
+    assert comp._histogram_range_factor(0.0, 0.0) == 1000
+    assert comp._histogram_range_factor(0.0, np.nan) == 1000
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    assert comp._histogram_range_factor(0.0, 1e6) == 1000
+
 
 def test_component_fit_layer_names_do_not_collide_with_projection(
     make_viewer_model, qtbot
@@ -2350,6 +2627,96 @@ def test_components_restore_from_metadata(make_viewer_model, qtbot):
     # Calling with empty or missing components setting does nothing
     layer.metadata["settings"]["component_analysis"]["components"] = {}
     comp._remove_component_from_settings(0)
+
+    # Absolute concentration: typed reference phasors are drafts kept per
+    # harmonic, and only a run stores them.
+    _concentration_ready(viewer, layer, parent, comp, reference=False)
+    _type_reference(comp, 2.5, 0.8, 0.3)
+    draft = parent.layer_settings(layer)['component_analysis']
+    assert draft['concentration']['reference_gs_harmonics'] == {
+        '1': {'g': 0.8, 's': 0.3}
+    }
+    assert draft['concentration']['reference_mean'] == 2.5
+    assert draft['concentration']['reference_layer'] is None
+    assert 'component_analysis' not in (layer.metadata.get('settings') or {})
+    parent.harmonic_spinbox.setValue(2)
+    assert comp.reference_g_edit.text() == ""
+    assert comp.reference_mean_edit.text() == "2.5"
+    _type_reference(comp, 2.5, 0.6, 0.35)
+    parent.harmonic_spinbox.setValue(1)
+    assert comp._reference_values() == (2.5, 0.8, 0.3)
+    comp._run_analysis()
+    assert _stored_concentration(layer)['reference_gs_harmonics'] == {
+        '1': {'g': 0.8, 's': 0.3},
+        '2': {'g': 0.6, 's': 0.35},
+    }
+
+    # A reference layer is measured at whichever harmonic is shown.
+    reference = _concentration_ready(viewer, layer, parent, comp)
+    assert comp._reference_values() == phasor_reference_from_layer(
+        reference, 1
+    )
+    parent.harmonic_spinbox.setValue(2)
+    assert comp._reference_values() == phasor_reference_from_layer(
+        reference, 2
+    )
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    parent.harmonic_spinbox.setValue(1)
+    comp.analysis_type_combo.setCurrentText(ABSOLUTE_CONCENTRATION)
+    assert comp._reference_values() == phasor_reference_from_layer(
+        reference, 1
+    )
+
+    # A reopened concentration shows, and reproduces, what was run.
+    _enable_second_component(comp, "3")
+    comp.concentration_units_combo.setCurrentText("µM")
+    comp.concentration_units_combo.lineEdit().editingFinished.emit()
+    comp.calibrated_component_combo.setCurrentIndex(1)
+    comp._run_analysis()
+    stored = copy.deepcopy(layer.metadata['settings']['component_analysis'])
+    measured = phasor_reference_from_layer(reference, 1)
+    other = PlotterWidget(viewer)
+    _select_layers(other, [layer.name])
+    restored = other.components_tab
+    other.tab_widget.setCurrentWidget(restored)
+    restored._on_image_layer_changed()
+    assert restored.analysis_type == ABSOLUTE_CONCENTRATION
+    assert not restored.concentration_box.isHidden()
+    assert restored.calibrated_component_combo.currentIndex() == 1
+    assert restored.reference_source_combo.currentText() == "reference"
+    assert restored._reference_values() == measured
+    assert restored.second_component_checkbox.isChecked()
+    assert restored.brightness_ratio_edit.isEnabled()
+    assert restored.brightness_ratio_edit.text() == "3"
+    assert restored._concentration_units() == "µM"
+    # Showing an analysis writes nothing.
+    assert layer.metadata['settings']['component_analysis'] == stored
+    # Without its reference layer, the stored measurement stands in.
+    viewer.layers.remove(reference)
+    assert restored.reference_source_combo.currentText() == MANUAL_REFERENCE
+    assert restored._reference_values() == measured
+    assert "was removed" in restored.reference_note.text()
+    # Reopened without the edits made since, the stored settings still name
+    # the missing layer.
+    other.settings_store.discard_drafts([layer])
+    restored._on_image_layer_changed()
+    assert restored.reference_source_combo.currentText() == MANUAL_REFERENCE
+    assert restored._reference_values() == measured
+    assert "is not open" in restored.reference_note.text()
+    # ...and reproduces the maps exactly.
+    name = _cname(layer, "Component 2")
+    before = np.array(viewer.layers[name].data)
+    restored._run_analysis()
+    np.testing.assert_array_equal(viewer.layers[name].data, before)
+    # Recreating from the metadata runs the analysis again.
+    for old in list(_concentration_maps(viewer).values()):
+        viewer.layers.remove(old)
+    restored._restore_and_recreate_components_from_metadata()
+    assert set(_concentration_maps(viewer)) == {
+        _cname(layer, "Component 1"),
+        _cname(layer, "Component 2"),
+        _cname(layer, "Total"),
+    }
 
 
 def test_components_artists_and_plot_settings_dialog(make_viewer_model, qtbot):
@@ -2732,6 +3099,123 @@ def test_components_internal_helpers(make_viewer_model, qtbot):
     comp.components[0].name_label.setText.assert_called_with("Component 1")
     assert comp.components[0].name_edit.text() == ""
 
+    # Absolute concentration: the model is the wrapped phasorpy function,
+    # with non-finite values left empty.
+    from phasorpy.component import phasor_component_concentration
+
+    mean = np.linspace(1, 9, 12).reshape(3, 4)
+    real = np.linspace(0.3, 0.6, 12).reshape(3, 4)
+    imag = np.linspace(0.2, 0.4, 12).reshape(3, 4)
+    model = ([0.9, 0.25], [0.25, 0.43])
+    calibration = (5.0, 0.8, 0.28)
+    first, second, total = component_concentrations(
+        mean, real, imag, *model, calibration, 2.0, brightness_ratio=1.5
+    )
+    want_first, want_second = phasor_component_concentration(
+        mean, real, imag, *model, *calibration, 2.0, brightness_ratio=1.5
+    )
+    np.testing.assert_array_equal(first, want_first)
+    np.testing.assert_array_equal(second, want_second)
+    np.testing.assert_array_equal(total, first + second)
+    only, no_second, no_total = component_concentrations(
+        mean, real, imag, *model, calibration, 2.0
+    )
+    np.testing.assert_array_equal(only, want_first)
+    assert no_second is None and no_total is None
+    np.testing.assert_array_equal(
+        _finite_or_nan(np.array([1.0, np.inf, -np.inf, np.nan])),
+        [1.0, np.nan, np.nan, np.nan],
+    )
+
+    # A plane and a reference are only read at a harmonic that exists.
+    from phasorpy.phasor import phasor_center
+
+    plane_real, plane_imag = harmonic_plane(layer, 2)
+    np.testing.assert_array_equal(plane_real, layer.metadata['G'][1])
+    np.testing.assert_array_equal(plane_imag, layer.metadata['S'][1])
+    assert harmonic_plane(layer, 5) == (None, None)
+    centre = phasor_center(
+        np.asarray(layer.data, dtype=float),
+        layer.metadata['G'][0],
+        layer.metadata['S'][0],
+    )
+    assert phasor_reference_from_layer(layer, 1) == pytest.approx(
+        tuple(float(v) for v in centre)
+    )
+    assert phasor_reference_from_layer(layer, 5) is None
+    # One plane is the only plane there is, whatever the harmonic asked;
+    # stacked planes cannot be told apart without their harmonics.
+    single = Image(
+        np.asarray(layer.data),
+        metadata={'G': layer.metadata['G'][0], 'S': layer.metadata['S'][0]},
+    )
+    np.testing.assert_array_equal(
+        harmonic_plane(single, 3)[0], layer.metadata['G'][0]
+    )
+    unlabelled = Image(
+        np.asarray(layer.data),
+        metadata={'G': layer.metadata['G'], 'S': layer.metadata['S']},
+    )
+    assert harmonic_plane(unlabelled, 1) == (None, None)
+    assert harmonic_plane(Image(np.zeros((4, 4))), 1) == (None, None)
+    # Nothing measurable, or an intensity that does not match the phasor,
+    # gives no reference.
+    blank = Image(
+        np.full(np.shape(layer.data), np.nan), metadata=dict(layer.metadata)
+    )
+    assert phasor_reference_from_layer(blank, 1) is None
+    mismatched = Image(
+        np.ones((3, 3)),
+        metadata={'G': layer.metadata['G'][0], 'S': layer.metadata['S'][0]},
+    )
+    assert phasor_reference_from_layer(mismatched, 1) is None
+
+    # Display ranges never collapse, and stored displays match the method.
+    assert ComponentsWidget._value_limits(np.full(4, np.nan)) == (0.0, 1.0)
+    assert ComponentsWidget._value_limits(np.array([])) == (0.0, 1.0)
+    low, high = ComponentsWidget._value_limits(np.array([2.0, 2.0]))
+    assert low == 2.0 and high > low
+    assert ComponentsWidget._value_limits(np.array([0.5, np.nan, 3.0])) == (
+        0.5,
+        3.0,
+    )
+    assert ComponentsWidget._concentration_display(None, 0, 1) is None
+    fraction_entry = {'colormap_name': "jet", 'analysis_type': "Component Fit"}
+    settings = {
+        'components': {'0': {'gs_harmonics': {'1': fraction_entry}}},
+        'concentration': {
+            'total_display': {'analysis_type': ABSOLUTE_CONCENTRATION}
+        },
+    }
+    assert ComponentsWidget._concentration_display(settings, 0, 1) is None
+    assert ComponentsWidget._concentration_display(settings, None, 1) == {
+        'analysis_type': ABSOLUTE_CONCENTRATION
+    }
+
+    # A run replaces only its own harmonic's reference phasor.
+    merge = ComponentsWidget._components_merge_rule([2])
+    merged = merge(
+        {
+            'components': {},
+            'concentration': {
+                'reference_gs_harmonics': {
+                    '1': {'g': 0.1, 's': 0.2},
+                    '2': {'g': 0.3, 's': 0.4},
+                }
+            },
+        },
+        {
+            'components': {},
+            'concentration': {
+                'reference_gs_harmonics': {'2': {'g': 0.5, 's': 0.6}}
+            },
+        },
+    )
+    assert merged['concentration']['reference_gs_harmonics'] == {
+        '1': {'g': 0.1, 's': 0.2},
+        '2': {'g': 0.5, 's': 0.6},
+    }
+
 
 def test_linear_projection_gamma_is_restored_and_preserved(
     make_viewer_model, qtbot
@@ -2985,6 +3469,29 @@ def test_draw_components_overlay_draws_fraction_histogram():
                 settings=settings,
             )
         mock_draw.assert_called_once()
+    finally:
+        plt.close(fig)
+
+    # Concentrations draw a plain line, never a fraction gradient.
+    fig, ax = plt.subplots()
+    try:
+        draw_components_overlay(
+            ax,
+            [0.9, 0.25],
+            [0.25, 0.43],
+            ["Free", "Bound"],
+            None,
+            ABSOLUTE_CONCENTRATION,
+            {
+                "show_labels": True,
+                "show_colormap_line": True,
+                "fractions_colormap": plt.get_cmap("jet")(
+                    np.linspace(0, 1, 8)
+                ),
+            },
+        )
+        assert not any(isinstance(c, LineCollection) for c in ax.collections)
+        assert not any(line.get_marker() == '*' for line in ax.lines)
     finally:
         plt.close(fig)
 
@@ -3557,7 +4064,7 @@ def test_linear_projection_per_layer_failures(make_viewer_model, qtbot):
     """Layers the projection cannot use are skipped or reported by name,
     and the per-layer entry point works on its own."""
     viewer = make_viewer_model()
-    _, comp_widget, layer = _projection_widget(viewer)
+    parent, comp_widget, layer = _projection_widget(viewer)
     real = layer.metadata["G"]
     harmonics = layer.metadata["harmonics"]
     c1 = comp_widget.components[0]
@@ -3609,6 +4116,58 @@ def test_linear_projection_per_layer_failures(make_viewer_model, qtbot):
         c1,
     )
     assert comp_widget.comp1_fractions_layer is not None
+
+    # Absolute concentration: a model error or a missing harmonic is
+    # reported, never raised.
+    comp = comp_widget
+    _concentration_ready(viewer, layer, parent, comp)
+    with (
+        patch(
+            "napari_phasors.components_tab.component_concentrations",
+            side_effect=ValueError("invalid g_cal=nan"),
+        ),
+        patch("napari_phasors.components_tab.show_error") as error,
+    ):
+        comp._run_analysis()
+    # A rerun after an earlier analysis also re-applies the filter stack,
+    # which runs the analysis once more and reports the same error.
+    assert error.call_count >= 1
+    assert all("invalid g_cal" in call[0][0] for call in error.call_args_list)
+    assert _concentration_maps(viewer) == {}
+    with (
+        patch(
+            "napari_phasors.components_tab.harmonic_plane",
+            return_value=(None, None),
+        ),
+        patch("napari_phasors.components_tab.show_warning") as warn,
+    ):
+        comp._run_concentration()
+    warn.assert_called_once()
+    assert "no phasor data at harmonic 1" in warn.call_args[0][0]
+    # Missing inputs make no parameters, and no run.
+    comp.reference_concentration_edit.setText("")
+    assert comp._concentration_parameters() is None
+    comp._run_concentration()
+    assert _concentration_maps(viewer) == {}
+    # Neither does an empty selection.
+    comp.reference_concentration_edit.setText("1")
+    with patch.object(parent, "get_selected_layers", return_value=[]):
+        comp._run_concentration()
+    assert _concentration_maps(viewer) == {}
+    # Restoring the components from settings never stages the section.
+    parent.settings_store.discard_drafts([layer])
+    comp._updating_settings = True
+    try:
+        comp._stage_concentration_settings()
+    finally:
+        comp._updating_settings = False
+    assert not parent.settings_store.has_draft(layer)
+    # An intensity that does not match the phasor cannot be analysed.
+    odd = Image(
+        np.ones((3, 3)),
+        metadata={'G': np.zeros((5, 5)), 'S': np.zeros((5, 5))},
+    )
+    assert ComponentsWidget._compute_layer_concentrations(odd, {}, 1) is None
 
 
 def _fit_widget(make_viewer_model, name="fit_layer"):
@@ -4476,6 +5035,74 @@ def test_a_picked_colour_stays_with_its_component_and_is_restored(
     )
     assert comp_widget._component_label_colors == {0: "#0000ff"}
 
+    # Absolute concentration: a map shares its look across images and gets
+    # it back when re-made.
+    comp = comp_widget
+    other = create_image_layer_with_phasors()
+    other.name = "b"
+    viewer.add_layer(other)
+    _concentration_ready(viewer, layer, parent, comp, samples=(other,))
+    viewer.add_labels(np.zeros((4, 4), dtype=np.uint8), name="mask")
+    _enable_second_component(comp)
+    comp._run_analysis()
+    total_a = viewer.layers[_cname(layer, "Total")]
+    total_b = viewer.layers[_cname(other, "Total")]
+    total_a.colormap = "magma"
+    total_a.gamma = 0.5
+    total_a.contrast_limits = (0.0, 0.5)
+    assert total_b.colormap.name == "magma"
+    assert total_b.gamma == 0.5
+    assert tuple(total_b.contrast_limits) == pytest.approx((0.0, 0.5))
+    for sample in (layer, other):
+        display = _stored_concentration(sample)['total_display']
+        assert display['colormap_name'] == "magma"
+        assert display['gamma'] == 0.5
+        assert display['contrast_limits'] == pytest.approx([0.0, 0.5])
+    first_a = viewer.layers[_cname(layer, "Component 1")]
+    first_a.colormap = "inferno"
+    assert viewer.layers[_cname(other, "Component 1")].colormap.name == (
+        "inferno"
+    )
+    entry = layer.metadata['settings']['component_analysis']['components'][
+        '0'
+    ]['gs_harmonics']['1']
+    assert entry['colormap_name'] == "inferno"
+    assert entry['analysis_type'] == ABSOLUTE_CONCENTRATION
+    viewer.layers.remove(total_a)
+    viewer.layers.remove(first_a)
+    comp._run_analysis()
+    total_a = viewer.layers[_cname(layer, "Total")]
+    assert total_a.colormap.name == "magma"
+    assert total_a.gamma == 0.5
+    assert tuple(total_a.contrast_limits) == pytest.approx((0.0, 0.5))
+    assert (
+        viewer.layers[_cname(layer, "Component 1")].colormap.name == "inferno"
+    )
+    # A total shown in the histogram follows its colormap there too.
+    comp._histogram_components = [TOTAL_CONCENTRATION]
+    comp._on_histogram_component_changed()
+    total_a.colormap = "plasma"
+    np.testing.assert_allclose(
+        comp.histogram_widget.colormap_colors, total_a.colormap.colors
+    )
+
+    # A custom colormap is stored by its colours, and a map re-made from it
+    # gets those colours back.
+    _concentration_ready(viewer, layer, parent, comp)
+    comp._run_analysis()
+    custom = viewer.layers[_cname(layer, "Component 1")]
+    custom.colormap = Colormap(
+        colors=np.array([[0, 0, 0, 1], [1, 0.5, 0, 1]], dtype=float),
+        name="my ramp",
+    )
+    entry = comp._layer_display_entry(custom)
+    assert entry['colormap_name'] is None
+    assert len(entry['colormap_colors']) == 2
+    viewer.layers.remove(custom)
+    comp._run_analysis()
+    remade = viewer.layers[_cname(layer, "Component 1")]
+    np.testing.assert_allclose(remade.colormap.colors[-1], [1, 0.5, 0, 1])
+
 
 def test_derived_arrays_are_measured_once_per_edit(make_viewer_model):
     """The baseline and the fractions are derived once, not once per card,
@@ -5017,3 +5644,116 @@ def test_every_criterion_follows_the_same_analysis_run(make_viewer_model):
     assert len(stored) == 2
     assert {f['params']['analysis_type'] for f in stored} == {"Component Fit"}
     assert len({tuple(f['params']['harmonics']) for f in stored}) == 1
+
+
+# --------------------------------------------------------------------------
+# Absolute concentration helpers. The scenarios are sections of the tests
+# above, which keeps one viewer and plotter for each of them.
+# --------------------------------------------------------------------------
+
+#: Positions of the two components the concentration sections place.
+_CONC_COMPONENTS = ((0.9, 0.25), (0.25, 0.43))
+
+
+def _cname(layer, component):
+    """Name of *layer*'s concentration map of *component* (or the total)."""
+    return analysis_layer_name(
+        concentration_analysis_label(component), layer.name
+    )
+
+
+def _enable_second_component(comp, ratio="2"):
+    """Also compute the second component, with brightness *ratio*."""
+    comp.second_component_checkbox.setChecked(True)
+    comp.brightness_ratio_edit.setText(ratio)
+    comp.brightness_ratio_edit.editingFinished.emit()
+
+
+def _type_reference(comp, mean, g, s):
+    """Type the reference solution's values and commit each field."""
+    for edit, value in (
+        (comp.reference_mean_edit, mean),
+        (comp.reference_g_edit, g),
+        (comp.reference_s_edit, s),
+    ):
+        edit.setText(str(value))
+        edit.editingFinished.emit()
+
+
+def _concentration_maps(viewer):
+    """Return ``{name: layer}`` of the concentration maps in *viewer*."""
+    return {
+        layer.name: layer
+        for layer in viewer.layers
+        if (layer.metadata.get('phasor_component_fraction') or {}).get(
+            'analysis_type'
+        )
+        == ABSOLUTE_CONCENTRATION
+    }
+
+
+def _concentration_ready(
+    viewer, layer, parent, comp, reference=True, samples=()
+):
+    """Set *comp* up for an absolute concentration of *layer* and *samples*.
+
+    Adds the ``reference`` layer once, then clears whatever an earlier
+    section left (maps, drafts, stored settings, extra components, typed
+    inputs) so a section can follow another on the same widget. The two
+    components are placed and named, and the reference solution is
+    measured on the ``reference`` layer, or typed in when *reference* is
+    false. Returns the ``reference`` layer.
+    """
+    if "reference" not in viewer.layers:
+        solution = create_image_layer_with_phasors()
+        solution.name = "reference"
+        viewer.add_layer(solution)
+    for old in list(_concentration_maps(viewer).values()):
+        viewer.layers.remove(old)
+    analysed = (layer, *samples)
+    for sample in analysed:
+        parent.settings_store.discard_drafts([sample])
+        (sample.metadata.get('settings') or {}).pop('component_analysis', None)
+    _select_layers(parent, [sample.name for sample in analysed])
+    parent.tab_widget.setCurrentWidget(comp)
+    while len(comp.components) > 2:
+        comp._remove_component()
+    comp.analysis_type_combo.setCurrentText(ABSOLUTE_CONCENTRATION)
+    for index, (g, s) in enumerate(_CONC_COMPONENTS):
+        _rename_component(comp, index, f"Component {index + 1}")
+        comp.components[index].g_edit.setText(str(g))
+        comp.components[index].s_edit.setText(str(s))
+        comp._on_component_coords_changed(index)
+    comp.second_component_checkbox.setChecked(False)
+    comp.calibrated_component_combo.setCurrentIndex(0)
+    comp.reference_concentration_edit.setText("1")
+    comp.reference_concentration_edit.editingFinished.emit()
+    comp.concentration_units_combo.setCurrentText("mM")
+    comp.concentration_units_combo.lineEdit().editingFinished.emit()
+    if reference:
+        comp.reference_source_combo.setCurrentText("reference")
+    else:
+        comp.reference_source_combo.setCurrentText(MANUAL_REFERENCE)
+        _type_reference(comp, "", "", "")
+    return viewer.layers["reference"]
+
+
+def _expected_concentrations(sample, reference, ratio=None, order=(0, 1)):
+    """Return what the tab should compute for *sample*, straight from the
+    wrapped model, with the components ordered calibrated first."""
+    real, imag = harmonic_plane(sample, 1)
+    return component_concentrations(
+        np.asarray(sample.data),
+        real,
+        imag,
+        [_CONC_COMPONENTS[i][0] for i in order],
+        [_CONC_COMPONENTS[i][1] for i in order],
+        phasor_reference_from_layer(reference, 1),
+        1.0,
+        ratio,
+    )
+
+
+def _stored_concentration(layer):
+    """Return the ``concentration`` settings committed to *layer*."""
+    return layer.metadata['settings']['component_analysis']['concentration']

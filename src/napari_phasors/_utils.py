@@ -2110,6 +2110,26 @@ def parse_component_analysis_label(label: str | None):
     return match.group("method"), match.group("name")
 
 
+_CONCENTRATION_LABEL_RE = re.compile(
+    r"^\(Absolute Concentration\) (?P<name>.+)$"
+)
+
+
+def concentration_analysis_label(component_name: str) -> str:
+    """Return the bracket label of an absolute-concentration layer.
+
+    ``concentration_analysis_label("Free")`` is
+    ``"(Absolute Concentration) Free"``; the summed map uses ``"Total"``.
+    """
+    return f"(Absolute Concentration) {component_name}"
+
+
+def parse_concentration_analysis_label(label: str | None) -> str | None:
+    """Return the component name of a concentration label, else None."""
+    match = _CONCENTRATION_LABEL_RE.match(label or "")
+    return None if match is None else match.group("name")
+
+
 def is_component_fit_label(label: str | None) -> bool:
     """Whether *label* is a component *fit* label (vs linear projection)."""
     match = _COMPONENT_LABEL_RE.match(label or "")
