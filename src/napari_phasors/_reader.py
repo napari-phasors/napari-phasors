@@ -39,6 +39,7 @@ from ._utils import (
     format_phasor_layer_name,
     show_activity_progress,
 )
+from ._writer import MASK_DESCRIPTION_KEY
 
 # The BrightEyes-MCS reader is optional, so import it only if present.
 _signal_from_brighteyes_mcs = getattr(io, "signal_from_brighteyes_mcs", None)
@@ -369,6 +370,10 @@ def napari_get_reader(
         return lambda path: ambiguous_file_reader(
             path, reader_options=reader_options, harmonics=harmonics
         )
+    elif path_lower.endswith((".tif", ".tiff")):
+        return lambda path: tiff_reader(
+            path, reader_options=reader_options, harmonics=harmonics
+        )
     elif path_lower.endswith(tuple(extension_mapping["processed"].keys())):
         return lambda path: processed_file_reader(
             path, reader_options=reader_options, harmonics=harmonics
@@ -524,6 +529,46 @@ def _store_batch_channel_choice(
         _CHANNEL_BATCH_CHOICES[signature] = choice
 
 
+def tiff_reader(
+    path: str,
+    reader_options: dict | None = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+) -> list[tuple]:
+    """Read a TIFF's phasors, or the TIFF as a plain image when it has none.
+
+    A TIFF with phasor series (written by PhasorPy or this plugin) is read as
+    phasor coordinates; one with a signal axis (three or more dimensions,
+    not counting the color samples of an RGB picture) gets its phasor
+    transform. Any other TIFF, or one whose phasor
+    transform fails, is read by napari's own reader instead.
+    """
+    import tifffile
+
+    with tifffile.TiffFile(path) as tif:
+        names = [series.name for series in tif.series[:3]]
+        # Color samples stored last (YXS) are a picture, not a signal axis.
+        axes = tif.series[0].axes
+        has_signal = len(axes) - axes.endswith("S") >= 3
+    if names == ["Phasor mean", "Phasor real", "Phasor imag"]:
+        return processed_file_reader(
+            path, reader_options=reader_options, harmonics=harmonics
+        )
+    if has_signal:
+        try:
+            return raw_file_reader(
+                path, reader_options=reader_options, harmonics=harmonics
+            )
+        except Exception as error:  # noqa: BLE001
+            warnings.warn(
+                f"No phasors could be computed from "
+                f"{os.path.basename(path)} ({error}); opening it as an image.",
+                stacklevel=2,
+            )
+    from napari_builtins.io import napari_get_reader as builtin_get_reader
+
+    return builtin_get_reader(path)(path)
+
+
 def ambiguous_file_reader(
     path: str,
     reader_options: dict | None = None,
@@ -587,6 +632,7 @@ def raw_file_reader(
         _split_widget_reader_options(reader_options)
     )
     filename, file_extension = _get_filename_extension(path)
+    file_extension = _TIFF_ALIASES.get(file_extension, file_extension)
     raw_data = load_raw_signal(path, filtered_reader_options)
 
     layers = _phasor_layers_from_signal(
@@ -638,6 +684,10 @@ def _split_widget_reader_options(reader_options):
     return axis_override, keep_signal, filtered_reader_options
 
 
+#: An OME-TIFF without phasor series is read as a plain TIFF signal.
+_TIFF_ALIASES = {".ome.tif": ".tif", ".ome.tiff": ".tiff"}
+
+
 def load_raw_signal(path, io_options=None):
     """Read the raw signal of a file without computing phasor coordinates.
 
@@ -655,6 +705,7 @@ def load_raw_signal(path, io_options=None):
         The signal as returned by the format's reader.
     """
     _, file_extension = _get_filename_extension(path)
+    file_extension = _TIFF_ALIASES.get(file_extension, file_extension)
     io_options = io_options or {}
 
     # A CZI mosaic's nominal extent covers the whole scanned area, so reading
@@ -1555,6 +1606,33 @@ SETTINGS_DESCRIPTION_KEY = "napari_phasors_settings"
 #: are hand-sized JSON blobs; anything larger is treated as foreign content and
 #: ignored rather than parsed into memory.
 MAX_DESCRIPTION_CHARS = 512 * 512  # 256 KB
+
+
+def _read_ome_tiff_mask(path: str) -> dict | None:
+    """Return the mask ``write_ome_tiff`` appended, as layer metadata entries.
+
+    The entries are ``mask``, ``mask_invert`` and, when stored, ``mask_labels``
+    and ``mask_shapes`` (the Shapes mask's vertices and types). Returns
+    ``None`` when the file has no mask page or it cannot be read, so a
+    damaged mask never stops the phasor data from loading.
+    """
+    import tifffile
+
+    try:
+        with tifffile.TiffFile(path) as tif:
+            page = tif.pages[-1].aspage()
+            info = json.loads(page.description or "{}")[MASK_DESCRIPTION_KEY]
+            entries = {
+                "mask": page.asarray(),
+                "mask_invert": info.get("invert", False),
+            }
+            if info.get("labels") is not None:
+                entries["mask_labels"] = info["labels"]
+            if info.get("shapes"):
+                entries["mask_shapes"] = info["shapes"]
+            return entries
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        return None
 
 
 def _parse_description_settings(description: Any) -> dict:
@@ -2960,6 +3038,18 @@ def processed_file_reader(
             ),
             sizes,
         )
+
+        # The plotter applies a stored mask when the layer is selected.
+        stored_mask = (
+            _read_ome_tiff_mask(path)
+            if file_extension in (".ome.tif", ".ome.tiff")
+            else None
+        )
+        if (
+            stored_mask is not None
+            and stored_mask["mask"].shape == mean_intensity_image.shape
+        ):
+            add_kwargs["metadata"].update(stored_mask)
 
         layers.append((mean_intensity_image, add_kwargs))
     finally:

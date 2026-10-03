@@ -4346,8 +4346,9 @@ def test_signal_export_raw_tif(qtbot, make_viewer_model, tmp_path):
     raw = make_raw_flim_data(
         n_time_bins=16, shape=(4, 4), time_constants=[0.1, 1, 10]
     ).astype(np.float32)
-    tifffile.imwrite(str(in_root / "raw_a.tif"), raw)
-    tifffile.imwrite(str(in_root / "raw_b.tif"), raw)
+    # minisblack: tifffile would otherwise store a 4-wide array as RGBA.
+    tifffile.imwrite(str(in_root / "raw_a.tif"), raw, photometric="minisblack")
+    tifffile.imwrite(str(in_root / "raw_b.tif"), raw, photometric="minisblack")
 
     widget = BatchAnalysisWidget(make_viewer_model())
     qtbot.addWidget(widget)

@@ -6154,7 +6154,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     image,
                     include_colorbar=self.export_colorbar_checkbox.isChecked(),
                     dpi=self._export_dpi(),
-                    labels_as_ids=False,
                 )
 
     def _write_analysis_export_csvs(self, jobs, stats_accum):
