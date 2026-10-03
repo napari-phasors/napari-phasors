@@ -1392,3 +1392,156 @@ def test_read_ometif_warns_about_a_filter_it_cannot_apply(tmp_path):
     # The criterion is kept, and no pixel was dropped by it.
     assert _stack_mask(metadata) is None
     assert not np.isnan(metadata['G'][0]).all()
+
+
+# ---------------------------------------------------------------------------
+# Labels exported as images keep their label values
+# ---------------------------------------------------------------------------
+
+
+def _mask_labels(dtype=np.int32, name="mask"):
+    from napari.layers import Labels
+
+    data = np.zeros((12, 20), dtype=dtype)
+    data[2:6, 3:9] = 1
+    data[7:11, 10:19] = 3
+    return Labels(data, name=name)
+
+
+def test_export_labels_as_tiff_keeps_label_values(tmp_path):
+    import tifffile
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = _mask_labels()
+    out = export_layer_as_image(str(tmp_path / "mask.tif"), labels)
+
+    saved = tifffile.imread(out[0])
+    assert saved.shape == labels.data.shape
+    assert saved.dtype == labels.data.dtype
+    np.testing.assert_array_equal(saved, labels.data)
+
+
+def test_export_labels_as_png_is_16_bit_label_values(tmp_path):
+    from PIL import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = _mask_labels()
+    out = export_layer_as_image(str(tmp_path / "mask.png"), labels)
+
+    with Image.open(out[0]) as picture:
+        saved = np.array(picture)
+    assert saved.dtype == np.uint16
+    np.testing.assert_array_equal(saved, labels.data)
+
+
+def test_export_labels_png_beyond_16_bit_falls_back_to_picture(tmp_path):
+    from napari.layers import Labels
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = Labels(np.array([[0, 70000], [1, 2]], dtype=np.int32))
+    with pytest.warns(UserWarning, match="do not fit"):
+        out = export_layer_as_image(str(tmp_path / "big.png"), labels)
+
+    from PIL import Image
+
+    with Image.open(out[0]) as picture:
+        assert picture.mode == "RGBA"
+
+
+def test_export_labels_tiff_holds_values_png_cannot(tmp_path):
+    import tifffile
+    from napari.layers import Labels
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = Labels(np.array([[0, 70000], [1, 2]], dtype=np.int32))
+    out = export_layer_as_image(str(tmp_path / "big.tif"), labels)
+    np.testing.assert_array_equal(tifffile.imread(out[0]), labels.data)
+
+
+def test_export_labels_as_colored_picture_when_asked(tmp_path):
+    from PIL import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    out = export_layer_as_image(
+        str(tmp_path / "mask.png"), _mask_labels(), labels_as_ids=False
+    )
+    with Image.open(out[0]) as picture:
+        assert picture.mode == "RGBA"
+
+
+def test_export_labels_jpeg_stays_a_picture(tmp_path):
+    from PIL import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    out = export_layer_as_image(str(tmp_path / "mask.jpg"), _mask_labels())
+    with Image.open(out[0]) as picture:
+        assert picture.mode == "RGB"
+
+
+def test_export_labels_layer_data_tuple_as_tiff(tmp_path):
+    import tifffile
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = _mask_labels()
+    out = export_layer_as_image(
+        str(tmp_path / "mask.tif"),
+        (labels.data, {"name": "mask"}, "labels"),
+    )
+    np.testing.assert_array_equal(tifffile.imread(out[0]), labels.data)
+
+
+def test_export_labels_multidimensional_exports_current_slice(tmp_path):
+    import tifffile
+    from napari.layers import Labels
+
+    from napari_phasors._writer import export_layer_as_image
+
+    data = np.zeros((3, 6, 7), dtype=np.uint16)
+    data[1, 2:4, 2:5] = 5
+    out = export_layer_as_image(
+        str(tmp_path / "stack.tif"), Labels(data), current_step=(1, 0, 0)
+    )
+    np.testing.assert_array_equal(tifffile.imread(out[0]), data[1])
+
+
+@pytest.mark.filterwarnings("ignore:projection mode")
+def test_exported_labels_image_converts_back_to_labels(tmp_path):
+    """Open the exported image and convert it: the Labels layer is restored."""
+    import tifffile
+    from napari.components import LayerList
+    from napari.layers import Image
+    from napari.layers._layer_actions import _convert_to_labels
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = _mask_labels()
+    out = export_layer_as_image(str(tmp_path / "mask.tif"), labels)
+
+    layers = LayerList()
+    image = Image(tifffile.imread(out[0]), name="mask")
+    layers.append(image)
+    layers.selection = {image}
+    _convert_to_labels(layers)
+
+    assert len(layers) == 1
+    np.testing.assert_array_equal(layers[0].data, labels.data)
+
+
+def test_export_labels_svg_embeds_exact_values(tmp_path):
+    from napari_phasors._writer import (
+        LABELS_SVG_METADATA_ID,
+        export_layer_as_image,
+    )
+
+    out = export_layer_as_image(str(tmp_path / "mask.svg"), _mask_labels())
+    text = (tmp_path / "mask.svg").read_text()
+    assert out == [str(tmp_path / "mask.svg")]
+    assert f'id="{LABELS_SVG_METADATA_ID}"' in text
+    assert text.rstrip().endswith("</svg>")

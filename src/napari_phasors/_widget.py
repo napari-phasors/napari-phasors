@@ -4208,7 +4208,10 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
         image_info = QLabel(
             "• <b>Image (PNG/JPEG/TIFF/SVG):</b> Exports visual representation "
-            "with applied colormap and contrast. Optional colorbar can be included"
+            "with applied colormap and contrast. Optional colorbar can be included. "
+            "Labels layers are exported as PNG/TIFF with their label values "
+            "(to open and convert back to Labels), unless colored export is "
+            "checked, and as SVG/JPEG in color"
         )
         image_info.setWordWrap(True)
         self.main_layout.addWidget(image_info)
@@ -4237,6 +4240,11 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         )
         self.colorbar_checkbox.setChecked(True)
         self.main_layout.addWidget(self.colorbar_checkbox)
+
+        self.labels_color_checkbox = QCheckBox(
+            "Export Labels as colored PNG/TIFF (not convertible back)"
+        )
+        self.main_layout.addWidget(self.labels_color_checkbox)
 
         self.mask_checkbox = QCheckBox("Export masked OME-TIFF")
         self.mask_checkbox.setChecked(True)
@@ -4348,6 +4356,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 include_colorbar,
                 selected_layers,
                 export_masked=export_masked,
+                labels_as_ids=not self.labels_color_checkbox.isChecked(),
             )
             if exported:
                 self.close()
@@ -4585,6 +4594,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         include_colorbar=False,
         selected_layers=None,
         export_masked=False,
+        labels_as_ids=True,
     ):
         """Callback whenever the export location and name are specified."""
         if selected_layers is None:
@@ -4663,6 +4673,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                         export_layer,
                         include_colorbar=include_colorbar,
                         current_step=self.viewer.dims.current_step,
+                        labels_as_ids=labels_as_ids,
                     )
                 show_info(f"Exported {export_layer.name} to {final_path}")
                 return True
@@ -4704,6 +4715,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                             export_layer,
                             include_colorbar=include_colorbar,
                             current_step=self.viewer.dims.current_step,
+                            labels_as_ids=labels_as_ids,
                         )
 
                     exported_count += 1

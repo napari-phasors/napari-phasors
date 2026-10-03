@@ -1555,8 +1555,29 @@ def test_writer_widget_exports_multiple_labels_layers(
         True,
         selected_layers=["labels_1", "labels_2"],
     )
-    assert (tmp_path / "labels_1.png").exists()
-    assert (tmp_path / "labels_2.png").exists()
+    # PNG of a Labels layer holds its label values by default...
+    from PIL import Image as PILImage
+
+    for name in ("labels_1", "labels_2"):
+        with PILImage.open(tmp_path / f"{name}.png") as img:
+            np.testing.assert_array_equal(
+                np.array(img), viewer.layers[name].data
+            )
+
+    # ...and a colored picture when the widget's checkbox asks for it.
+    widget.labels_color_checkbox.setChecked(True)
+    widget.export_layer_combobox.setCheckedItems(["labels_1", "labels_2"])
+    with patch(
+        "napari_phasors._widget.QFileDialog.getSaveFileName",
+        return_value=(
+            str(tmp_path / "colored.png"),
+            "Layer as PNG image (*.png)",
+        ),
+    ):
+        widget._open_file_dialog()
+    for name in ("labels_1", "labels_2"):
+        with PILImage.open(tmp_path / f"colored_{name}.png") as img:
+            assert img.mode == "RGBA"
 
 
 def test_writer_widget_includes_labels_layer(make_viewer_model, qtbot):
@@ -1856,8 +1877,6 @@ def test_export_labels_layer_as_colored_image(
     """Test that Labels layers are exported as colored images without colorbar."""
     from PIL import Image as PILImage
 
-    from napari_phasors._writer import export_layer_as_image
-
     viewer = make_viewer_model()
 
     # Create a labels layer with distinct labels
@@ -1866,9 +1885,15 @@ def test_export_labels_layer_as_colored_image(
     labels_data[6:9, 6:9] = 2
     labels_layer = viewer.add_labels(labels_data, name="test_labels")
 
-    # Export labels layer as image
+    # Export labels layer as a colored image through the widget
     export_path = str(tmp_path / "test_labels_export.png")
-    export_layer_as_image(export_path, labels_layer, include_colorbar=True)
+    WriterWidget(viewer)._save_file(
+        export_path,
+        "Layer as PNG image (*.png)",
+        True,
+        selected_layers=[labels_layer.name],
+        labels_as_ids=False,
+    )
 
     assert os.path.exists(export_path)
 

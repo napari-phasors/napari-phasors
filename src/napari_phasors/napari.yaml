@@ -9,6 +9,9 @@ contributions:
     - id: napari-phasors.get_reader
       python_name: napari_phasors._reader:napari_get_reader
       title: Open data with Napari Phasors
+    - id: napari-phasors.get_svg_reader
+      python_name: napari_phasors._svg_reader:napari_get_svg_reader
+      title: Open Shapes and Labels SVG files
     - id: napari-phasors.convallaria_FLIM_sample_data
       python_name: napari_phasors._sample_data:convallaria_FLIM_sample_data
       title: Load convallaria FLIM sample data
@@ -46,6 +49,9 @@ contributions:
     - command: napari-phasors.get_reader
       accepts_directories: false
       filename_patterns: ['*.fbd', '*.ptu', '*.lsm', '*.ome.tif', '*.tif', '*.ome.tiff', '*.tiff', '*.sdt', '*.czi', '*.flif', '*.lif', '*.json', '*.b&h', '*.bh', '*.bhz', '*.bin', '*.ifli', '*.ref', '*.r64']
+    - command: napari-phasors.get_svg_reader
+      accepts_directories: false
+      filename_patterns: ['*.svg']
   writers:
     - command: napari-phasors.write_ome_tiff
       display_name: Export Phasor to OME-TIFF

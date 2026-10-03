@@ -23,6 +23,28 @@ timepoint. See {doc}`timelapse`.
 
 The colormapped image layer can be exported with or without its associated colorbar. Labels layers can also be exported as images using their colored representation.
 
+### Exporting and re-opening masks
+
+A Labels layer exported as **PNG** or **TIFF** stores its label values, not a
+colored picture, at the layer's own size. Open the file again (with napari's
+own reader) and use **Convert to Labels** on the image layer to get the same
+mask back. TIFF keeps any integer label value; PNG is 16-bit and holds labels up
+to 65535, so a layer with larger labels is exported as a colored picture
+instead (use TIFF for those). **JPEG** is always a colored picture. To get a
+colored PNG or TIFF of a Labels layer instead (for a figure), check **Export
+Labels as colored PNG/TIFF** in the **Export Phasor** widget.
+
+A Labels layer exported as **SVG** is drawn in color and also carries its exact
+label values, scale and units. A Shapes layer exported as **SVG** keeps its
+shapes, colors and scale. Open either SVG file (**File > Open File(s)** or drag
+it into napari) and the Labels or Shapes layer is restored, ready to be used as
+a mask again. SVG files exported by earlier versions only hold the colored
+picture, so they open as an RGB image; export the layer again to get one that
+restores as a mask.
+
+Shapes layers lose their units in SVG (the format has no place for them), so a
+restored Shapes layer is in pixels; Labels layers keep their units.
+
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/export.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/export.mp4" type="video/mp4">
 </video>

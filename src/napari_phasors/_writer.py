@@ -6,11 +6,15 @@ to `OME-TIFF` format.
 
 from __future__ import annotations
 
+import base64
 import importlib.metadata
 import json
 import os
+import warnings
+import zlib
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Union
+from xml.sax.saxutils import escape
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -459,12 +463,80 @@ def write_ome_tiff(
     return saved_paths
 
 
+# Marker element the labels SVG export embeds so the exact label values can be
+# read back (the drawn picture only keeps the colours).
+LABELS_SVG_METADATA_ID = "napari-phasors-labels"
+
+_LABEL_ID_EXTENSIONS = (".tif", ".tiff", ".png")
+
+
+def _labels_svg_metadata(data_2d, layer_name, scale, units):
+    """Return the ``<metadata>`` element holding the lossless label values."""
+    data_2d = np.ascontiguousarray(data_2d)
+    payload = base64.b64encode(zlib.compress(data_2d.tobytes())).decode()
+    attributes = {
+        "id": LABELS_SVG_METADATA_ID,
+        "data-name": layer_name,
+        "data-dtype": data_2d.dtype.str,
+        "data-shape": " ".join(str(n) for n in data_2d.shape),
+    }
+    if scale is not None:
+        attributes["data-scale"] = " ".join(repr(float(v)) for v in scale)
+    if units is not None:
+        attributes["data-units"] = " ".join(str(u) for u in units)
+    attribute_text = " ".join(
+        f'{key}="{escape(str(value), {chr(34): "&quot;"})}"'
+        for key, value in attributes.items()
+    )
+    return f"<metadata {attribute_text}>{payload}</metadata>"
+
+
+def _embed_labels_in_svg(path, data_2d, layer_name, scale, units):
+    """Insert the lossless label values into an SVG written by matplotlib."""
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    element = _labels_svg_metadata(data_2d, layer_name, scale, units)
+    close = text.rfind("</svg>")
+    if close < 0:
+        return
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text[:close] + element + "\n" + text[close:])
+
+
+def _write_label_ids(path, data_2d):
+    """Write integer label values as a TIFF or PNG; return ``False`` if unfit.
+
+    The values are stored as they are (no colormap), so reading the file back
+    and converting the image to a Labels layer restores the layer. PNG holds
+    at most unsigned 16-bit integers; labels outside that range are reported
+    as unfit so the caller can fall back to the coloured picture.
+    """
+    values = np.asarray(data_2d)
+    if values.dtype == bool:
+        values = values.astype(np.uint8)
+    if not np.issubdtype(values.dtype, np.integer):
+        return False
+
+    if path.lower().endswith(".png"):
+        if values.size and (values.min() < 0 or values.max() > 0xFFFF):
+            return False
+        from PIL import Image
+
+        Image.fromarray(values.astype(np.uint16)).save(path)
+    else:
+        import tifffile
+
+        tifffile.imwrite(path, values, compression="zlib")
+    return True
+
+
 def export_layer_as_image(
     path: str,
     image_layer: Any,
     include_colorbar: bool = True,
     current_step: Sequence[int] | None = None,
     dpi: int = 300,
+    labels_as_ids: bool = True,
 ) -> list[str]:
     """Export an image or labels layer as an image file using its colormap and contrast limits.
 
@@ -490,6 +562,15 @@ def export_layer_as_image(
     dpi : int, optional
         Resolution (dots per inch) used when rendering the figure. Default is
         ``300``.
+    labels_as_ids : bool, optional
+        If ``True`` (default), a Labels layer exported as ``.tif``/``.tiff``
+        or ``.png`` stores its integer label values at the layer's own shape
+        instead of a coloured picture, so the file can be opened again and
+        converted back to a Labels layer. PNG is written as 16-bit, so labels
+        beyond 65535 are exported as a coloured picture instead. Set it to
+        ``False`` to always get the coloured picture. A Labels layer exported
+        as ``.svg`` is always drawn in colour and also carries its exact label
+        values, which the SVG reader of this plugin restores.
     """
 
     if isinstance(image_layer, list) and not hasattr(image_layer, 'data'):
@@ -524,6 +605,8 @@ def export_layer_as_image(
             contrast_limits = getattr(current_layer, 'contrast_limits', None)
             gamma = getattr(current_layer, 'gamma', 1.0)
             layer_name = getattr(current_layer, 'name', f"layer_{i}")
+            layer_scale = getattr(current_layer, 'scale', None)
+            layer_units = getattr(current_layer, 'units', None)
         else:
             data = (
                 current_layer[0][0]
@@ -540,6 +623,8 @@ def export_layer_as_image(
             contrast_limits = attributes.get('contrast_limits', None)
             gamma = attributes.get('gamma', 1.0)
             layer_name = attributes.get('name', f"layer_{i}")
+            layer_scale = attributes.get('scale', None)
+            layer_units = attributes.get('units', None)
 
         _, ext = os.path.splitext(path)
         ext_fallback = ext if ext else ".png"
@@ -566,6 +651,22 @@ def export_layer_as_image(
         else:
             data_2d = data
 
+        if (
+            is_labels
+            and labels_as_ids
+            and current_path.lower().endswith(_LABEL_ID_EXTENSIONS)
+        ):
+            if _write_label_ids(current_path, data_2d):
+                saved_paths.append(current_path)
+                continue
+            warnings.warn(
+                f"Label values of '{layer_name}' do not fit in "
+                f"'{os.path.basename(current_path)}'; exporting the coloured "
+                "picture instead. Use TIFF to keep the exact label values.",
+                stacklevel=2,
+            )
+
+        label_values = data_2d
         if is_labels:
             layer_include_colorbar = False
             if colormap is not None and hasattr(colormap, 'map'):
@@ -679,6 +780,16 @@ def export_layer_as_image(
             facecolor=fig.get_facecolor(),
         )
         plt.close(fig)
+        if is_labels and current_path.lower().endswith(".svg"):
+            # The drawn picture only keeps the colours (and repeats them
+            # beyond the colormap's length): keep the exact values too.
+            _embed_labels_in_svg(
+                current_path,
+                np.asarray(label_values),
+                layer_name,
+                None if layer_scale is None else list(layer_scale)[-2:],
+                None if layer_units is None else list(layer_units)[-2:],
+            )
         saved_paths.append(current_path)
 
     return saved_paths
