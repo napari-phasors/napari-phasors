@@ -64,6 +64,11 @@ You can invert a mask so that pixels **outside** the drawn region are included i
 
 When using the **Assign Masks** dialog (for multiple image layers), each layer has its own **Invert** checkbox, allowing independent inversion per layer.
 
+## Saving and restoring masks
+
+- Exporting a masked layer as **OME-TIFF** saves its mask, **Invert** flag and label selection in the file; opening the file restores them (see {doc}`exporting`).
+- A mask layer can also be saved on its own, to use on any image of the same size: Labels as PNG or TIFF (open the file, then **Convert to Labels**) or SVG, and Shapes as SVG (opening the SVG gives the layer back directly). See {doc}`exporting`.
+
 ## Assigning masks to image layers
 
 - You can assign a mask to a single image layer, restricting phasor analysis to that region only.

@@ -6,11 +6,15 @@ to `OME-TIFF` format.
 
 from __future__ import annotations
 
+import base64
 import importlib.metadata
+import io
 import json
 import os
+import zlib
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Union
+from xml.etree import ElementTree
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -149,9 +153,12 @@ def _get_export_path(
     layer_names: list[str],
     default_ext: str = "",
 ) -> str:
-    """Determine the file path for a layer, preventing overwrites during multi-layer exports."""
-    import napari
+    """Determine the file path for a layer, preventing overwrites during multi-layer exports.
 
+    napari saves several selected layers with one call holding all of them,
+    so only a multi-layer call adds the layer name; a single layer is written
+    to ``path`` as given.
+    """
     directory = os.path.dirname(path)
     full_basename = os.path.basename(path)
 
@@ -167,30 +174,12 @@ def _get_export_path(
         if not ext and default_ext:
             ext = default_ext
 
-    # Try to detect if we are saving multiple selected layers via the napari GUI
-    viewer = napari.current_viewer()
-    is_multi_save = False
-    viewer_layer_names = []
-    if viewer is not None:
-        selected_layers = list(viewer.layers.selection)
-        if len(selected_layers) > 1:
-            is_multi_save = True
-            viewer_layer_names = [layer.name for layer in selected_layers]
-
-    if len(layers_to_export) > 1:
-        user_provided_name = base_name not in layer_names
-        if user_provided_name:
-            filename = f"{base_name}_{layer_name}{ext}"
-        else:
-            filename = f"{layer_name}{ext}"
-    elif is_multi_save and layer_name in viewer_layer_names:
-        user_provided_name = base_name not in viewer_layer_names
-        if user_provided_name:
-            filename = f"{base_name}_{layer_name}{ext}"
-        else:
-            filename = f"{layer_name}{ext}"
-    else:
+    if len(layers_to_export) == 1:
         filename = f"{base_name}{ext}"
+    elif base_name in layer_names:
+        filename = f"{layer_name}{ext}"
+    else:
+        filename = f"{base_name}_{layer_name}{ext}"
 
     return os.path.join(directory, filename)
 
@@ -397,6 +386,8 @@ def write_ome_tiff(
                     metadata=metadata_dict,
                     **_resolution_tags(metadata_dict),
                 )
+                if "mask" in metadata:
+                    _append_mask_page(current_path, metadata)
             else:
                 # Export without phasor data - just save the raw image data
                 import tifffile
@@ -459,12 +450,106 @@ def write_ome_tiff(
     return saved_paths
 
 
+# Key of the description of the page ``write_ome_tiff`` appends to hold the
+# layer's mask, with its invert flag, label selection and Shapes vertices.
+MASK_DESCRIPTION_KEY = "napari_phasors_mask"
+
+# Marker element the labels SVG export embeds so the exact label values can be
+# read back (the drawn picture only keeps the colours).
+LABELS_SVG_METADATA_ID = "napari-phasors-labels"
+
+
+def _embed_labels_in_svg(path, data_2d, layer_name, scale, units):
+    """Insert the lossless label values into an SVG written by matplotlib.
+
+    The values are stored as a compressed ``.npy`` payload, whose header keeps
+    their dtype and shape.
+    """
+    buffer = io.BytesIO()
+    np.save(buffer, np.asarray(data_2d))
+    attributes = {"id": LABELS_SVG_METADATA_ID, "data-name": layer_name}
+    if scale is not None:
+        attributes["data-scale"] = " ".join(str(float(v)) for v in scale)
+    if units is not None:
+        attributes["data-units"] = " ".join(str(u) for u in units)
+    element = ElementTree.Element("metadata", attributes)
+    element.text = base64.b64encode(zlib.compress(buffer.getvalue())).decode()
+
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    close = text.rfind("</svg>")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(
+            text[:close]
+            + ElementTree.tostring(element, encoding="unicode")
+            + "\n"
+            + text[close:]
+        )
+
+
+def _append_mask_page(path, metadata):
+    """Append the layer's mask as one more page of a phasorpy OME-TIFF.
+
+    tifffile only appends to a file holding OME metadata when forced. The page
+    is outside the OME-XML, so phasorpy and other OME readers do not see it as
+    an image series.
+    """
+    import tifffile
+
+    info = {
+        "invert": bool(metadata.get("mask_invert", False)),
+        "labels": metadata.get("mask_labels"),
+    }
+    shapes = metadata.get("mask_shapes")
+    if shapes:
+        info["shapes"] = {
+            "data": [
+                np.asarray(vertices).tolist() for vertices in shapes["data"]
+            ],
+            "shape_type": list(shapes["shape_type"]),
+        }
+    description = json.dumps(
+        {MASK_DESCRIPTION_KEY: _convert_numpy_types(info)}
+    )
+    with tifffile.TiffWriter(path, append="force") as tif:
+        tif.write(
+            np.asarray(metadata["mask"]),
+            compression="zlib",
+            description=description,
+            metadata=None,
+        )
+
+
+def _write_label_ids(path, data_2d):
+    """Write the integer label values as a TIFF or a 16-bit PNG.
+
+    The values are stored as they are (no colormap), so reading the file back
+    and converting the image to a Labels layer restores the layer.
+    """
+    values = np.asarray(data_2d)
+    if path.lower().endswith(".png"):
+        if values.min() < 0 or values.max() > 0xFFFF:
+            raise ValueError(
+                "Label values outside 0-65535 do not fit in a PNG; "
+                "export the layer as TIFF instead."
+            )
+        from PIL import Image
+
+        Image.fromarray(values.astype(np.uint16)).save(path)
+    else:
+        import tifffile
+
+        tifffile.imwrite(path, values, compression="zlib")
+
+
 def export_layer_as_image(
     path: str,
     image_layer: Any,
     include_colorbar: bool = True,
     current_step: Sequence[int] | None = None,
     dpi: int = 300,
+    labels_as_ids: bool = True,
+    figure_height: float = 8.0,
 ) -> list[str]:
     """Export an image or labels layer as an image file using its colormap and contrast limits.
 
@@ -490,6 +575,18 @@ def export_layer_as_image(
     dpi : int, optional
         Resolution (dots per inch) used when rendering the figure. Default is
         ``300``.
+    labels_as_ids : bool, optional
+        If ``True`` (default), a Labels layer exported as ``.tif``/``.tiff``
+        or ``.png`` stores its integer label values at the layer's own shape
+        instead of a coloured picture, so the file can be opened again and
+        converted back to a Labels layer. PNG is written as 16-bit and raises
+        a ``ValueError`` for labels beyond 65535. Set it to ``False`` to get
+        the coloured picture. A Labels layer exported
+        as ``.svg`` is always drawn in colour and also carries its exact label
+        values, which the SVG reader of this plugin restores.
+    figure_height : float, optional
+        Height of the figure in inches; the width follows the image's aspect
+        ratio. Default is ``8``.
     """
 
     if isinstance(image_layer, list) and not hasattr(image_layer, 'data'):
@@ -524,6 +621,8 @@ def export_layer_as_image(
             contrast_limits = getattr(current_layer, 'contrast_limits', None)
             gamma = getattr(current_layer, 'gamma', 1.0)
             layer_name = getattr(current_layer, 'name', f"layer_{i}")
+            layer_scale = getattr(current_layer, 'scale', None)
+            layer_units = getattr(current_layer, 'units', None)
         else:
             data = (
                 current_layer[0][0]
@@ -540,6 +639,8 @@ def export_layer_as_image(
             contrast_limits = attributes.get('contrast_limits', None)
             gamma = attributes.get('gamma', 1.0)
             layer_name = attributes.get('name', f"layer_{i}")
+            layer_scale = attributes.get('scale', None)
+            layer_units = attributes.get('units', None)
 
         _, ext = os.path.splitext(path)
         ext_fallback = ext if ext else ".png"
@@ -566,6 +667,16 @@ def export_layer_as_image(
         else:
             data_2d = data
 
+        if (
+            is_labels
+            and labels_as_ids
+            and current_path.lower().endswith((".tif", ".tiff", ".png"))
+        ):
+            _write_label_ids(current_path, data_2d)
+            saved_paths.append(current_path)
+            continue
+
+        label_values = data_2d
         if is_labels:
             layer_include_colorbar = False
             if colormap is not None and hasattr(colormap, 'map'):
@@ -619,7 +730,7 @@ def export_layer_as_image(
         height, width = data_2d.shape[:2]
         aspect_ratio = width / height
 
-        base_height = 8
+        base_height = figure_height
         base_width = base_height * aspect_ratio
 
         if layer_include_colorbar:
@@ -679,6 +790,16 @@ def export_layer_as_image(
             facecolor=fig.get_facecolor(),
         )
         plt.close(fig)
+        if is_labels and current_path.lower().endswith(".svg"):
+            # The drawn picture only keeps the colours (and repeats them
+            # beyond the colormap's length): keep the exact values too.
+            _embed_labels_in_svg(
+                current_path,
+                np.asarray(label_values),
+                layer_name,
+                None if layer_scale is None else list(layer_scale)[-2:],
+                None if layer_units is None else list(layer_units)[-2:],
+            )
         saved_paths.append(current_path)
 
     return saved_paths

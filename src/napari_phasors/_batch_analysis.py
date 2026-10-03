@@ -5827,6 +5827,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     layer,
                     include_colorbar=include_colorbar,
                     dpi=self._export_dpi(),
+                    labels_as_ids=False,
                 )
 
     @staticmethod

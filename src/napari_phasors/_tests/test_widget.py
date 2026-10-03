@@ -1318,7 +1318,7 @@ def test_writer_widget_colormap_applied(make_viewer_model, qtbot, tmp_path):
     viewer.add_layer(sample_image_layer)
     main_widget.export_layer_combobox.selectAll()
 
-    # Export as PNG
+    # Export as PNG at the chosen DPI and figure height
     with patch(
         "napari_phasors._widget.QFileDialog.getSaveFileName",
         return_value=(
@@ -1327,15 +1327,17 @@ def test_writer_widget_colormap_applied(make_viewer_model, qtbot, tmp_path):
         ),
     ):
         main_widget.colorbar_checkbox.setChecked(False)
+        main_widget.dpi_spinbox.setValue(100)
+        main_widget.figure_height_spinbox.setValue(2)
         main_widget.search_button.click()
 
         export_path = str(tmp_path / "test_colormap.png")
         assert os.path.exists(export_path)
 
-        # Verify the image was created and is not empty
+        # 2 in at 100 DPI, plus the 0.1 in padding on each side
         with Image.open(export_path) as img:
             assert img.size[0] > 0
-            assert img.size[1] > 0
+            assert 200 <= img.size[1] <= 230
 
 
 def test_writer_widget_file_extension_handling(
@@ -1386,24 +1388,56 @@ def test_writer_widget_file_extension_handling(
             ), f"Failed for {input_name} -> {expected_output}"
 
 
-def test_writer_widget_colorbar_checkbox_state(make_viewer_model, qtbot):
-    """Test that the colorbar checkbox is properly initialized and responsive."""
+def test_writer_widget_format_defaults_and_options(make_viewer_model, qtbot):
+    """The format defaults to the selection and only fitting options show.
+
+    OME-TIFF for phasor layers, SVG for Labels, PNG for other images; the
+    colorbar only for images, the colored-Labels option only for PNG/TIFF,
+    the mask option only for OME-TIFF, and DPI/figure height only when a
+    figure is drawn.
+    """
     viewer = make_viewer_model()
-    main_widget = WriterWidget(viewer)
-
-    # Check initial state
-    assert main_widget.colorbar_checkbox.isChecked() is True
-    assert (
-        main_widget.colorbar_checkbox.text()
-        == "Include colorbar (for image exports)"
+    widget = WriterWidget(viewer)
+    phasor = make_intensity_layer_with_phasors(
+        make_raw_flim_data(), harmonic=[1]
     )
+    viewer.add_layer(phasor)
+    viewer.add_image(np.random.random((5, 5)), name="plain")
+    viewer.add_labels(np.zeros((5, 5), dtype=int), name="lbl")
 
-    # Test checkbox state changes
-    main_widget.colorbar_checkbox.setChecked(False)
-    assert main_widget.colorbar_checkbox.isChecked() is False
+    def shown():
+        return {
+            name
+            for name, option in (
+                ("colorbar", widget.colorbar_checkbox),
+                ("labels_color", widget.labels_color_checkbox),
+                ("mask", widget.mask_checkbox),
+                ("figure", widget.figure_options),
+            )
+            if not option.isHidden()
+        }
 
-    main_widget.colorbar_checkbox.setChecked(True)
-    assert main_widget.colorbar_checkbox.isChecked() is True
+    assert widget.colorbar_checkbox.isChecked()
+    assert widget.colorbar_checkbox.text() == "Include colorbar"
+
+    widget.export_layer_combobox.setCheckedItems([phasor.name])
+    assert widget.format_combobox.currentText() == widget._OME
+    assert shown() == set()
+    phasor.metadata["mask"] = np.ones(phasor.data.shape, dtype=int)
+    phasor.events.metadata()
+    assert shown() == {"mask"}
+
+    widget.export_layer_combobox.setCheckedItems(["plain"])
+    assert widget.format_combobox.currentText() == widget._PNG
+    assert shown() == {"colorbar", "figure"}
+
+    widget.export_layer_combobox.setCheckedItems(["lbl"])
+    assert widget.format_combobox.currentText() == widget._SVG
+    assert shown() == {"figure"}
+    widget.format_combobox.setCurrentText(widget._PNG)
+    assert shown() == {"labels_color"}
+    widget.labels_color_checkbox.setChecked(True)
+    assert shown() == {"labels_color", "figure"}
 
 
 def test_writer_widget_csv_export_2d_no_phasor(
@@ -1555,8 +1589,29 @@ def test_writer_widget_exports_multiple_labels_layers(
         True,
         selected_layers=["labels_1", "labels_2"],
     )
-    assert (tmp_path / "labels_1.png").exists()
-    assert (tmp_path / "labels_2.png").exists()
+    # PNG of a Labels layer holds its label values by default...
+    from PIL import Image as PILImage
+
+    for name in ("labels_1", "labels_2"):
+        with PILImage.open(tmp_path / f"{name}.png") as img:
+            np.testing.assert_array_equal(
+                np.array(img), viewer.layers[name].data
+            )
+
+    # ...and a colored picture when the widget's checkbox asks for it.
+    widget.labels_color_checkbox.setChecked(True)
+    widget.export_layer_combobox.setCheckedItems(["labels_1", "labels_2"])
+    with patch(
+        "napari_phasors._widget.QFileDialog.getSaveFileName",
+        return_value=(
+            str(tmp_path / "colored.png"),
+            "Layer as PNG image (*.png)",
+        ),
+    ):
+        widget._open_file_dialog()
+    for name in ("labels_1", "labels_2"):
+        with PILImage.open(tmp_path / f"colored_{name}.png") as img:
+            assert img.mode == "RGBA"
 
 
 def test_writer_widget_includes_labels_layer(make_viewer_model, qtbot):
@@ -1856,8 +1911,6 @@ def test_export_labels_layer_as_colored_image(
     """Test that Labels layers are exported as colored images without colorbar."""
     from PIL import Image as PILImage
 
-    from napari_phasors._writer import export_layer_as_image
-
     viewer = make_viewer_model()
 
     # Create a labels layer with distinct labels
@@ -1866,9 +1919,15 @@ def test_export_labels_layer_as_colored_image(
     labels_data[6:9, 6:9] = 2
     labels_layer = viewer.add_labels(labels_data, name="test_labels")
 
-    # Export labels layer as image
+    # Export labels layer as a colored image through the widget
     export_path = str(tmp_path / "test_labels_export.png")
-    export_layer_as_image(export_path, labels_layer, include_colorbar=True)
+    WriterWidget(viewer)._save_file(
+        export_path,
+        "Layer as PNG image (*.png)",
+        True,
+        selected_layers=[labels_layer.name],
+        labels_as_ids=False,
+    )
 
     assert os.path.exists(export_path)
 
@@ -1896,8 +1955,9 @@ def test_writer_widget_mask_checkbox(make_viewer_model, qtbot, tmp_path):
 
     widget = WriterWidget(viewer)
 
-    # Select layer
+    # Select layer and export it as OME-TIFF (the mask option's format)
     widget.export_layer_combobox.selectAll()
+    widget.format_combobox.setCurrentText(widget._OME)
 
     # Verify checkbox is hidden
     assert widget.mask_checkbox.isHidden() is True
