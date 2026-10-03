@@ -7699,6 +7699,9 @@ class StatisticsTableWidget(QTableWidget):
         # {quantity: "in 0.2 - 0.8"} naming the range each quantity's pixels
         # were counted over; see :meth:`set_range_labels`.
         self._range_labels = {}
+        # Whether the pixel count columns are listed; see
+        # :meth:`set_show_counts`.
+        self._show_counts = True
         #: Widths the user set by dragging, keyed by column name so they
         #: survive the switch between ``COLUMNS`` and ``FRAME_COLUMNS``.
         self._user_column_widths = {}
@@ -7834,7 +7837,7 @@ class StatisticsTableWidget(QTableWidget):
             shows a dash there.
         """
         totals = totals or {}
-        self._apply_columns(self.COLUMNS)
+        self._apply_columns(["Name", *self._stat_columns()])
         self.setRowCount(len(datasets))
         for row, (name, data) in enumerate(datasets.items()):
             stats = compute_dataset_statistics(
@@ -7842,7 +7845,7 @@ class StatisticsTableWidget(QTableWidget):
             )
 
             self.setItem(row, 0, QTableWidgetItem(str(name)))
-            for col, column_name in enumerate(self.COLUMNS[1:], start=1):
+            for col, column_name in enumerate(self._stat_columns(), start=1):
                 self.setItem(
                     row,
                     col,
@@ -7850,6 +7853,22 @@ class StatisticsTableWidget(QTableWidget):
                         self.format_statistic(column_name, stats[column_name])
                     ),
                 )
+
+    def set_show_counts(self, show):
+        """List the pixel count columns, or leave them out.
+
+        They count the pixels inside a filter, so with no filter there is
+        nothing for them to say.
+        """
+        self._show_counts = bool(show)
+
+    def _stat_columns(self):
+        """Return the statistic columns currently listed after the name."""
+        return [
+            column
+            for column in self.COLUMNS[1:]
+            if self._show_counts or column not in self.COUNT_COLUMNS
+        ]
 
     def set_range_labels(self, labels):
         """Name the range each quantity's pixels were counted over.
@@ -7865,7 +7884,7 @@ class StatisticsTableWidget(QTableWidget):
         """Return a count column's header, naming the range it counted over."""
         if column not in self.COUNT_COLUMNS:
             return column
-        scope = self._range_labels.get(quantity)
+        scope = self._range_labels.get(quantity, self._range_labels.get(None))
         if not scope:
             return column
         return f"{self.COUNT_COLUMN_STEMS[column]} {scope}"
@@ -7917,7 +7936,7 @@ class StatisticsTableWidget(QTableWidget):
         columns = ["Name"] + [
             f"{series} {self._count_column_label(column, series)}"
             for series in series_names
-            for column in self.COLUMNS[1:]
+            for column in self._stat_columns()
         ]
         self._apply_columns(columns)
         self.setRowCount(len(rows))
@@ -7938,7 +7957,7 @@ class StatisticsTableWidget(QTableWidget):
                     if data is not None
                     else None
                 )
-                for column_name in self.COLUMNS[1:]:
+                for column_name in self._stat_columns():
                     text = (
                         self.format_statistic(column_name, stats[column_name])
                         if stats is not None
@@ -8011,7 +8030,7 @@ class StatisticsTableWidget(QTableWidget):
             Frame displayed in the viewer; its row is highlighted and
             scrolled into view.
         """
-        self._apply_columns(self.FRAME_COLUMNS)
+        self._apply_columns(["Frame", "Name", *self._stat_columns()])
         self.setRowCount(len(rows))
 
         highlight_row = None
@@ -8025,7 +8044,7 @@ class StatisticsTableWidget(QTableWidget):
             values = [str(row["Frame"]), str(row["Name"])]
             values += [
                 self.format_statistic(column, row.get(column))
-                for column in self.COLUMNS[1:]
+                for column in self._stat_columns()
             ]
 
             for col, text in enumerate(values):
@@ -8270,6 +8289,8 @@ class StatisticsDockWidget(QWidget):
         for table in (self.layer_stats_table, self.group_stats_table):
             table.set_quantity_label(quantity)
             table.set_range_labels(ranges)
+            # Counting the pixels inside a filter needs a filter.
+            table.set_show_counts(bool(ranges))
 
         if self._shows_per_frame_rows():
             rows, _centers, _edges = self._frame_statistics_rows()

@@ -38,6 +38,7 @@ from ._mapping_filters import (
     MappingFilterList,
     baseline_arrays,
     combined_mask,
+    feed_filter_statistics,
     get_filters,
     kept_fraction,
     normalize_filters,
@@ -2285,6 +2286,12 @@ class FretWidget(AutoUpdateMixin, QWidget):
 
         self.histogram_widget.set_dataset_sources(
             {layer.name: source for source, layer in output_layers.items()}
+        )
+        feed_filter_statistics(
+            self.histogram_widget,
+            self._filter_layers(),
+            (FRET_EFFICIENCY,),
+            self._layer_filter_params,
         )
         original_arrays = [
             np.asarray(
