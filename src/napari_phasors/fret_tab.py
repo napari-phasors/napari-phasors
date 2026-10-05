@@ -56,11 +56,13 @@ from ._utils import (
     HistogramWidget,
     analysis_layer_name,
     analysis_section_stylesheet,
+    batched_layer_updates,
     create_settings_note_label,
     layer_colormap_from_settings,
     make_section,
     make_slider_spin_row,
     phasor_layer_base_name,
+    set_layer_visible,
     set_settings_note,
     setup_primary_button,
     split_analysis_layer_name,
@@ -2220,10 +2222,9 @@ class FretWidget(AutoUpdateMixin, QWidget):
         selected_names = self._get_selected_source_names()
         self._updating_linked_layers = True
         try:
-            for source_name, layer in self._fret_output_layers().items():
-                desired_visible = source_name in selected_names
-                if layer.visible != desired_visible:
-                    layer.visible = desired_visible
+            with batched_layer_updates(self.viewer):
+                for source_name, layer in self._fret_output_layers().items():
+                    set_layer_visible(layer, source_name in selected_names)
         finally:
             self._updating_linked_layers = False
 
@@ -2866,81 +2867,87 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 analysed_layers, entered_frequency
             )
 
-        # Process each selected layer
-        for layer, fret_efficiency in zip(
-            selected_layers, efficiencies, strict=True
-        ):
-            if isinstance(fret_efficiency, BaseException):
-                show_error(
-                    f"FRET efficiency failed for {layer.name}: "
-                    f"{fret_efficiency}"
-                )
-                continue
-            if fret_efficiency is None:
-                continue
-
-            fret_layer_name = analysis_layer_name(
-                "FRET efficiency", layer.name
-            )
-
-            fret_layer = existing_outputs.get(layer.name)
-
-            # The saved display (kept in step with the user's changes by
-            # ``_remember_fret_display``) wins; without one, a layer that is
-            # already shown keeps its own, and only a new one gets defaults.
-            display_colormap = 'viridis'
-            display_contrast_limits = (0, 1)
-            display_gamma = None
-            if (
-                hasattr(self, '_saved_colormap_name')
-                and not self._updating_settings
+        # Process each selected layer, with one scene-graph rebuild for all
+        # their outputs.
+        with batched_layer_updates(self.viewer):
+            for layer, fret_efficiency in zip(
+                selected_layers, efficiencies, strict=True
             ):
-                display_colormap = self._saved_fret_colormap()
-                display_contrast_limits = tuple(self._saved_contrast_limits)
-                display_gamma = getattr(self, '_saved_gamma', None)
-            elif fret_layer is not None:
-                display_colormap = fret_layer.colormap
-                display_contrast_limits = tuple(fret_layer.contrast_limits)
-                display_gamma = fret_layer.gamma
+                if isinstance(fret_efficiency, BaseException):
+                    show_error(
+                        f"FRET efficiency failed for {layer.name}: "
+                        f"{fret_efficiency}"
+                    )
+                    continue
+                if fret_efficiency is None:
+                    continue
 
-            if fret_layer is None:
-                selected_fret_layer = Image(
-                    fret_efficiency,
-                    name=fret_layer_name,
-                    scale=layer.scale,
-                    units=layer.units,
-                    colormap=display_colormap,
-                    contrast_limits=display_contrast_limits,
+                fret_layer_name = analysis_layer_name(
+                    "FRET efficiency", layer.name
                 )
-                fret_layer = self.viewer.add_layer(selected_fret_layer)
-            else:
-                fret_layer.data = fret_efficiency
-                fret_layer.scale = layer.scale
-                fret_layer.units = layer.units
-                fret_layer.colormap = display_colormap
-                fret_layer.contrast_limits = display_contrast_limits
-            if display_gamma is not None:
-                fret_layer.gamma = display_gamma
 
-            fret_layer.metadata['fret_data_original'] = fret_efficiency.copy()
-            fret_layer.metadata[_FRET_OUTPUT_METADATA_KEY] = {
-                'source_layer': layer.name
-            }
+                fret_layer = existing_outputs.get(layer.name)
 
-            # Add to list of FRET layers and connect events
-            self.fret_layers.append(fret_layer)
-            fret_layer.events.colormap.connect(self._on_colormap_changed)
-            fret_layer.events.contrast_limits.connect(
-                self._on_contrast_limits_changed
-            )
-            fret_layer.events.gamma.connect(self._on_colormap_changed)
+                # The saved display (kept in step with the user's changes by
+                # ``_remember_fret_display``) wins; without one, a layer that is
+                # already shown keeps its own, and only a new one gets defaults.
+                display_colormap = 'viridis'
+                display_contrast_limits = (0, 1)
+                display_gamma = None
+                if (
+                    hasattr(self, '_saved_colormap_name')
+                    and not self._updating_settings
+                ):
+                    display_colormap = self._saved_fret_colormap()
+                    display_contrast_limits = tuple(
+                        self._saved_contrast_limits
+                    )
+                    display_gamma = getattr(self, '_saved_gamma', None)
+                elif fret_layer is not None:
+                    display_colormap = fret_layer.colormap
+                    display_contrast_limits = tuple(fret_layer.contrast_limits)
+                    display_gamma = fret_layer.gamma
 
-            # Store reference to first FRET layer for backward compatibility
-            if self.fret_layer is None:
-                self.fret_layer = fret_layer
-                self.fret_colormap = fret_layer.colormap.colors
-                self.colormap_contrast_limits = fret_layer.contrast_limits
-                self.colormap_gamma = fret_layer.gamma
+                if fret_layer is None:
+                    selected_fret_layer = Image(
+                        fret_efficiency,
+                        name=fret_layer_name,
+                        scale=layer.scale,
+                        units=layer.units,
+                        colormap=display_colormap,
+                        contrast_limits=display_contrast_limits,
+                    )
+                    fret_layer = self.viewer.add_layer(selected_fret_layer)
+                else:
+                    fret_layer.data = fret_efficiency
+                    fret_layer.scale = layer.scale
+                    fret_layer.units = layer.units
+                    fret_layer.colormap = display_colormap
+                    fret_layer.contrast_limits = display_contrast_limits
+                if display_gamma is not None:
+                    fret_layer.gamma = display_gamma
+
+                fret_layer.metadata['fret_data_original'] = (
+                    fret_efficiency.copy()
+                )
+                fret_layer.metadata[_FRET_OUTPUT_METADATA_KEY] = {
+                    'source_layer': layer.name
+                }
+
+                # Add to list of FRET layers and connect events
+                self.fret_layers.append(fret_layer)
+                fret_layer.events.colormap.connect(self._on_colormap_changed)
+                fret_layer.events.contrast_limits.connect(
+                    self._on_contrast_limits_changed
+                )
+                fret_layer.events.gamma.connect(self._on_colormap_changed)
+
+                # Store reference to first FRET layer for backward compatibility
+                if self.fret_layer is None:
+                    self.fret_layer = fret_layer
+                    self.fret_colormap = fret_layer.colormap.colors
+                    self.colormap_contrast_limits = fret_layer.contrast_limits
+                    self.colormap_gamma = fret_layer.gamma
 
         self._set_fret_layers(self._fret_output_layers().values())
 
