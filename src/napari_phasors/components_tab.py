@@ -83,12 +83,14 @@ from ._utils import (
     HistogramWidget,
     analysis_layer_name,
     analysis_section_stylesheet,
+    batched_layer_updates,
     component_analysis_label,
     is_component_fit_label,
     make_section,
     parse_component_analysis_label,
     phasor_layer_base_name,
     required_component_harmonics,
+    set_layer_visible,
     setup_primary_button,
     split_analysis_layer_name,
 )
@@ -6282,11 +6284,12 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             ).items():
                 wanted[(layer.name, index)] = (layer, data, colors)
 
-        for key in list(self._component_label_layers):
-            if key not in wanted:
-                self._remove_label_layer(key)
-        for key, (source, data, colors) in wanted.items():
-            self._apply_label_layer(key, source, data, colors)
+        with batched_layer_updates(self.viewer):
+            for key in list(self._component_label_layers):
+                if key not in wanted:
+                    self._remove_label_layer(key)
+            for key, (source, data, colors) in wanted.items():
+                self._apply_label_layer(key, source, data, colors)
 
     def _apply_label_layer(self, key, source, data, colors):
         """Add or update the labels layer for one component of one image."""
@@ -6325,8 +6328,9 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
     def _remove_label_layers(self):
         """Remove every labels layer this tab created."""
-        for key in list(self._component_label_layers):
-            self._remove_label_layer(key)
+        with batched_layer_updates(self.viewer):
+            for key in list(self._component_label_layers):
+                self._remove_label_layer(key)
 
     def _run_analysis(self):
         """Run the selected analysis and store its parameters in all selected layers."""
@@ -6338,26 +6342,29 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self._commit_components_settings(selected_layers)
 
         self._invalidate_pixel_counts()
-        if self.analysis_type == "Linear Projection":
-            self._run_linear_projection()
-        else:
-            self._run_component_fit()
+        # The output layers of every selected layer share one scene-graph
+        # rebuild.
+        with batched_layer_updates(self.viewer):
+            if self.analysis_type == "Linear Projection":
+                self._run_linear_projection()
+            else:
+                self._run_component_fit()
 
-        # A colour picked on a card before the layers existed colours them
-        # now.
-        for index in list(self._component_label_colors):
-            self._apply_card_colormap(index)
+            # A colour picked on a card before the layers existed colours them
+            # now.
+            for index in list(self._component_label_colors):
+                self._apply_card_colormap(index)
 
-        self.on_layer_selection_changed()
+            self.on_layer_selection_changed()
 
-        # Re-running the analysis is also where a criterion catches up with
-        # components that have moved since it was made. Skipped while the
-        # filter stack is being applied, since that is what re-ran the
-        # analysis in the first place.
-        if not self._applying_mapping_filter:
-            self._refresh_component_filter_params()
-            self._sync_filter_ui()
-            self._update_label_layers()
+            # Re-running the analysis is also where a criterion catches up
+            # with components that have moved since it was made. Skipped while
+            # the filter stack is being applied, since that is what re-ran the
+            # analysis in the first place.
+            if not self._applying_mapping_filter:
+                self._refresh_component_filter_params()
+                self._sync_filter_ui()
+                self._update_label_layers()
 
     def _commit_components_settings(self, layers):
         """Store the analysis about to run in every layer in *layers*.
@@ -7844,19 +7851,19 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         filter_by_component = bool(self._selected_histogram_components())
         self._updating_linked_layers = True
         try:
-            for layer in self.viewer.layers:
-                if not isinstance(layer, Image):
-                    continue
-                source = self._fraction_layer_source_image(layer)
-                if source is None:
-                    continue
-                desired_visible = source in selected_names
-                if filter_by_component:
-                    desired_visible = (
-                        desired_visible and id(layer) in shown_layer_ids
-                    )
-                if layer.visible != desired_visible:
-                    layer.visible = desired_visible
+            with batched_layer_updates(self.viewer):
+                for layer in self.viewer.layers:
+                    if not isinstance(layer, Image):
+                        continue
+                    source = self._fraction_layer_source_image(layer)
+                    if source is None:
+                        continue
+                    desired_visible = source in selected_names
+                    if filter_by_component:
+                        desired_visible = (
+                            desired_visible and id(layer) in shown_layer_ids
+                        )
+                    set_layer_visible(layer, desired_visible)
         finally:
             self._updating_linked_layers = False
 

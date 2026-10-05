@@ -55,6 +55,7 @@ from ._utils import (
     HistogramWidget,
     analysis_layer_name,
     analysis_section_stylesheet,
+    batched_layer_updates,
     create_mpl_colormap_from_qcolor,
     create_settings_note_label,
     layer_colormap_from_settings,
@@ -64,6 +65,7 @@ from ._utils import (
     populate_colormap_combobox,
     resolve_colormap_by_name,
     resolve_napari_layer_colormap,
+    set_layer_visible,
     set_settings_note,
     setup_primary_button,
     split_analysis_layer_name,
@@ -1803,14 +1805,13 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         selected_names = self._get_selected_source_names()
         self._updating_linked_layers = True
         try:
-            for layer in self.viewer.layers:
-                info = self._mapping_output_info(layer)
-                if info is None:
-                    continue
-                _, source_name = info
-                desired_visible = source_name in selected_names
-                if layer.visible != desired_visible:
-                    layer.visible = desired_visible
+            with batched_layer_updates(self.viewer):
+                for layer in self.viewer.layers:
+                    info = self._mapping_output_info(layer)
+                    if info is None:
+                        continue
+                    _, source_name = info
+                    set_layer_visible(layer, source_name in selected_names)
         finally:
             self._updating_linked_layers = False
 
@@ -2825,68 +2826,74 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         created_layers = []
         existing_outputs = self._mapping_output_layers(output_type)
 
-        for layer in selected_layers:
-            derived_data = layer.metadata.get('derived_data', {})
-            if output_type not in derived_data:
-                continue
+        # One scene-graph rebuild for the outputs of every selected layer.
+        with batched_layer_updates(self.viewer):
+            for layer in selected_layers:
+                derived_data = layer.metadata.get('derived_data', {})
+                if output_type not in derived_data:
+                    continue
 
-            output_data_dict = derived_data[output_type]
-            if self.parent_widget.harmonic not in output_data_dict:
-                continue
+                output_data_dict = derived_data[output_type]
+                if self.parent_widget.harmonic not in output_data_dict:
+                    continue
 
-            output_values = output_data_dict[self.parent_widget.harmonic]
+                output_values = output_data_dict[self.parent_widget.harmonic]
 
-            output_layer_name = analysis_layer_name(output_type, layer.name)
-
-            min_val, max_val = self.lifetime_range_slider.value()
-            min_lifetime = min_val / self.lifetime_range_factor
-            max_lifetime = max_val / self.lifetime_range_factor
-            cl_max = (
-                max_lifetime
-                if max_lifetime > min_lifetime
-                else min_lifetime + 1.0
-            )
-            clipped_output = np.clip(output_values, min_lifetime, cl_max)
-
-            output_layer = existing_outputs.get(layer.name)
-            colormap, gamma = self._output_layer_colormap(
-                layer,
-                output_type,
-                output_layer,
-                cmap_name,
-                use_default=use_combobox_pick,
-            )
-            output_metadata = {
-                'source_layer': layer.name,
-                'output_type': output_type,
-            }
-            if output_layer is None:
-                selected_output_layer = Image(
-                    clipped_output,
-                    name=output_layer_name,
-                    scale=layer.scale,
-                    units=layer.units,
-                    colormap=colormap,
-                    contrast_limits=[min_lifetime, cl_max],
-                    metadata={_MAPPING_OUTPUT_METADATA_KEY: output_metadata},
+                output_layer_name = analysis_layer_name(
+                    output_type, layer.name
                 )
-                output_layer = self.viewer.add_layer(selected_output_layer)
-            else:
-                output_layer.data = clipped_output
-                output_layer.scale = layer.scale
-                output_layer.units = layer.units
-                output_layer.colormap = colormap
-                output_layer.contrast_limits = [
-                    min_lifetime,
-                    cl_max,
-                ]
-                output_layer.metadata[_MAPPING_OUTPUT_METADATA_KEY] = (
-                    output_metadata
+
+                min_val, max_val = self.lifetime_range_slider.value()
+                min_lifetime = min_val / self.lifetime_range_factor
+                max_lifetime = max_val / self.lifetime_range_factor
+                cl_max = (
+                    max_lifetime
+                    if max_lifetime > min_lifetime
+                    else min_lifetime + 1.0
                 )
-            if gamma is not None:
-                output_layer.gamma = gamma
-            self._store_output_colormap(layer, output_type, output_layer)
-            created_layers.append(output_layer)
+                clipped_output = np.clip(output_values, min_lifetime, cl_max)
+
+                output_layer = existing_outputs.get(layer.name)
+                colormap, gamma = self._output_layer_colormap(
+                    layer,
+                    output_type,
+                    output_layer,
+                    cmap_name,
+                    use_default=use_combobox_pick,
+                )
+                output_metadata = {
+                    'source_layer': layer.name,
+                    'output_type': output_type,
+                }
+                if output_layer is None:
+                    selected_output_layer = Image(
+                        clipped_output,
+                        name=output_layer_name,
+                        scale=layer.scale,
+                        units=layer.units,
+                        colormap=colormap,
+                        contrast_limits=[min_lifetime, cl_max],
+                        metadata={
+                            _MAPPING_OUTPUT_METADATA_KEY: output_metadata
+                        },
+                    )
+                    output_layer = self.viewer.add_layer(selected_output_layer)
+                else:
+                    output_layer.data = clipped_output
+                    output_layer.scale = layer.scale
+                    output_layer.units = layer.units
+                    output_layer.colormap = colormap
+                    output_layer.contrast_limits = [
+                        min_lifetime,
+                        cl_max,
+                    ]
+                    output_layer.metadata[_MAPPING_OUTPUT_METADATA_KEY] = (
+                        output_metadata
+                    )
+                if gamma is not None:
+                    output_layer.gamma = gamma
+                self._store_output_colormap(layer, output_type, output_layer)
+                created_layers.append(output_layer)
 
         self._set_metric_layers(created_layers)
 

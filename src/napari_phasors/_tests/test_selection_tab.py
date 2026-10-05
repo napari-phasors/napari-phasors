@@ -2578,3 +2578,47 @@ def test_manual_selection_brush_and_eraser_cursor_persists_after_painting(
         QApplication.processEvents()
         assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
         assert not cw.canvas.cursor().pixmap().isNull()
+
+
+def test_cursor_selection_batches_layer_updates(make_viewer_model, qtbot):
+    """Cursors applied to several layers create their labels layers in one
+    batch, and re-applying them writes no visibility already in place."""
+    viewer = make_viewer_model()
+    layers = []
+    for i in range(3):
+        layer = create_image_layer_with_phasors()
+        layer.name = f"img{i} [Phasor]"
+        viewer.add_layer(layer)
+        layers.append(layer)
+    parent = PlotterWidget(viewer)
+    parent.image_layers_checkable_combobox.selectAll()
+    widget = parent.selection_tab.cursor_selection_widget
+    widget.autoupdate_check.setChecked(False)
+    widget._add_cursor(g=0.5, s=0.3, radius=0.1)
+
+    log = []
+    viewer.layers.events.begin_batch.connect(lambda e: log.append("begin"))
+    viewer.layers.events.end_batch.connect(lambda e: log.append("end"))
+    viewer.layers.events.inserted.connect(lambda e: log.append("inserted"))
+    widget._apply_selection()
+    names = [
+        analysis_layer_name("Cursor Selection", layer.name) for layer in layers
+    ]
+    assert all(name in viewer.layers for name in names)
+    assert log == ["begin", "inserted", "inserted", "inserted", "end"]
+
+    visible_events = []
+    for name in names:
+        viewer.layers[name].events.visible.connect(visible_events.append)
+    # Only the labels data changes, so napari rebuilds nothing.
+    log.clear()
+    widget._apply_selection()
+    assert visible_events == []
+    assert log == []
+
+    # A labels layer the user hid is shown again.
+    viewer.layers[names[0]].visible = False
+    visible_events.clear()
+    widget._apply_selection()
+    assert viewer.layers[names[0]].visible is True
+    assert len(visible_events) == 1
