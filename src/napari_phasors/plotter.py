@@ -96,6 +96,7 @@ from ._utils import (
     apply_filter_and_threshold,
     apply_filter_and_threshold_to_layers,
     available_colormap_names,
+    batched_layer_updates,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     confirm_unassigned_layers,
@@ -111,6 +112,8 @@ from ._utils import (
     read_ome_tiff_settings,
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
+    set_grid_enabled,
+    set_layer_visible,
     set_phasor_storage_dtype,
     split_analysis_layer_name,
     split_items_by_group,
@@ -1752,6 +1755,9 @@ class PlotterWidget(QWidget):
         #: Last QDockWidget seen hosting this widget (see ``changeEvent``).
         self._plotter_dock_ref = None
         self.viewer = napari_viewer
+        #: Whether selecting several layers switches napari's grid mode on
+        #: (the "Grid view" switch of the Performance settings).
+        self._auto_grid_view = True
         #: Unsaved per-layer edits and per-analysis commits of the settings
         #: stored in ``layer.metadata['settings']`` (see ``_settings_store``).
         self.settings_store = LayerSettingsStore(
@@ -4127,57 +4133,64 @@ class PlotterWidget(QWidget):
                 if tab not in ("frequency", "masking")
             ]
 
-            for target_layer in selected_layers:
-                current_settings = copy.deepcopy(
-                    target_layer.metadata.get('settings', {})
-                )
-
-                self._prepare_layer_for_import(
-                    target_layer, selected_analysis_tabs
-                )
-
-                target_layer.metadata['settings'] = (
-                    self._merge_imported_settings(
-                        current_settings,
-                        source_settings,
-                        selected_analysis_tabs,
+            # The analyses re-run on every layer share one scene-graph
+            # rebuild.
+            with batched_layer_updates(self.viewer):
+                for target_layer in selected_layers:
+                    current_settings = copy.deepcopy(
+                        target_layer.metadata.get('settings', {})
                     )
+
+                    self._prepare_layer_for_import(
+                        target_layer, selected_analysis_tabs
+                    )
+
+                    target_layer.metadata['settings'] = (
+                        self._merge_imported_settings(
+                            current_settings,
+                            source_settings,
+                            selected_analysis_tabs,
+                        )
+                    )
+
+                    if (
+                        "frequency" in selected_tabs
+                        and 'frequency' in source_settings
+                    ):
+                        freq_val = source_settings['frequency']
+                        update_frequency_in_metadata(target_layer, freq_val)
+
+                    if copy_masking:
+                        self._copy_mask_from_layer(source_layer, target_layer)
+
+                # The imported values replace any unsaved edits of the same tabs.
+                self.settings_store.discard_drafts(
+                    selected_layers,
+                    self._imported_settings_keys(selected_tabs),
                 )
+
+                if copy_masking:
+                    # Sync the mask combobox / invert / labels controls from the
+                    # freshly-set assignments. Doing this before the settings
+                    # restore below makes that restore's mask handling a no-op, so
+                    # it can't re-apply the mask with a stale invert/label state.
+                    self._update_mask_ui_mode()
 
                 if (
                     "frequency" in selected_tabs
                     and 'frequency' in source_settings
                 ):
-                    freq_val = source_settings['frequency']
-                    update_frequency_in_metadata(target_layer, freq_val)
+                    self._broadcast_frequency_value_across_tabs(
+                        str(source_settings['frequency'])
+                    )
 
-                if copy_masking:
-                    self._copy_mask_from_layer(source_layer, target_layer)
-
-            # The imported values replace any unsaved edits of the same tabs.
-            self.settings_store.discard_drafts(
-                selected_layers, self._imported_settings_keys(selected_tabs)
-            )
-
-            if copy_masking:
-                # Sync the mask combobox / invert / labels controls from the
-                # freshly-set assignments. Doing this before the settings
-                # restore below makes that restore's mask handling a no-op, so
-                # it can't re-apply the mask with a stale invert/label state.
-                self._update_mask_ui_mode()
-
-            if "frequency" in selected_tabs and 'frequency' in source_settings:
-                self._broadcast_frequency_value_across_tabs(
-                    str(source_settings['frequency'])
+                self._apply_imported_analyses(
+                    selected_layers, selected_analysis_tabs
                 )
 
-            self._apply_imported_analyses(
-                selected_layers, selected_analysis_tabs
-            )
-
-            self._restore_plot_settings_from_metadata()
-            self._restore_all_tab_analyses(selected_tabs)
-            self.plot()
+                self._restore_plot_settings_from_metadata()
+                self._restore_all_tab_analyses(selected_tabs)
+                self.plot()
             layer_names = ", ".join([layer.name for layer in selected_layers])
             notifications.show_info(
                 f"Settings and analyses imported from {source_layer_name} to {layer_names}"
@@ -4198,41 +4211,47 @@ class PlotterWidget(QWidget):
             tab for tab in selected_tabs if tab != "frequency"
         ]
 
-        for target_layer in selected_layers:
-            current_settings = copy.deepcopy(
-                target_layer.metadata.get('settings', {})
-            )
+        # The analyses re-run on every layer share one scene-graph rebuild.
+        with batched_layer_updates(self.viewer):
+            for target_layer in selected_layers:
+                current_settings = copy.deepcopy(
+                    target_layer.metadata.get('settings', {})
+                )
 
-            self._prepare_layer_for_import(
-                target_layer, selected_analysis_tabs
-            )
+                self._prepare_layer_for_import(
+                    target_layer, selected_analysis_tabs
+                )
 
-            target_layer.metadata['settings'] = self._merge_imported_settings(
-                current_settings,
-                settings,
-                selected_analysis_tabs,
+                target_layer.metadata['settings'] = (
+                    self._merge_imported_settings(
+                        current_settings,
+                        settings,
+                        selected_analysis_tabs,
+                    )
+                )
+
+                if 'frequency' in selected_tabs and 'frequency' in settings:
+                    update_frequency_in_metadata(
+                        target_layer, settings['frequency']
+                    )
+
+            # The imported values replace any unsaved edits of the same tabs.
+            self.settings_store.discard_drafts(
+                selected_layers, self._imported_settings_keys(selected_tabs)
             )
 
             if 'frequency' in selected_tabs and 'frequency' in settings:
-                update_frequency_in_metadata(
-                    target_layer, settings['frequency']
+                self._broadcast_frequency_value_across_tabs(
+                    str(settings['frequency'])
                 )
 
-        # The imported values replace any unsaved edits of the same tabs.
-        self.settings_store.discard_drafts(
-            selected_layers, self._imported_settings_keys(selected_tabs)
-        )
-
-        if 'frequency' in selected_tabs and 'frequency' in settings:
-            self._broadcast_frequency_value_across_tabs(
-                str(settings['frequency'])
+            self._apply_imported_analyses(
+                selected_layers, selected_analysis_tabs
             )
 
-        self._apply_imported_analyses(selected_layers, selected_analysis_tabs)
-
-        self._restore_plot_settings_from_metadata()
-        self._restore_all_tab_analyses(selected_tabs)
-        self.plot()
+            self._restore_plot_settings_from_metadata()
+            self._restore_all_tab_analyses(selected_tabs)
+            self.plot()
 
     def _on_tab_changed(self, index):
         """Handle tab change events to show/hide tab-specific lines."""
@@ -5967,6 +5986,12 @@ class PlotterWidget(QWidget):
         float32 halves what every open image costs, resident and transient
         alike, at about seven significant digits instead of sixteen -- far
         below photon noise, but not bit-identical.
+
+        *Grid view* switches napari's grid mode on whenever more than one
+        layer is selected. napari redraws its grid at a cost that grows
+        steeply with the number of visible layers (seconds per selection
+        change with a few dozen), so it can be turned off to overlay the
+        selected layers instead.
         """
         box, layout = make_section("Performance")
 
@@ -6068,6 +6093,19 @@ class PlotterWidget(QWidget):
         grid.addWidget(self.phasor_precision_label, 3, 0)
         grid.addWidget(self.phasor_precision_combobox, 3, 1)
 
+        self.auto_grid_label = QLabel("Grid view:")
+        self.auto_grid_checkbox = QToggleSwitch()
+        self.auto_grid_checkbox.setChecked(self._auto_grid_view)
+        self.auto_grid_checkbox.setToolTip(
+            "Show the selected layers side by side in napari's grid when "
+            "more than one is selected. With many layers napari redraws the "
+            "grid slowly; turn this off to overlay them instead and leave "
+            "grid mode to napari's own button."
+        )
+        self.auto_grid_checkbox.toggled.connect(self._on_auto_grid_toggled)
+        grid.addWidget(self.auto_grid_label, 4, 0)
+        grid.addWidget(self.auto_grid_checkbox, 4, 1)
+
         self.parallel_processing_hint = QLabel()
         self.parallel_processing_hint.setWordWrap(True)
         self.parallel_processing_hint.setStyleSheet("color: gray;")
@@ -6092,6 +6130,19 @@ class PlotterWidget(QWidget):
         self.experimental_warning_icon = banner.icon_label
         self.experimental_warning_label = banner.text_label
         return banner
+
+    def _on_auto_grid_toggled(self, checked):
+        """Switch the automatic grid view for multi-layer selections.
+
+        Turning it off also leaves grid mode, which this switch had turned
+        on; from then on grid mode is napari's own button to set. Turning it
+        on applies it to the current selection straight away.
+        """
+        self._auto_grid_view = bool(checked)
+        if self._auto_grid_view:
+            self._update_grid_view(self.get_selected_layers())
+        else:
+            set_grid_enabled(self.viewer, False)
 
     def _on_parallel_items_toggled(self, checked):
         """Switch fan-out over separate layers, files and images on or off.
@@ -7601,11 +7652,13 @@ class PlotterWidget(QWidget):
         self._in_on_image_layer_changed = True
         try:
             layer_name = self.get_primary_layer_name()
-            self._apply_layer_data(
-                layer_name,
-                reset_zoom=True,
-                sync_frequency=True,
-            )
+            # Every tab's layer changes share one scene-graph rebuild.
+            with batched_layer_updates(self.viewer):
+                self._apply_layer_data(
+                    layer_name,
+                    reset_zoom=True,
+                    sync_frequency=True,
+                )
         finally:
             self._in_on_image_layer_changed = False
 
@@ -7624,11 +7677,12 @@ class PlotterWidget(QWidget):
             return
         self._in_on_primary_layer_changed = True
         try:
-            self._apply_layer_data(
-                new_primary_name,
-                reset_zoom=False,
-                sync_frequency=False,
-            )
+            with batched_layer_updates(self.viewer):
+                self._apply_layer_data(
+                    new_primary_name,
+                    reset_zoom=False,
+                    sync_frequency=False,
+                )
         finally:
             self._in_on_primary_layer_changed = False
 
@@ -7817,32 +7871,34 @@ class PlotterWidget(QWidget):
             return
         self._in_on_selection_changed = True
         try:
-            selected_layers = self.get_selected_layers()
-            self._update_grid_view(selected_layers)
-            self._update_contour_controls_visibility()
-            self._refresh_timelapse_controls()
+            # Every tab's layer changes share one scene-graph rebuild.
+            with batched_layer_updates(self.viewer):
+                selected_layers = self.get_selected_layers()
+                self._update_grid_view(selected_layers)
+                self._update_contour_controls_visibility()
+                self._refresh_timelapse_controls()
 
-            self._notify_analysis_tabs_layer_selection_changed()
+                self._notify_analysis_tabs_layer_selection_changed()
 
-            layer_name = self.get_primary_layer_name()
-            if not layer_name:
-                if self.plot_type == 'CONTOUR':
-                    self._clear_contour_plot()
-                    self.canvas_widget.figure.canvas.draw_idle()
-                # No layer is selected, so no center can be: drop the dots
-                # instead of returning before the plot would refresh them.
-                self._update_phasor_centers()
-                return
+                layer_name = self.get_primary_layer_name()
+                if not layer_name:
+                    if self.plot_type == 'CONTOUR':
+                        self._clear_contour_plot()
+                        self.canvas_widget.figure.canvas.draw_idle()
+                    # No layer is selected, so no center can be: drop the dots
+                    # instead of returning before the plot would refresh them.
+                    self._update_phasor_centers()
+                    return
 
-            self._update_harmonic_bounds(selected_layers)
+                self._update_harmonic_bounds(selected_layers)
 
-            if self._user_axes_limits is None and self.has_phasor_data():
-                ax = self.canvas_widget.axes
-                self._user_axes_limits = (ax.get_xlim(), ax.get_ylim())
+                if self._user_axes_limits is None and self.has_phasor_data():
+                    ax = self.canvas_widget.axes
+                    self._user_axes_limits = (ax.get_xlim(), ax.get_ylim())
 
-            self._fill_missing_plot_settings(selected_layers)
-            self.plot()
-            self._refresh_settings_notes()
+                self._fill_missing_plot_settings(selected_layers)
+                self.plot()
+                self._refresh_settings_notes()
 
         finally:
             self._in_on_selection_changed = False
@@ -7852,10 +7908,12 @@ class PlotterWidget(QWidget):
         """Update napari grid view and layer visibility for the selection.
 
         When multiple layers are selected, enables grid mode; otherwise
-        disables it. In both cases the napari viewer visibility is synced
-        to the selection via :meth:`_update_layer_visibility_for_selection`
-        so that only the selected intensity layers and their associated
-        analysis layers are shown.
+        disables it. With the "Grid view" switch off, grid mode is left to
+        napari's own button. In every case the napari viewer visibility is
+        synced to the selection via
+        :meth:`_update_layer_visibility_for_selection` so that only the
+        selected intensity layers and their associated analysis layers are
+        shown.
 
         Parameters
         ----------
@@ -7864,14 +7922,12 @@ class PlotterWidget(QWidget):
         """
         selected_names = {layer.name for layer in selected_layers}
 
-        if len(selected_layers) > 1:
-            if not self.viewer.grid.enabled:
-                self.viewer.grid.enabled = True
-        else:
-            if self.viewer.grid.enabled:
-                self.viewer.grid.enabled = False
-
-        self._update_layer_visibility_for_selection(selected_names)
+        # One scene-graph rebuild for the grid switch and every visibility
+        # change, instead of one per layer (each walks the whole grid).
+        with batched_layer_updates(self.viewer):
+            if self._auto_grid_view:
+                set_grid_enabled(self.viewer, len(selected_layers) > 1)
+            self._update_layer_visibility_for_selection(selected_names)
 
     def _is_phasor_intensity_layer(self, layer):
         """Return True if ``layer`` is an intensity layer with phasor data."""
@@ -7896,7 +7952,8 @@ class PlotterWidget(QWidget):
         [Phasor]> [<analysis>]"``. Layers that are not associated with any phasor
         intensity layer (e.g. unrelated reference layers) are left
         untouched. Redundant writes to ``layer.visible`` are skipped so
-        napari does not emit unnecessary redraw events.
+        napari does not emit unnecessary redraw events, and the changes are
+        batched into a single scene-graph rebuild.
 
         Parameters
         ----------
@@ -7920,17 +7977,17 @@ class PlotterWidget(QWidget):
                 return None
             return intensity_by_base.get(base)
 
-        for layer in self.viewer.layers:
-            if layer.name in intensity_name_set:
-                desired_visible = layer.name in selected_names
-            else:
-                associated = associated_intensity_name(layer.name)
-                if associated is None:
-                    # Unrelated layer; leave its visibility untouched.
-                    continue
-                desired_visible = associated in selected_names
-            if layer.visible != desired_visible:
-                layer.visible = desired_visible
+        with batched_layer_updates(self.viewer):
+            for layer in self.viewer.layers:
+                if layer.name in intensity_name_set:
+                    desired_visible = layer.name in selected_names
+                else:
+                    associated = associated_intensity_name(layer.name)
+                    if associated is None:
+                        # Unrelated layer; leave its visibility untouched.
+                        continue
+                    desired_visible = associated in selected_names
+                set_layer_visible(layer, desired_visible)
 
     def _get_common_harmonics(self, layers):
         """Get the intersection of harmonics available in all layers.
