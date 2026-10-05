@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-from napari.layers import Image, Shapes
+from napari.layers import Image, Labels, Shapes
 from qtpy.QtCore import QEvent
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
@@ -710,6 +710,55 @@ def test_restoring_a_stored_mask_recreates_its_layer(make_viewer_model):
     np.testing.assert_array_equal(masked_pixels(), mask > 0)
     viewer.layers[restored].data = np.zeros_like(mask)
     assert not masked_pixels().any()
+
+    # With several layers selected every one gets its own mask back, not
+    # just the primary layer.
+    for existing in list(viewer.layers):
+        viewer.layers.remove(existing)
+    opened_layers = []
+    for index in range(3):
+        extra = create_image_layer_with_phasors()
+        extra.name = f"opened {index}"
+        extra.metadata['mask'] = np.roll(mask, index, axis=0)
+        extra.metadata['mask_invert'] = index == 1
+        opened_layers.append(extra)
+        viewer.add_layer(extra)
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer.name for layer in opened_layers]
+    )
+    plotter._restore_plot_settings_from_metadata()
+    for layer in opened_layers:
+        assigned = viewer.layers[plotter._mask_assignments[layer.name]]
+        np.testing.assert_array_equal(assigned.data, layer.metadata['mask'])
+        assert plotter._mask_invert_assignments[layer.name] is (
+            layer.name == "opened 1"
+        )
+
+    # Layers opened together are all added but only the first is selected;
+    # the others still get their mask layer and are masked.
+    for existing in list(viewer.layers):
+        viewer.layers.remove(existing)
+    opened_layers = []
+    for index in range(3):
+        extra = create_image_layer_with_phasors()
+        extra.name = f"batch {index}"
+        if index != 1:
+            extra.metadata['mask'] = np.roll(mask, index + 1, axis=0)
+        opened_layers.append(extra)
+        viewer.add_layer(extra)
+    assert plotter.get_selected_layer_names() == ["batch 0"]
+    for layer in opened_layers:
+        g = layer.metadata['G']
+        masked = np.isnan(g[0] if g.ndim == 3 else g)
+        if 'mask' in layer.metadata:
+            np.testing.assert_array_equal(masked, layer.metadata['mask'] <= 0)
+            assert any(
+                isinstance(other, Labels)
+                and np.array_equal(other.data, layer.metadata['mask'])
+                for other in viewer.layers
+            )
+        else:
+            assert not masked.all()
 
 
 def _setup_plotter_with_labels(make_viewer_model, n_labels=3):

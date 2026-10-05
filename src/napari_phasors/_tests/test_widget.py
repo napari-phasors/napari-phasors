@@ -1393,8 +1393,7 @@ def test_writer_widget_format_defaults_and_options(make_viewer_model, qtbot):
 
     OME-TIFF for phasor layers, SVG for Labels, PNG for other images; the
     colorbar only for images, the colored-Labels option only for PNG/TIFF,
-    the mask option only for OME-TIFF, and DPI/figure height only when a
-    figure is drawn.
+    and DPI/figure height only when a figure is drawn.
     """
     viewer = make_viewer_model()
     widget = WriterWidget(viewer)
@@ -1411,7 +1410,6 @@ def test_writer_widget_format_defaults_and_options(make_viewer_model, qtbot):
             for name, option in (
                 ("colorbar", widget.colorbar_checkbox),
                 ("labels_color", widget.labels_color_checkbox),
-                ("mask", widget.mask_checkbox),
                 ("figure", widget.figure_options),
             )
             if not option.isHidden()
@@ -1423,9 +1421,6 @@ def test_writer_widget_format_defaults_and_options(make_viewer_model, qtbot):
     widget.export_layer_combobox.setCheckedItems([phasor.name])
     assert widget.format_combobox.currentText() == widget._OME
     assert shown() == set()
-    phasor.metadata["mask"] = np.ones(phasor.data.shape, dtype=int)
-    phasor.events.metadata()
-    assert shown() == {"mask"}
 
     widget.export_layer_combobox.setCheckedItems(["plain"])
     assert widget.format_combobox.currentText() == widget._PNG
@@ -1943,60 +1938,6 @@ def test_export_labels_layer_as_colored_image(
         img_data[..., 1] != img_data[..., 2]
     )
     assert is_colored, "Exported labels image is grayscale or black and white!"
-
-
-def test_writer_widget_mask_checkbox(make_viewer_model, qtbot, tmp_path):
-    """Test that WriterWidget mask checkbox behaves dynamically based on layer mask presence."""
-    viewer = make_viewer_model()
-
-    # 1. Create a layer without phasor/mask data
-    data = np.random.random((10, 10))
-    layer = viewer.add_image(data, name="test_image")
-
-    widget = WriterWidget(viewer)
-
-    # Select layer and export it as OME-TIFF (the mask option's format)
-    widget.export_layer_combobox.selectAll()
-    widget.format_combobox.setCurrentText(widget._OME)
-
-    # Verify checkbox is hidden
-    assert widget.mask_checkbox.isHidden() is True
-
-    # 2. Add a mask to the metadata and trigger metadata event
-    layer.metadata["mask"] = np.ones((10, 10))
-    layer.events.metadata()
-
-    # Verify checkbox is visible
-    assert widget.mask_checkbox.isHidden() is False
-
-    # 3. Remove the mask and trigger metadata event
-    del layer.metadata["mask"]
-    layer.events.metadata()
-
-    # Verify checkbox is hidden again
-    assert widget.mask_checkbox.isHidden() is True
-
-    # 4. Check saving calls write_ome_tiff with correct export_masked parameter
-    # Restore mask
-    layer.metadata["mask"] = np.ones((10, 10))
-    layer.events.metadata()
-    widget.mask_checkbox.setChecked(True)
-
-    with patch("napari_phasors._widget.write_ome_tiff") as mock_write:
-        widget._save_file(
-            str(tmp_path / "output.ome.tif"),
-            "Phasor as OME-TIFF (*.ome.tif)",
-            selected_layers=["test_image"],
-            export_masked=True,
-        )
-        mock_write.assert_called_once_with(
-            str(tmp_path / "output.ome.tif"),
-            layer,
-            export_masked=True,
-        )
-
-    # Clean up
-    widget.close()
 
 
 def test_ifli_widget(make_viewer_model, qtbot):

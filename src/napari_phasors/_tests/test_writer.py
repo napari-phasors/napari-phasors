@@ -456,10 +456,9 @@ def test_write_ometif_does_not_save_z_spacing_for_2d_layer(tmp_path):
 
 
 def test_write_ometif_masked(tmp_path):
-    """Test that write_ome_tiff with export_masked=True applies the mask.
-
-    Either way the mask, its invert flag, label selection and Shapes vertices
-    are stored in the file and read back into the layer metadata.
+    """The mask, its invert flag, label selection and Shapes vertices are
+    stored in the file and read back into the layer metadata, while the
+    phasor data itself is written unmasked.
     """
     import tifffile
 
@@ -481,36 +480,6 @@ def test_write_ometif_masked(tmp_path):
         "shape_type": ["rectangle"],
     }
 
-    # 1. Export with export_masked=True
-    filepath_masked = os.path.join(tmp_path, "test_masked.ome.tif")
-    write_ome_tiff(
-        filepath_masked,
-        [
-            (
-                intensity_image_layer.data,
-                {"metadata": intensity_image_layer.metadata},
-            )
-        ],
-        export_masked=True,
-    )
-
-    assert os.path.exists(filepath_masked)
-
-    # Read back and verify G, S, and mean have NaN at [0,0]
-    reader = napari_get_reader(filepath_masked, harmonics=harmonic)
-    layer_data_list = reader(filepath_masked)
-    metadata_masked = layer_data_list[0][1]["metadata"]
-    mean_masked = layer_data_list[0][0]
-
-    assert np.isnan(mean_masked[0, 0])
-    assert np.isnan(metadata_masked["G"][:, 0, 0]).all()
-    assert np.isnan(metadata_masked["S"][:, 0, 0]).all()
-
-    # The rest should not be NaN
-    assert not np.isnan(mean_masked[0, 1:]).any()
-    assert not np.isnan(metadata_masked["G"][:, 0, 1:]).any()
-
-    # 2. Export with export_masked=False
     filepath_unmasked = os.path.join(tmp_path, "test_unmasked.ome.tif")
     write_ome_tiff(
         filepath_unmasked,
@@ -520,7 +489,6 @@ def test_write_ometif_masked(tmp_path):
                 {"metadata": intensity_image_layer.metadata},
             )
         ],
-        export_masked=False,
     )
 
     reader_unmasked = napari_get_reader(filepath_unmasked, harmonics=harmonic)
@@ -531,15 +499,13 @@ def test_write_ometif_masked(tmp_path):
     assert not np.isnan(mean_unmasked[0, 0])
     assert not np.isnan(metadata_unmasked["G"][:, 0, 0]).any()
 
-    # The mask travels with both files, without changing the phasor series.
-    for read_metadata in (metadata_masked, metadata_unmasked):
-        np.testing.assert_array_equal(read_metadata["mask"], mask)
-        assert read_metadata["mask_invert"] is False
-        assert read_metadata["mask_labels"] == [1]
-        assert read_metadata["mask_shapes"]["shape_type"] == ["rectangle"]
-        np.testing.assert_array_equal(
-            read_metadata["mask_shapes"]["data"][0], square
-        )
+    np.testing.assert_array_equal(metadata_unmasked["mask"], mask)
+    assert metadata_unmasked["mask_invert"] is False
+    assert metadata_unmasked["mask_labels"] == [1]
+    assert metadata_unmasked["mask_shapes"]["shape_type"] == ["rectangle"]
+    np.testing.assert_array_equal(
+        metadata_unmasked["mask_shapes"]["data"][0], square
+    )
     with tifffile.TiffFile(filepath_unmasked) as tif:
         assert [series.name for series in tif.series][:3] == [
             "Phasor mean",
@@ -556,115 +522,6 @@ def test_write_ometif_masked(tmp_path):
         )
     damaged = napari_get_reader(filepath_unmasked)(filepath_unmasked)
     assert "mask" not in damaged[0][1]["metadata"]
-
-
-def test_write_ometif_masked_phasor_same_ndim(tmp_path):
-    """Test write_ome_tiff with export_masked=True, has_phasor_data=True, and G.ndim == mask.ndim."""
-    from unittest.mock import patch
-
-    mean = np.ones((2, 5))
-    G = np.ones((2, 5))
-    S = np.ones((2, 5))
-    mask = np.ones((2, 5), dtype=int)
-    mask[0, 0] = 0  # invalid
-
-    metadata = {
-        "original_mean": mean,
-        "G_original": G,
-        "S_original": S,
-        "harmonics": [1],
-        "mask": mask,
-        "mask_invert": False,
-    }
-
-    filepath = os.path.join(tmp_path, "test_same_ndim.ome.tif")
-
-    with patch(
-        "napari_phasors._writer.phasor_to_ometiff"
-    ) as mock_phasor_to_ometiff:
-        write_ome_tiff(
-            filepath,
-            [(mean, {"metadata": metadata})],
-            export_masked=True,
-        )
-
-        mock_phasor_to_ometiff.assert_called_once()
-        args, kwargs = mock_phasor_to_ometiff.call_args
-
-        called_mean = args[1]
-        called_G = args[2]
-        called_S = args[3]
-
-        assert np.isnan(called_mean[0, 0])
-        assert np.isnan(called_G[0, 0])
-        assert np.isnan(called_S[0, 0])
-
-        assert not np.isnan(called_mean[0, 1:]).any()
-        assert not np.isnan(called_G[0, 1:]).any()
-        assert not np.isnan(called_S[0, 1:]).any()
-
-
-def test_write_ometif_masked_non_phasor(tmp_path):
-    """Test write_ome_tiff with export_masked=True for non-phasor layers."""
-    from unittest.mock import patch
-
-    from napari.layers import Image
-
-    # Case 1: data.ndim > mask_invalid.ndim
-    data_3d = np.ones((3, 2, 5))
-    mask_2d = np.ones((2, 5), dtype=int)
-    mask_2d[0, 0] = 0  # invalid
-
-    layer_3d = Image(data_3d, name="layer_3d")
-    layer_3d.metadata = {
-        "mask": mask_2d,
-        "mask_invert": False,
-    }
-
-    filepath_3d = os.path.join(tmp_path, "test_non_phasor_3d.ome.tif")
-
-    with patch("tifffile.imwrite") as mock_imwrite:
-        write_ome_tiff(
-            filepath_3d,
-            layer_3d,
-            export_masked=True,
-        )
-
-        mock_imwrite.assert_called_once()
-        args, kwargs = mock_imwrite.call_args
-        written_data = args[1]
-
-        assert written_data.shape == (3, 2, 5)
-        assert np.isnan(written_data[:, 0, 0]).all()
-        assert not np.isnan(written_data[:, 0, 1:]).any()
-
-    # Case 2: data.ndim == mask_invalid.ndim with mask_invert = True
-    data_2d = np.ones((2, 5))
-    mask_2d_invert = np.zeros((2, 5), dtype=int)
-    mask_2d_invert[0, 0] = 1  # invalid when invert=True
-
-    layer_2d = Image(data_2d, name="layer_2d")
-    layer_2d.metadata = {
-        "mask": mask_2d_invert,
-        "mask_invert": True,
-    }
-
-    filepath_2d = os.path.join(tmp_path, "test_non_phasor_2d.ome.tif")
-
-    with patch("tifffile.imwrite") as mock_imwrite:
-        write_ome_tiff(
-            filepath_2d,
-            layer_2d,
-            export_masked=True,
-        )
-
-        mock_imwrite.assert_called_once()
-        args, kwargs = mock_imwrite.call_args
-        written_data = args[1]
-
-        assert written_data.shape == (2, 5)
-        assert np.isnan(written_data[0, 0])
-        assert not np.isnan(written_data[0, 1:]).any()
 
 
 def test_export_layer_as_image_tuple_colormap(tmp_path):

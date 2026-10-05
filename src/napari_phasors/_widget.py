@@ -4267,10 +4267,6 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         )
         self.main_layout.addWidget(self.labels_color_checkbox)
 
-        self.mask_checkbox = QCheckBox("Export masked OME-TIFF")
-        self.mask_checkbox.setChecked(True)
-        self.main_layout.addWidget(self.mask_checkbox)
-
         self.figure_options = QWidget()
         figure_layout = QHBoxLayout(self.figure_options)
         figure_layout.setContentsMargins(0, 0, 0, 0)
@@ -4381,8 +4377,6 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 selected_filter or file_format,
                 self.colorbar_checkbox.isChecked(),
                 selected_layers,
-                export_masked=not self.mask_checkbox.isHidden()
-                and self.mask_checkbox.isChecked(),
                 labels_as_ids=not self.labels_color_checkbox.isChecked(),
                 dpi=self.dpi_spinbox.value(),
                 figure_height=self.figure_height_spinbox.value(),
@@ -4569,10 +4563,6 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         label_values = file_format in (self._PNG, self._TIFF)
         self.colorbar_checkbox.setVisible(picture and has_image)
         self.labels_color_checkbox.setVisible(label_values and has_labels)
-        self.mask_checkbox.setVisible(
-            file_format == self._OME
-            and any('mask' in layer.metadata for layer in layers)
-        )
         # Labels exported as their values draw no figure.
         draws_labels = has_labels and (
             not label_values or self.labels_color_checkbox.isChecked()
@@ -4599,17 +4589,12 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         for layer in list(self._connected_metadata_layers):
             with suppress(Exception):
                 layer.events.metadata.disconnect(
-                    self._update_option_visibility
-                )
-            with suppress(Exception):
-                layer.events.metadata.disconnect(
                     self._update_flimari_button_state
                 )
         self._connected_metadata_layers.clear()
 
         for layer in image_layers:
             with suppress(Exception):
-                layer.events.metadata.connect(self._update_option_visibility)
                 layer.events.metadata.connect(
                     self._update_flimari_button_state
                 )
@@ -4633,10 +4618,6 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             for layer in list(self._connected_metadata_layers):
                 with suppress(Exception):
                     layer.events.metadata.disconnect(
-                        self._update_option_visibility
-                    )
-                with suppress(Exception):
-                    layer.events.metadata.disconnect(
                         self._update_flimari_button_state
                     )
             self._connected_metadata_layers.clear()
@@ -4650,7 +4631,6 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         selected_filter,
         include_colorbar=False,
         selected_layers=None,
-        export_masked=False,
         labels_as_ids=True,
         dpi=300,
         figure_height=8.0,
@@ -4716,9 +4696,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
             try:
                 if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
-                    write_ome_tiff(
-                        final_path, export_layer, export_masked=export_masked
-                    )
+                    write_ome_tiff(final_path, export_layer)
                 elif selected_filter == "Layer data as CSV (*.csv)":
                     export_layer_as_csv(final_path, export_layer)
                 elif selected_filter in [
@@ -4758,11 +4736,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                     layer_file_path = os.path.join(directory, filename)
 
                     if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
-                        write_ome_tiff(
-                            layer_file_path,
-                            export_layer,
-                            export_masked=export_masked,
-                        )
+                        write_ome_tiff(layer_file_path, export_layer)
                     elif selected_filter == "Layer data as CSV (*.csv)":
                         export_layer_as_csv(layer_file_path, export_layer)
                     elif selected_filter in [

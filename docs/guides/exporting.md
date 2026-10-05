@@ -23,8 +23,8 @@ in the **Phasor Plot** widget, the mask comes back as a
 `Restored Mask: <layer name>` layer and is applied again. A Shapes mask comes
 back as an editable Shapes layer. The mask is stored compressed as an extra
 page outside the phasor series, so it adds little to the file size and PhasorPy
-still reads the file as before. **Export masked OME-TIFF** additionally sets
-the pixels outside the mask to NaN in the exported phasor data.
+still reads the file as before. The exported phasor data itself is not masked,
+so the mask can still be removed after reopening the file.
 
 ## CSV export
 
