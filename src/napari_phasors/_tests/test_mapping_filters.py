@@ -74,12 +74,12 @@ def _layer(name="layer", harmonics=None, multi=False):
 def test_metric_metadata_helpers():
     """Units, fallback ranges and frequency needs are reported per metric."""
     assert metric_unit(NORMAL_LIFETIME) == "ns"
-    assert metric_unit(PHASE) == "rad"
+    assert metric_unit(PHASE) == "°"
     assert metric_unit(MODULATION) == ""
     assert metric_unit("nonsense") == ""
     assert metric_fallback_range(MODULATION) == (0.0, 1.0)
     assert metric_fallback_range("nonsense") == (0.0, 1.0)
-    assert metric_fallback_range(PHASE)[1] == pytest.approx(2 * np.pi)
+    assert metric_fallback_range(PHASE)[1] == pytest.approx(360.0)
     assert requires_frequency(NORMAL_LIFETIME)
     assert requires_frequency(APPARENT_MODULATION_LIFETIME)
     assert not requires_frequency(PHASE)
@@ -90,7 +90,7 @@ def test_format_range_names_the_unit_and_the_mode():
     """A criterion reads as a range, and says so when it excludes one."""
     assert format_range(NORMAL_LIFETIME, 0.5, 3.25) == "0.5 – 3.25 ns"
     assert format_range(MODULATION, 0.2, 0.8) == "0.2 – 0.8"
-    assert format_range(PHASE, 0.0, 1.0, EXCLUDE) == "outside 0 – 1 rad"
+    assert format_range(PHASE, 0.0, 1.0, EXCLUDE) == "outside 0 – 1 °"
 
 
 def test_describe_filters_lists_only_the_enabled_criteria():
@@ -295,14 +295,13 @@ def test_negative_apparent_lifetimes_are_clamped_to_zero():
 
 
 def test_phase_and_modulation_metrics():
-    """Phase optionally wraps to [0, 2pi); modulation never does."""
+    """Phase is in degrees within [0, 360), so a full-range filter keeps all."""
     real = np.array([[0.5, -0.5]])
     imag = np.array([[0.5, -0.5]])
-    unwrapped = compute_metric(PHASE, real, imag)
-    wrapped = compute_metric(PHASE, real, imag, wrap_phase=True)
-    assert unwrapped[0, 1] < 0
-    assert np.all(wrapped >= 0)
-    assert wrapped[0, 1] == pytest.approx(unwrapped[0, 1] + 2 * np.pi)
+    phase = compute_metric(PHASE, real, imag)
+    assert phase[0, 0] == pytest.approx(45.0)
+    assert phase[0, 1] == pytest.approx(225.0)
+    assert not range_mask(phase, 0.0, 360.0).any()
 
     modulation = compute_metric(MODULATION, real, imag)
     assert modulation[0, 0] == pytest.approx(np.hypot(0.5, 0.5))
@@ -612,7 +611,7 @@ def test_card_metric_selector_reseeds_the_criterion(qtbot):
     assert entry['metric'] == PHASE
     assert (entry['min'], entry['max']) == (0.1, 1.2)
     assert entry['params'] == {}
-    assert card.unit_label.text() == "rad"
+    assert card.unit_label.text() == "°"
     # The card is updated in place, not rebuilt under the pointer.
     assert next(iter(widget._cards.values())) is card
 

@@ -87,7 +87,7 @@ METRIC_UNITS = {
     APPARENT_PHASE_LIFETIME: "ns",
     APPARENT_MODULATION_LIFETIME: "ns",
     NORMAL_LIFETIME: "ns",
-    PHASE: "rad",
+    PHASE: "°",
     MODULATION: "",
     FRET_EFFICIENCY: "",
     COMPONENT_FRACTION: "",
@@ -98,7 +98,7 @@ METRIC_FALLBACK_RANGE = {
     APPARENT_PHASE_LIFETIME: (0.0, 10.0),
     APPARENT_MODULATION_LIFETIME: (0.0, 10.0),
     NORMAL_LIFETIME: (0.0, 10.0),
-    PHASE: (0.0, float(2.0 * np.pi)),
+    PHASE: (0.0, 360.0),
     MODULATION: (0.0, 1.0),
     FRET_EFFICIENCY: (0.0, 1.0),
     COMPONENT_FRACTION: (0.0, 1.0),
@@ -164,7 +164,6 @@ def new_filter(
     mode=KEEP,
     enabled=True,
     params=None,
-    wrap_phase=False,
 ):
     """Return a new criterion dict for *metric* over ``[minimum, maximum]``."""
     return {
@@ -175,7 +174,6 @@ def new_filter(
         'max': float(maximum),
         'mode': EXCLUDE if mode == EXCLUDE else KEEP,
         'enabled': bool(enabled),
-        'wrap_phase': bool(wrap_phase),
         'params': dict(params) if params else {},
     }
 
@@ -214,7 +212,6 @@ def _coerce_filter(raw):
         mode=raw.get('mode', KEEP),
         enabled=raw.get('enabled', True),
         params=params if isinstance(params, dict) else None,
-        wrap_phase=raw.get('wrap_phase', False),
     )
     stored_id = raw.get('id')
     if isinstance(stored_id, str) and stored_id:
@@ -469,7 +466,6 @@ def compute_metric(
     *,
     harmonic=1,
     frequency=None,
-    wrap_phase=False,
     params=None,
     context=None,
 ):
@@ -488,9 +484,6 @@ def compute_metric(
         Harmonic the coordinates belong to; scales the frequency.
     frequency : float, optional
         Excitation frequency in MHz. Required by the lifetime metrics.
-    wrap_phase : bool, optional
-        Wrap the phase into ``[0, 2pi)`` instead of ``(-pi, pi]``, matching
-        the full-polar plot mode.
     params : dict, optional
         Extra metric parameters. ``FRET efficiency`` reads its donor
         trajectory from here, ``Component fraction`` its component
@@ -540,11 +533,13 @@ def compute_metric(
             phase_values, modulation_values = phasor_to_polar(real, imag)
         if metric == MODULATION:
             return np.asarray(modulation_values, dtype=float)
-        phase_values = np.asarray(phase_values, dtype=float)
-        if wrap_phase:
-            with np.errstate(invalid='ignore'):
-                phase_values = np.mod(phase_values, 2.0 * np.pi)
-        return phase_values
+        # In degrees, always wrapped into [0, 360): that is the range the
+        # sliders span in every plot mode, so a negative angle must not fall
+        # outside it.
+        with np.errstate(invalid='ignore'):
+            return np.mod(
+                np.degrees(np.asarray(phase_values, dtype=float)), 360.0
+            )
 
     if metric == FRET_EFFICIENCY:
         return _compute_fret_efficiency(real, imag, harmonic, params)
@@ -669,7 +664,6 @@ def combined_mask(
             plane_imag,
             harmonic=entry['harmonic'],
             frequency=entry['params'].get('frequency'),
-            wrap_phase=entry['wrap_phase'],
             params=entry['params'],
             context=context,
         )

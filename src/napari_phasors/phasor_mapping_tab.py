@@ -115,10 +115,11 @@ def compute_lifetime_mesh_field(p_grid, m_grid, kind, frequency):
     carry the same value. Iso-lifetime lines are rays from the origin for the
     apparent phase lifetime (the phase mesh in ns), circles around the origin
     for the apparent modulation lifetime (the modulation mesh in ns), and rays
-    from the semicircle centre (0.5, 0) for the normal lifetime.
+    from the semicircle centre (0.5, 0) for the normal lifetime. ``p_grid`` is
+    the phase in degrees.
     """
     with np.errstate(invalid="ignore"):
-        real, imag = phasor_from_polar(p_grid, m_grid)
+        real, imag = phasor_from_polar(np.radians(p_grid), m_grid)
     return _phasor_to_lifetime(kind, real, imag, frequency)
 
 
@@ -168,7 +169,7 @@ def compute_phasor_mesh_mask(
     modulation or lifetime range, or -- when ``clip_semicircle`` is set in
     semicircle mode -- outside the universal semicircle. ``p_grid``/``m_grid``
     are the phase and modulation arrays of a coordinate grid (see
-    :func:`draw_phasor_mesh`). When ``lifetime_grid`` is given, cells with a
+    :func:`draw_phasor_mesh`), the phase in degrees. When ``lifetime_grid`` is given, cells with a
     non-finite lifetime are masked too, and so -- in semicircle mode -- are
     cells below the diameter. Lifetimes mirror across it, but the phase and
     modulation meshes (whose phase starts at 0) never draw that region, and
@@ -198,7 +199,7 @@ def compute_phasor_mesh_mask(
             # In semicircle mode the phase comes straight from ``atan2`` so
             # points below the diameter have a negative phase; clipping them
             # stops the mesh from bleeding past the bottom of the semicircle.
-            mask |= (m_grid > np.cos(p_grid)) | (p_grid < 0)
+            mask |= (m_grid > np.cos(np.radians(p_grid))) | (p_grid < 0)
     return mask
 
 
@@ -323,9 +324,10 @@ def draw_phasor_mesh(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             p_grid, m_grid = phasor_to_polar(grid_x, grid_y)
+        p_grid = np.degrees(p_grid)
         if not semicircle:
             with np.errstate(invalid="ignore"):
-                p_grid = np.mod(p_grid, 2.0 * np.pi)
+                p_grid = np.mod(p_grid, 360.0)
         extent = [x_limits[0], x_limits[1], y_limits[0], y_limits[1]]
 
     is_lifetime = kind in LIFETIME_OUTPUT_TYPES
@@ -735,9 +737,9 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         ph_cnt_layout.setContentsMargins(0, 5, 0, 0)
 
         ph_row = QHBoxLayout()
-        ph_row.addWidget(QLabel("Phase range (rad):"))
+        ph_row.addWidget(QLabel("Phase range (°):"))
         self.phase_min_edit = QLineEdit("0.00")
-        self.phase_max_edit = QLineEdit("1.60")
+        self.phase_max_edit = QLineEdit("90.00")
         self.phase_min_edit.setValidator(QDoubleValidator())
         self.phase_max_edit.setValidator(QDoubleValidator())
         self.phase_min_edit.setFixedWidth(50)
@@ -753,8 +755,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         ph_row.addStretch(1)
         ph_cnt_layout.addLayout(ph_row)
         self.phase_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
-        self.phase_range_slider.setRange(0, 628)
-        self.phase_range_slider.setValue((0, 628))
+        self.phase_range_slider.setRange(0, 360 * self.phase_range_factor)
+        self.phase_range_slider.setValue((0, 360 * self.phase_range_factor))
         ph_cnt_layout.addWidget(self.phase_range_slider)
         mesh_overlay_group_layout.addWidget(self.phase_range_container)
 
@@ -1098,8 +1100,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         return True
 
     def _phase_max_allowed(self) -> float:
-        """Return the largest phase value the sliders may reach, in radians."""
-        return 2.0 * np.pi
+        """Return the largest phase value the sliders may reach, in degrees."""
+        return 360.0
 
     def _update_phase_slider_bounds_from_plot_mode(self):
         """Rescale the phase slider to the current plot geometry's phase range."""
@@ -1138,9 +1140,10 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             warnings.simplefilter("ignore", RuntimeWarning)
             phase_values, modulation_values = phasor_to_polar(g_flat, s_flat)
 
+        phase_values = np.degrees(phase_values)
         if not self._is_semicircle_mode():
             with np.errstate(invalid='ignore'):
-                phase_values = np.mod(phase_values, 2.0 * np.pi)
+                phase_values = np.mod(phase_values, 360.0)
 
         phase_max_allowed = self._phase_max_allowed()
         with np.errstate(invalid='ignore'):
@@ -1209,10 +1212,6 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         if hasattr(self, 'filter_list'):
             self._refresh_filter_add_button()
 
-    def _phase_wraps(self) -> bool:
-        """Return whether phase filters are measured on ``[0, 2pi)``."""
-        return not self._is_semicircle_mode()
-
     def _filter_frequency(self, layer=None):
         """Return the frequency metric filters should be evaluated at.
 
@@ -1274,7 +1273,6 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             plane_imag,
             harmonic=harmonic,
             frequency=self._filter_frequency(layer),
-            wrap_phase=self._phase_wraps(),
         )
 
     def _new_filter_params(self, metric, layer=None):
@@ -1575,8 +1573,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             'mesh_clip_semicircle_enabled': False,
             'mesh_colorbar_enabled': False,
             'mesh_alpha': DEFAULT_MESH_ALPHA,
-            'mesh_phase_min': None,
-            'mesh_phase_max': None,
+            'mesh_phase_min_deg': None,
+            'mesh_phase_max_deg': None,
             'mesh_modulation_min': None,
             'mesh_modulation_max': None,
             # {lifetime output type: [min_ns, max_ns]}
@@ -1606,10 +1604,10 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         phase_min_i, phase_max_i = self.phase_range_slider.value()
         mod_min_i, mod_max_i = self.modulation_range_slider.value()
         self._update_lifetime_setting_in_metadata(
-            'mesh_phase_min', phase_min_i / self.phase_range_factor
+            'mesh_phase_min_deg', phase_min_i / self.phase_range_factor
         )
         self._update_lifetime_setting_in_metadata(
-            'mesh_phase_max', phase_max_i / self.phase_range_factor
+            'mesh_phase_max_deg', phase_max_i / self.phase_range_factor
         )
         self._update_lifetime_setting_in_metadata(
             'mesh_modulation_min', mod_min_i / self.modulation_range_factor
@@ -1635,8 +1633,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         if settings is None:
             return False
 
-        phase_min = settings.get('mesh_phase_min')
-        phase_max = settings.get('mesh_phase_max')
+        phase_min = settings.get('mesh_phase_min_deg')
+        phase_max = settings.get('mesh_phase_max_deg')
         mod_min = settings.get('mesh_modulation_min')
         mod_max = settings.get('mesh_modulation_max')
         clip_semi = settings.get('mesh_clip_semicircle_enabled', False)
@@ -1847,8 +1845,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self.histogram_widget._range_label_prefix = "Lifetime range (ns)"
             return
         if output_type == "Phase":
-            self.histogram_widget.xlabel = "Phase (rad)"
-            self.histogram_widget._range_label_prefix = "Phase range (rad)"
+            self.histogram_widget.xlabel = "Phase (°)"
+            self.histogram_widget._range_label_prefix = "Phase range (°)"
             return
         self.histogram_widget.xlabel = "Modulation"
         self.histogram_widget._range_label_prefix = "Modulation range"
@@ -2508,10 +2506,11 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                     phase_values, modulation_values = phasor_to_polar(
                         real, imag
                     )
+                phase_values = np.degrees(phase_values)
                 if output_type == "Phase" and not semicircle_mode:
-                    # Full polar mode expects phase in [0, 2pi].
+                    # Full polar mode expects phase in [0, 360].
                     with np.errstate(invalid='ignore'):
-                        phase_values = np.mod(phase_values, 2.0 * np.pi)
+                        phase_values = np.mod(phase_values, 360.0)
                 output_values = (
                     phase_values
                     if output_type == "Phase"
@@ -2617,22 +2616,22 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             )
         else:
             if output_type == "Phase" and not self._is_semicircle_mode():
-                # In full polar mode, initialize the display range to 0..2pi
-                # so users get the expected 0..360 degree domain.
+                # In full polar mode, initialize the display range to the
+                # full 0..360 degree domain.
                 self.min_lifetime = 0.0
-                self.max_lifetime = 2.0 * np.pi
+                self.max_lifetime = 360.0
                 min_slider_val = 0
                 max_slider_val = int(
                     self.max_lifetime * self.lifetime_range_factor
                 )
                 self.current_metric_data_original = np.mod(
-                    self.current_metric_data_original, 2.0 * np.pi
+                    self.current_metric_data_original, 360.0
                 )
                 self.current_metric_data = (
                     self.current_metric_data_original.copy()
                 )
                 for name, data in self.per_layer_metric_data_original.items():
-                    wrapped = np.mod(data, 2.0 * np.pi)
+                    wrapped = np.mod(data, 360.0)
                     self.per_layer_metric_data_original[name] = wrapped
                     self.per_layer_metric_data[name] = wrapped.copy()
             else:
@@ -3482,9 +3481,10 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             warnings.simplefilter("ignore", RuntimeWarning)
             p_grid, m_grid = phasor_to_polar(X, Y)
 
+        p_grid = np.degrees(p_grid)
         if not self._is_semicircle_mode():
             with np.errstate(invalid='ignore'):
-                p_grid = np.mod(p_grid, 2.0 * np.pi)
+                p_grid = np.mod(p_grid, 360.0)
 
         grid = {
             'p_grid': p_grid,
@@ -3584,9 +3584,10 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             warnings.simplefilter("ignore", RuntimeWarning)
             phase, modulation = phasor_to_polar(g_flat, s_flat)
 
+        phase = np.degrees(phase)
         if not self._is_semicircle_mode():
             with np.errstate(invalid='ignore'):
-                phase = np.mod(phase, 2.0 * np.pi)
+                phase = np.mod(phase, 360.0)
 
         values = phase if output_type == "Phase" else modulation
 
@@ -3723,7 +3724,9 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                 warnings.simplefilter("ignore", RuntimeWarning)
                 p_grid, m_grid = phasor_to_polar(X, Y)
 
-            stat_display = p_grid if output_type == "Phase" else m_grid
+            stat_display = (
+                np.degrees(p_grid) if output_type == "Phase" else m_grid
+            )
             extent = [
                 range_xlim[0],
                 range_xlim[1],
@@ -3968,7 +3971,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         if output_type in LIFETIME_OUTPUT_TYPES:
             label = "Lifetime (ns)"
         elif output_type == "Phase":
-            label = "Phase (rad)"
+            label = "Phase (°)"
         else:
             label = "Modulation"
         # Access the private method to update the colorbar in the plotter
