@@ -1324,6 +1324,48 @@ def test_phase_map_in_full_polar_mode(make_viewer_model, qtbot):
     assert abs(mapping_widget.max_lifetime - 360.0) < 1e-6
 
 
+def test_phase_range_refits_when_switching_to_full_polar(
+    make_viewer_model, qtbot
+):
+    """Switching to full polar refits the phase range, so data in the lower
+    half-plane is no longer clipped by the range fitted in semicircle mode."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    real = np.array([[[0.5, 0.4], [0.25, 0.3]]], dtype=float)
+    imag = np.array([[[-0.3, -0.4], [0.2, -0.2]]], dtype=float)
+    layer = Image(
+        np.ones((2, 2), dtype=float),
+        name="LowerHalfLayer",
+        metadata={
+            "original_mean": np.ones((2, 2), dtype=float),
+            "settings": {},
+            "G": real,
+            "S": imag,
+            "G_original": real.copy(),
+            "S_original": imag.copy(),
+            "harmonics": np.array([1]),
+        },
+    )
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    mapping_widget.calculate_output_data()
+    semicircle_max = mapping_widget.phase_range_slider.value()[1]
+
+    parent.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
+
+    _, phase_max = mapping_widget.phase_range_slider.value()
+    wrapped = np.mod(np.degrees(phasor_to_polar(real[0], imag[0])[0]), 360.0)
+    assert phase_max > semicircle_max
+    assert phase_max == int(wrapped.max() * mapping_widget.phase_range_factor)
+    assert float(mapping_widget.phase_max_edit.text()) == pytest.approx(
+        wrapped.max(), abs=0.01
+    )
+
+
 def test_phasor_mapping_plot_overlay_and_mesh(make_viewer_model, qtbot):
     """The 2D colormap overlay and the phase/modulation mesh on the phasor
     plot: toggles, tab visibility, debouncing, colorbar, ranges and alpha."""

@@ -1127,10 +1127,11 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         finally:
             self._updating_settings = False
 
-    def _initialize_mesh_ranges_from_current_data(self):
+    def _initialize_mesh_ranges_from_current_data(self, phase_only=False):
         """Set the phase and modulation sliders to span the data's own range.
 
-        Used when the layer has no stored mesh ranges to restore.
+        Used when the layer has no stored mesh ranges to restore. With
+        *phase_only*, the modulation range is left as it is.
         """
         pw = self.parent_widget
         if pw is None:
@@ -1194,12 +1195,13 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                 f"{phase_val_max_i / self.phase_range_factor:.2f}"
             )
 
-            self.modulation_range_slider.setRange(0, mod_slider_max_i)
-            self.modulation_range_slider.setValue((mod_min_i, mod_max_i))
-            self.modulation_min_edit.setText(f"{mod_min:.2f}")
-            self.modulation_max_edit.setText(
-                f"{mod_max_i / self.modulation_range_factor:.2f}"
-            )
+            if not phase_only:
+                self.modulation_range_slider.setRange(0, mod_slider_max_i)
+                self.modulation_range_slider.setValue((mod_min_i, mod_max_i))
+                self.modulation_min_edit.setText(f"{mod_min:.2f}")
+                self.modulation_max_edit.setText(
+                    f"{mod_max_i / self.modulation_range_factor:.2f}"
+                )
         finally:
             self._updating_settings = False
 
@@ -1511,11 +1513,14 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
     def _on_plot_geometry_mode_toggled(self, _checked):
         """Callback when the plot switches between semicircle and full polar."""
         self._update_phase_slider_bounds_from_plot_mode()
+        # The phase range was fitted to the other geometry's angles (the
+        # lower half-plane is negative in semicircle mode and clamped away),
+        # so it would keep clipping the data after the switch.
+        self._initialize_mesh_ranges_from_current_data(phase_only=True)
         self._sync_mode_widgets()
         if self.mesh_overlay_checkbox.isChecked():
             settings = self._get_current_layer_mapping_settings(create=False)
-            self._sync_mesh_ranges(settings)
-            self._persist_current_mesh_ranges_to_metadata()
+            self._sync_lifetime_mesh_range(settings)
         self.reapply_if_active()
 
     def _refresh_mesh_overlay_if_needed(self):
