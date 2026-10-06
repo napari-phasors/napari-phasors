@@ -37,6 +37,7 @@ from ._mapping_filters import (
     baseline_arrays,
     combined_mask,
     compute_metric,
+    feed_filter_statistics,
     get_filters,
     kept_fraction,
     normalize_filters,
@@ -2716,6 +2717,12 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             sources = {}
 
         self.histogram_widget.set_dataset_sources(sources)
+        feed_filter_statistics(
+            self.histogram_widget,
+            self._filter_layers(),
+            MAPPING_METRICS,
+            self._layer_filter_params,
+        )
 
         if not named:
             self.histogram_widget.clear()

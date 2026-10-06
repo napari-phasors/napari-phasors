@@ -720,9 +720,11 @@ def test_statistics_columns_name_the_quantity(qtbot):
         table.horizontalHeaderItem(col).text()
         for col in range(table.columnCount())
     ]
+    # With no filter there are no pixels inside one to count.
     assert headers == ["Name"] + [
         f"FRET efficiency {column}"
         for column in StatisticsTableWidget.COLUMNS[1:]
+        if column not in StatisticsTableWidget.COUNT_COLUMNS
     ]
 
     # A single series names itself rather than the axis.
@@ -756,6 +758,7 @@ def test_statistics_columns_name_the_quantity(qtbot):
         f"{series} {column}"
         for series in ("Component 1", "Component 2")
         for column in StatisticsTableWidget.COLUMNS[1:]
+        if column not in StatisticsTableWidget.COUNT_COLUMNS
     ]
     assert table.rowCount() == 1
     assert table.item(0, 0).text() == "img0"
@@ -802,7 +805,7 @@ def test_statistics_dock_lists_one_row_per_group_and_series(qtbot):
         table.horizontalHeaderItem(col).text()
         for col in range(table.columnCount())
     ]
-    block = len(StatisticsTableWidget.COLUMNS) - 1
+    block = len(StatisticsTableWidget.COLUMNS) - 1 - 2
     assert headers[0] == "Name"
     assert len(headers) == 1 + 3 * block
     assert headers[1] == "C1 Center of Mass"
@@ -4294,6 +4297,7 @@ def test_statistics_dock_shows_the_share_of_the_analysed_layer(qtbot):
 
     widget.set_dataset_sources({"C1: img0": "img0"})
     widget.set_dataset_totals({"img0": 8})
+    widget.set_series_ranges({None: "in 0.2 – 0.8"})
     widget.update_multi_data({"C1: img0": np.array([0.1, 0.2, 0.3, 0.4])})
 
     share = StatisticsTableWidget.COLUMNS.index("% Pixels")
@@ -4310,6 +4314,7 @@ def test_single_dataset_statistics_report_their_share(qtbot):
 
     widget.set_dataset_sources({"img0": "img0"})
     widget.set_dataset_totals({"img0": 10})
+    widget.set_series_ranges({None: "in 0.2 – 0.8"})
     widget.update_data(np.array([0.1, 0.2, 0.3, 0.4, 0.5]), label="img0")
 
     share = StatisticsTableWidget.COLUMNS.index("% Pixels")
@@ -4325,6 +4330,7 @@ def test_grouped_statistics_report_their_pooled_share(qtbot):
 
     widget.set_dataset_sources({"img0": "img0", "img1": "img1"})
     widget.set_dataset_totals({"img0": 4, "img1": 6})
+    widget.set_series_ranges({None: "in 0.2 – 0.8"})
     widget._group_assignments = {"img0": 1, "img1": 1}
     widget._group_names = {1: "Control"}
     widget.display_mode = "Grouped"
@@ -4354,6 +4360,7 @@ def test_grouped_series_statistics_report_their_pooled_share(qtbot):
         {"C1: img0": "C1", "C2: img0": "C2", "C1: img1": "C1"}
     )
     widget.set_dataset_totals({"img0": 4, "img1": 6})
+    widget.set_series_ranges({None: "in 0.2 – 0.8"})
     widget._group_assignments = {"img0": 1, "img1": 1}
     widget._group_names = {1: "Control"}
     widget.display_mode = "Grouped"
@@ -4428,6 +4435,32 @@ def test_each_quantity_names_its_own_range(qtbot):
     ]
     assert "C1 Pixels in 0.2 – 0.8" in headers
     assert "C2 Pixels" in headers
+
+
+def test_pixel_columns_appear_only_with_a_filter(qtbot):
+    """No filter, no pixels inside it: the count columns are left out."""
+    widget = HistogramWidget(bins=8)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+    table = dock.layer_stats_table
+
+    def headers():
+        return [
+            table.horizontalHeaderItem(col).text()
+            for col in range(table.columnCount())
+        ]
+
+    widget.update_data(np.array([0.1, 0.2, 0.3]), label="img0")
+    assert not any("Pixels" in header for header in headers())
+
+    widget.set_series_ranges({None: "in 0.2 – 0.8"})
+    widget.update_data(np.array([0.3, 0.4]), label="img0")
+    assert "Pixels in 0.2 – 0.8" in " ".join(headers())
+
+    widget.set_series_ranges({})
+    widget.update_data(np.array([0.1, 0.2, 0.3]), label="img0")
+    assert not any("Pixels" in header for header in headers())
 
 
 def test_the_histogram_carries_the_ranges_to_the_table(qtbot):
