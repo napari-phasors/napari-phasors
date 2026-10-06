@@ -554,7 +554,7 @@ def _compute_mapping_values(real, imag, output_type, frequency, harmonic):
     with np.errstate(divide="ignore", invalid="ignore"):
         if output_type in ("Phase", "Modulation"):
             phase, modulation = phasor_to_polar(real, imag)
-            return phase if output_type == "Phase" else modulation
+            return np.degrees(phase) if output_type == "Phase" else modulation
         effective_frequency = frequency * harmonic
         if output_type == "Normal Lifetime":
             values = phasor_to_normal_lifetime(
@@ -2690,17 +2690,17 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         layout.addLayout(top_form)
 
         self.mapping_phase_min_spin = QDoubleSpinBox()
-        self.mapping_phase_min_spin.setRange(0.0, 2.0 * float(np.pi))
+        self.mapping_phase_min_spin.setRange(0.0, 360.0)
         self.mapping_phase_min_spin.setDecimals(2)
-        self.mapping_phase_min_spin.setSingleStep(0.05)
+        self.mapping_phase_min_spin.setSingleStep(1.0)
         self.mapping_phase_min_spin.setValue(0.0)
         self.mapping_phase_max_spin = QDoubleSpinBox()
-        self.mapping_phase_max_spin.setRange(0.0, 2.0 * float(np.pi))
+        self.mapping_phase_max_spin.setRange(0.0, 360.0)
         self.mapping_phase_max_spin.setDecimals(2)
-        self.mapping_phase_max_spin.setSingleStep(0.05)
-        self.mapping_phase_max_spin.setValue(round(np.pi / 2.0, 2))
+        self.mapping_phase_max_spin.setSingleStep(1.0)
+        self.mapping_phase_max_spin.setValue(90.0)
         phase_row = QHBoxLayout()
-        phase_row.addWidget(QLabel("Phase range (rad):"))
+        phase_row.addWidget(QLabel("Phase range (°):"))
         phase_row.addWidget(self.mapping_phase_min_spin)
         phase_row.addWidget(QLabel("to"))
         phase_row.addWidget(self.mapping_phase_max_spin)
@@ -2826,7 +2826,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         g_flat, s_flat = coords
         with np.errstate(invalid="ignore"):
             phase, modulation = phasor_to_polar(g_flat, s_flat)
-            phase = phase[np.isfinite(phase)]
+            phase = np.degrees(phase[np.isfinite(phase)])
             modulation = modulation[np.isfinite(modulation)]
         phase_range = (
             (float(np.nanmin(phase)), float(np.nanmax(phase)))
@@ -2853,7 +2853,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         g_flat, s_flat = coords
         with np.errstate(invalid="ignore"):
             phase, modulation = phasor_to_polar(g_flat, s_flat)
-            phase = phase[np.isfinite(phase)]
+            phase = np.degrees(phase[np.isfinite(phase)])
             modulation = modulation[np.isfinite(modulation)]
 
         if phase.size:
@@ -3150,8 +3150,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self._note(
                 "Manual circular/elliptic/polar cursors, or automatic GMM "
                 "clusters, label their region in a selection image (one id "
-                "each). Angles are in degrees; polar phase bounds are in "
-                "radians."
+                "each). Angles and polar phase bounds are in degrees."
             )
         )
         group_layout.addWidget(inputs_box)
@@ -3263,8 +3262,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         polar_widget = QWidget()
         polar_line = QHBoxLayout(polar_widget)
         polar_line.setContentsMargins(0, 0, 0, 0)
-        phase_min_spin = _spin(-7.0, 7.0, 0.0)
-        phase_max_spin = _spin(-7.0, 7.0, 1.0)
+        phase_min_spin = _spin(-360.0, 360.0, 0.0, decimals=1, step=5.0)
+        phase_max_spin = _spin(-360.0, 360.0, 60.0, decimals=1, step=5.0)
         mod_min_spin = _spin(0.0, 2.0, 0.0)
         mod_max_spin = _spin(0.0, 2.0, 1.0)
         for label, widget in (
@@ -5036,8 +5035,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 cursors.append(
                     {
                         "type": "polar",
-                        "phase_min": entry["phase_min"].value(),
-                        "phase_max": entry["phase_max"].value(),
+                        "phase_min": float(
+                            np.deg2rad(entry["phase_min"].value())
+                        ),
+                        "phase_max": float(
+                            np.deg2rad(entry["phase_max"].value())
+                        ),
                         "modulation_min": entry["mod_min"].value(),
                         "modulation_max": entry["mod_max"].value(),
                         "color": color,
@@ -7506,7 +7509,7 @@ def _save_phasor_plot_png(
         with np.errstate(divide="ignore", invalid="ignore"):
             phase, modulation = phasor_to_polar(real, imag)
         color_by = mapping_overlay["color_by"]
-        metric = phase if color_by == "Phase" else modulation
+        metric = np.degrees(phase) if color_by == "Phase" else modulation
         metric_cmap = mapping_overlay.get("mesh_colormap") or "jet"
         # Use the same color range as the phase/modulation mesh so the colored
         # data and the mesh represent identical values with identical colors.

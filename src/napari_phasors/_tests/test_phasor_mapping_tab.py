@@ -1135,7 +1135,7 @@ def test_phasor_mapping_phase_and_modulation_maps(make_viewer_model, qtbot):
     mapping_widget.calculate_output_data()
     np.testing.assert_allclose(
         mapping_widget.current_metric_data_original,
-        expected_phase.flatten(),
+        np.degrees(expected_phase).flatten(),
         rtol=1e-6,
         atol=1e-6,
     )
@@ -1259,7 +1259,7 @@ def test_phasor_mapping_widget_single_harmonic_layer(
     mapping_widget.calculate_output_data()
     np.testing.assert_allclose(
         mapping_widget.current_metric_data_original,
-        expected_phase.flatten(),
+        np.degrees(expected_phase).flatten(),
         rtol=1e-6,
         atol=1e-6,
     )
@@ -1294,7 +1294,7 @@ def test_phase_map_in_full_polar_mode(make_viewer_model, qtbot):
         wrap_layer.name
     )
     expected_phase, _ = phasor_to_polar(real[0], imag[0])
-    expected_wrapped = np.mod(expected_phase, 2.0 * np.pi).flatten()
+    expected_wrapped = np.mod(np.degrees(expected_phase), 360.0).flatten()
 
     # Full Polar Plot toggle ON means full-circle mode.
     parent.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
@@ -1307,21 +1307,63 @@ def test_phase_map_in_full_polar_mode(make_viewer_model, qtbot):
         atol=1e-6,
     )
     assert np.all(mapping_widget.current_metric_data_original >= 0.0)
-    assert np.all(mapping_widget.current_metric_data_original <= 2.0 * np.pi)
+    assert np.all(mapping_widget.current_metric_data_original <= 360.0)
 
-    # The phase map slider range initializes to 0..2pi.
+    # The phase map slider range initializes to 0..360.
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
     mapping_widget._on_calculate_lifetime_clicked()
-    expected_max = int(2.0 * np.pi * mapping_widget.lifetime_range_factor)
+    expected_max = int(360.0 * mapping_widget.lifetime_range_factor)
     min_slider, max_slider = mapping_widget.lifetime_range_slider.value()
     assert mapping_widget.lifetime_range_slider.minimum() == 0
     assert mapping_widget.lifetime_range_slider.maximum() == expected_max
     assert min_slider == 0
     assert max_slider == expected_max
     assert abs(mapping_widget.min_lifetime - 0.0) < 1e-9
-    assert abs(mapping_widget.max_lifetime - (2.0 * np.pi)) < 1e-6
+    assert abs(mapping_widget.max_lifetime - 360.0) < 1e-6
+
+
+def test_phase_range_refits_when_switching_to_full_polar(
+    make_viewer_model, qtbot
+):
+    """Switching to full polar refits the phase range, so data in the lower
+    half-plane is no longer clipped by the range fitted in semicircle mode."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    real = np.array([[[0.5, 0.4], [0.25, 0.3]]], dtype=float)
+    imag = np.array([[[-0.3, -0.4], [0.2, -0.2]]], dtype=float)
+    layer = Image(
+        np.ones((2, 2), dtype=float),
+        name="LowerHalfLayer",
+        metadata={
+            "original_mean": np.ones((2, 2), dtype=float),
+            "settings": {},
+            "G": real,
+            "S": imag,
+            "G_original": real.copy(),
+            "S_original": imag.copy(),
+            "harmonics": np.array([1]),
+        },
+    )
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    mapping_widget.calculate_output_data()
+    semicircle_max = mapping_widget.phase_range_slider.value()[1]
+
+    parent.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
+
+    _, phase_max = mapping_widget.phase_range_slider.value()
+    wrapped = np.mod(np.degrees(phasor_to_polar(real[0], imag[0])[0]), 360.0)
+    assert phase_max > semicircle_max
+    assert phase_max == int(wrapped.max() * mapping_widget.phase_range_factor)
+    assert float(mapping_widget.phase_max_edit.text()) == pytest.approx(
+        wrapped.max(), abs=0.01
+    )
 
 
 def test_phasor_mapping_plot_overlay_and_mesh(make_viewer_model, qtbot):
@@ -1778,7 +1820,9 @@ def test_lifetime_mesh_field_matches_output_lifetimes(kind):
     imag = np.array([0.3, 0.45, 0.4, 0.1])
     phase, modulation = phasor_to_polar(real, imag)
 
-    field = compute_lifetime_mesh_field(phase, modulation, kind, 80.0)
+    field = compute_lifetime_mesh_field(
+        np.degrees(phase), modulation, kind, 80.0
+    )
 
     if kind == "Normal Lifetime":
         expected = phasor_to_normal_lifetime(real, imag, frequency=80.0)
@@ -1795,7 +1839,7 @@ def test_lifetime_mesh_geometry():
     rays from (0.5, 0) (normal)."""
     omega = 2 * np.pi * 80.0 * 1e-3
     # Same phase, different modulation: same apparent phase lifetime.
-    phase = np.array([0.6, 0.6])
+    phase = np.degrees(np.array([0.6, 0.6]))
     modulation = np.array([0.3, 0.7])
     phase_lt = compute_lifetime_mesh_field(
         phase, modulation, "Apparent Phase Lifetime", 80.0
@@ -1803,7 +1847,7 @@ def test_lifetime_mesh_geometry():
     np.testing.assert_allclose(phase_lt, np.tan(0.6) / omega)
     # Same modulation, different phase: same apparent modulation lifetime.
     mod_lt = compute_lifetime_mesh_field(
-        np.array([0.2, 1.2]),
+        np.degrees(np.array([0.2, 1.2])),
         np.array([0.5, 0.5]),
         "Apparent Modulation Lifetime",
         80.0,
@@ -1814,8 +1858,9 @@ def test_lifetime_mesh_geometry():
     radii = np.array([0.2, 0.4])
     real = 0.5 + radii * np.cos(angle)
     imag = radii * np.sin(angle)
+    phase, modulation = phasor_to_polar(real, imag)
     normal_lt = compute_lifetime_mesh_field(
-        *phasor_to_polar(real, imag), "Normal Lifetime", 80.0
+        np.degrees(phase), modulation, "Normal Lifetime", 80.0
     )
     assert normal_lt[0] == pytest.approx(normal_lt[1])
 
@@ -2261,7 +2306,7 @@ def test_mapping_output_controls_after_the_first_calculation(
 
     # Parameter changes refresh the active Mapping output.
     expected_modes = [
-        ("Phase", None, "Phase (rad)"),
+        ("Phase", None, "Phase (°)"),
         ("Modulation", None, "Modulation"),
         ("Lifetime", "Apparent Modulation Lifetime", "Lifetime (ns)"),
         ("Lifetime", "Normal Lifetime", "Lifetime (ns)"),

@@ -226,7 +226,7 @@ Each cursor row (**+ Add cursor**) has:
 | **r** *(Circular, Elliptic)* | Radius (major radius for Elliptic). |
 | **rₘ** *(Elliptic)* | Minor radius. |
 | **∠** *(Elliptic)* | Rotation angle, in degrees. |
-| **φ₋, φ₊** *(Polar)* | Minimum/maximum phase bounds, in radians. |
+| **φ₋, φ₊** *(Polar)* | Minimum/maximum phase bounds, in degrees. |
 | **m₋, m₊** *(Polar)* | Minimum/maximum modulation bounds. |
 
 ### Automatic clustering (GMM)
@@ -296,7 +296,7 @@ per file. See {doc}`phasor_mapping` for the interactive-widget equivalent.
 | **Mesh transparency** | Transparency of the mesh overlay. |
 | **Clip mesh to semicircle** | Only shows the mesh inside the universal semicircle (semicircle plot geometry only). |
 | **Range** | **Auto (range from all files)** computes a single phase/modulation range, and one range per lifetime mesh, pooled across every file at export; uncheck to set fixed ranges manually. |
-| **Phase range (rad)** | Manual minimum/maximum phase for the mesh, when Auto is off. |
+| **Phase range (°)** | Manual minimum/maximum phase for the mesh, when Auto is off. |
 | **Modulation range** | Manual minimum/maximum modulation for the mesh, when Auto is off. |
 | **Lifetime range (ns)** | Manual minimum/maximum lifetime for every lifetime mesh, when Auto is off. |
 
