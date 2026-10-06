@@ -2026,6 +2026,131 @@ def format_phasor_layer_name(
     return f"{name} [Phasor]"
 
 
+def set_layer_visible(layer, visible) -> bool:
+    """Set ``layer.visible``, skipping the write when it would not change it.
+
+    napari's ``visible`` setter has no equality check: every write refreshes
+    the layer (when showing it) and rebuilds the canvas scene graph. In grid
+    mode one rebuild walks every grid cell, so with many layers a redundant
+    write costs a significant fraction of a second. Inside
+    :func:`batched_layer_updates` a real change joins the block's single
+    rebuild.
+
+    Parameters
+    ----------
+    layer : napari.layers.Layer
+        Layer to show or hide.
+    visible : bool
+        The visibility wanted.
+
+    Returns
+    -------
+    bool
+        True if the visibility changed.
+    """
+    visible = bool(visible)
+    if layer.visible == visible:
+        return False
+    for batch in _LAYER_BATCHES.values():
+        if layer in batch.layers:
+            batch.start()
+    layer.visible = visible
+    return True
+
+
+def set_grid_enabled(viewer, enabled) -> bool:
+    """Switch napari's grid mode, skipping the write when already set.
+
+    Like a layer change, switching the grid rebuilds the scene graph, so
+    inside :func:`batched_layer_updates` it joins the block's single rebuild.
+
+    Returns
+    -------
+    bool
+        True if the grid mode changed.
+    """
+    enabled = bool(enabled)
+    grid = viewer.grid
+    if grid.enabled == enabled:
+        return False
+    batch = _LAYER_BATCHES.get(id(getattr(viewer, "layers", None)))
+    if batch is not None:
+        batch.start()
+    grid.enabled = enabled
+    return True
+
+
+# Layer-list events emitted right before a layer is added, removed or moved.
+_LAYER_LIST_PRE_EVENTS = ("inserting", "removing", "moving")
+
+
+class _LayerBatch:
+    """The outermost :func:`batched_layer_updates` block of a layer list."""
+
+    def __init__(self, layers):
+        self.layers = layers
+        self.started = False
+
+    def start(self, event=None):
+        """Pause napari's scene-graph rebuilds until the block ends."""
+        if not self.started:
+            self.started = True
+            self.layers.events.begin_batch()
+
+
+# Open blocks, keyed by ``id`` of their layer list.
+_LAYER_BATCHES: dict[int, _LayerBatch] = {}
+
+
+@contextlib.contextmanager
+def batched_layer_updates(viewer):
+    """Rebuild the canvas scene graph at most once for a block of changes.
+
+    Adding, removing or showing/hiding a layer, or switching grid mode, makes
+    napari rebuild the scene graph. In grid mode a rebuild walks every grid
+    cell for every layer, so its cost grows steeply with the number of
+    visible layers, and doing one per layer makes bulk changes very slow.
+
+    napari pauses the rebuilds between the layer list's ``begin_batch`` and
+    ``end_batch`` events and does a single one at the end. The pause starts
+    right before the block's first change (a layer added, removed or moved,
+    or a change through :func:`set_layer_visible` or
+    :func:`set_grid_enabled`), so a block that changes nothing structural,
+    such as one only replacing layer data, costs no rebuild at all. Nested
+    blocks join the outermost one.
+
+    Parameters
+    ----------
+    viewer : napari.Viewer or napari.components.ViewerModel or None
+        Viewer whose layers change. Without a layer list emitting the batch
+        events, the block runs unbatched.
+    """
+    layers = getattr(viewer, "layers", None)
+    events = getattr(layers, "events", None)
+    names = ("begin_batch", "end_batch", *_LAYER_LIST_PRE_EVENTS)
+    key = id(layers)
+    if (
+        events is None
+        or not all(hasattr(events, name) for name in names)
+        or key in _LAYER_BATCHES
+    ):
+        yield
+        return
+    batch = _LayerBatch(layers)
+    _LAYER_BATCHES[key] = batch
+    for name in _LAYER_LIST_PRE_EVENTS:
+        getattr(events, name).connect(batch.start)
+    try:
+        yield
+    finally:
+        for name in _LAYER_LIST_PRE_EVENTS:
+            with contextlib.suppress(TypeError, ValueError, RuntimeError):
+                getattr(events, name).disconnect(batch.start)
+        del _LAYER_BATCHES[key]
+        if batch.started:
+            events.end_batch()
+
+
 _PHASOR_TAG_RE = re.compile(r"\s*\[Phasor\](?P<dup>\s*\[\d+\])?$")
 _ANALYSIS_TAG_RE = re.compile(
     r"^(?P<base>.*?)\s*\[(?P<label>[^\[\]]+)\](?P<dup>\s*\[\d+\])?$"
@@ -7699,6 +7824,9 @@ class StatisticsTableWidget(QTableWidget):
         # {quantity: "in 0.2 - 0.8"} naming the range each quantity's pixels
         # were counted over; see :meth:`set_range_labels`.
         self._range_labels = {}
+        # Whether the pixel count columns are listed; see
+        # :meth:`set_show_counts`.
+        self._show_counts = True
         #: Widths the user set by dragging, keyed by column name so they
         #: survive the switch between ``COLUMNS`` and ``FRAME_COLUMNS``.
         self._user_column_widths = {}
@@ -7834,7 +7962,7 @@ class StatisticsTableWidget(QTableWidget):
             shows a dash there.
         """
         totals = totals or {}
-        self._apply_columns(self.COLUMNS)
+        self._apply_columns(["Name", *self._stat_columns()])
         self.setRowCount(len(datasets))
         for row, (name, data) in enumerate(datasets.items()):
             stats = compute_dataset_statistics(
@@ -7842,7 +7970,7 @@ class StatisticsTableWidget(QTableWidget):
             )
 
             self.setItem(row, 0, QTableWidgetItem(str(name)))
-            for col, column_name in enumerate(self.COLUMNS[1:], start=1):
+            for col, column_name in enumerate(self._stat_columns(), start=1):
                 self.setItem(
                     row,
                     col,
@@ -7850,6 +7978,22 @@ class StatisticsTableWidget(QTableWidget):
                         self.format_statistic(column_name, stats[column_name])
                     ),
                 )
+
+    def set_show_counts(self, show):
+        """List the pixel count columns, or leave them out.
+
+        They count the pixels inside a filter, so with no filter there is
+        nothing for them to say.
+        """
+        self._show_counts = bool(show)
+
+    def _stat_columns(self):
+        """Return the statistic columns currently listed after the name."""
+        return [
+            column
+            for column in self.COLUMNS[1:]
+            if self._show_counts or column not in self.COUNT_COLUMNS
+        ]
 
     def set_range_labels(self, labels):
         """Name the range each quantity's pixels were counted over.
@@ -7865,7 +8009,7 @@ class StatisticsTableWidget(QTableWidget):
         """Return a count column's header, naming the range it counted over."""
         if column not in self.COUNT_COLUMNS:
             return column
-        scope = self._range_labels.get(quantity)
+        scope = self._range_labels.get(quantity, self._range_labels.get(None))
         if not scope:
             return column
         return f"{self.COUNT_COLUMN_STEMS[column]} {scope}"
@@ -7917,7 +8061,7 @@ class StatisticsTableWidget(QTableWidget):
         columns = ["Name"] + [
             f"{series} {self._count_column_label(column, series)}"
             for series in series_names
-            for column in self.COLUMNS[1:]
+            for column in self._stat_columns()
         ]
         self._apply_columns(columns)
         self.setRowCount(len(rows))
@@ -7938,7 +8082,7 @@ class StatisticsTableWidget(QTableWidget):
                     if data is not None
                     else None
                 )
-                for column_name in self.COLUMNS[1:]:
+                for column_name in self._stat_columns():
                     text = (
                         self.format_statistic(column_name, stats[column_name])
                         if stats is not None
@@ -8011,7 +8155,7 @@ class StatisticsTableWidget(QTableWidget):
             Frame displayed in the viewer; its row is highlighted and
             scrolled into view.
         """
-        self._apply_columns(self.FRAME_COLUMNS)
+        self._apply_columns(["Frame", "Name", *self._stat_columns()])
         self.setRowCount(len(rows))
 
         highlight_row = None
@@ -8025,7 +8169,7 @@ class StatisticsTableWidget(QTableWidget):
             values = [str(row["Frame"]), str(row["Name"])]
             values += [
                 self.format_statistic(column, row.get(column))
-                for column in self.COLUMNS[1:]
+                for column in self._stat_columns()
             ]
 
             for col, text in enumerate(values):
@@ -8270,6 +8414,8 @@ class StatisticsDockWidget(QWidget):
         for table in (self.layer_stats_table, self.group_stats_table):
             table.set_quantity_label(quantity)
             table.set_range_labels(ranges)
+            # Counting the pixels inside a filter needs a filter.
+            table.set_show_counts(bool(ranges))
 
         if self._shows_per_frame_rows():
             rows, _centers, _edges = self._frame_statistics_rows()

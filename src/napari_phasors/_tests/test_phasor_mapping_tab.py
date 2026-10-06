@@ -2745,11 +2745,24 @@ def test_two_filters_compose_in_any_order(make_viewer_model, qtbot):
 
     baseline = np.isnan(layer.metadata['G']).sum()
     lifetime_median = _metric_median(layer, "Normal Lifetime", parent.harmonic)
+    table = parent.phasor_map_statistics_dock_widget.layer_stats_table
+
+    def headers():
+        return [
+            table.horizontalHeaderItem(col).text()
+            for col in range(table.columnCount())
+        ]
+
+    # No filter, no pixel counts beside the statistics.
+    assert not any("Pixels" in name for name in headers())
     _add_filter(
         widget, "Normal Lifetime", lifetime_median - 1.0, lifetime_median + 1.0
     )
     after_first = np.isnan(layer.metadata['G']).sum()
     assert after_first > baseline
+    # With one they count the pixels inside it, out of those it started from.
+    pixels = next(i for i, name in enumerate(headers()) if "Pixels in" in name)
+    assert 0 < float(table.item(0, pixels + 1).text().rstrip("%")) < 100
 
     modulation_bounds = widget.filter_list.bounds_for("Modulation")
     modulation_mid = sum(modulation_bounds) / 2
@@ -2779,6 +2792,7 @@ def test_two_filters_compose_in_any_order(make_viewer_model, qtbot):
     widget._apply_filter_stack([])
     assert np.isnan(layer.metadata['G']).sum() == baseline
     assert get_filters(layer) == []
+    assert not any("Pixels" in name for name in headers())
 
     # The stack is a set of conditions: adding them the other way round
     # hides exactly the same pixels.

@@ -743,6 +743,7 @@ def test_mapping_histogram_and_statistics_follow_the_frame(
         assert _table_column_names(table) == ["Frame", "Name"] + [
             f"Lifetime (ns) {column}"
             for column in StatisticsTableWidget.COLUMNS[1:]
+            if column not in StatisticsTableWidget.COUNT_COLUMNS
         ]
         assert [row[0] for row in _table_rows(table)] == [
             str(frame) for frame in range(N_FRAMES)
