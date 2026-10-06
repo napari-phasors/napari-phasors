@@ -1910,6 +1910,7 @@ class PlotterWidget(QWidget):
 
         # Per-layer mask assignments: {image_layer_name: mask_layer_name}
         self._mask_assignments = {}
+        self._mask_restored_ids = set()
         # Per-layer invert state: {image_layer_name: bool}
         self._mask_invert_assignments = {}
         # Per-layer mask labels assignments: {image_layer_name: list[int]}
@@ -3454,6 +3455,62 @@ class PlotterWidget(QWidget):
             return
         self.commit_analysis_settings({key: value})
 
+    def _restore_stored_mask(self, image_layer):
+        """Assign *image_layer*'s stored mask to a mask layer and return it.
+
+        Reuses the Labels/Shapes layer that matches the stored mask, else
+        creates one (the stored shapes when the mask came from a Shapes
+        layer, else its pixels). The layer's own invert flag and label
+        selection are re-applied, not the controls' reset defaults. Returns
+        ``None`` when the layer has no stored mask.
+        """
+        if 'mask' not in image_layer.metadata:
+            return None
+        layer_name = image_layer.name
+        matching_mask_layer_name = None
+        for mask_l in self.viewer.layers:
+            if not isinstance(mask_l, (Labels, Shapes)):
+                continue
+            if isinstance(mask_l, Shapes):
+                mask_data = mask_l.to_labels(
+                    labels_shape=image_layer.data.shape
+                )
+            else:
+                mask_data = mask_l.data
+            if np.array_equal(mask_data, image_layer.metadata['mask']):
+                matching_mask_layer_name = mask_l.name
+                break
+        if matching_mask_layer_name is None:
+            matching_mask_layer_name = f"Restored Mask: {layer_name}"
+            shapes = image_layer.metadata.get('mask_shapes')
+            if shapes:
+                self.viewer.add_shapes(
+                    list(shapes['data']),
+                    shape_type=list(shapes['shape_type']),
+                    name=matching_mask_layer_name,
+                    scale=image_layer.scale,
+                    units=image_layer.units,
+                )
+            else:
+                self.viewer.add_labels(
+                    image_layer.metadata['mask'],
+                    name=matching_mask_layer_name,
+                    scale=image_layer.scale,
+                    units=image_layer.units,
+                )
+            # Added while the layer choices are reset (a file opened with a
+            # stored mask), so not listed yet.
+            if self.mask_layer_combobox.findText(matching_mask_layer_name) < 0:
+                self.mask_layer_combobox.addItem(matching_mask_layer_name)
+        self._mask_assignments[layer_name] = matching_mask_layer_name
+        self._mask_invert_assignments[layer_name] = bool(
+            image_layer.metadata.get('mask_invert', False)
+        )
+        self._mask_label_assignments[layer_name] = image_layer.metadata.get(
+            'mask_labels'
+        )
+        return matching_mask_layer_name
+
     def _restore_plot_settings_from_metadata(self):
         """Restore all settings from the current layer's metadata."""
         layer_name = (
@@ -3466,33 +3523,19 @@ class PlotterWidget(QWidget):
 
         self._updating_settings = True
         try:
+            # Every selected layer with a stored mask gets its mask layer
+            # and assignments back, not just the primary one.
+            for selected_layer in self.get_selected_layers():
+                if selected_layer is not image_layer:
+                    self._restore_stored_mask(selected_layer)
             if 'mask' in image_layer.metadata:
-                # Find a mask layer that matches the saved mask
-                matching_mask_layer_name = None
-                valid_mask_layers = [
-                    mask_l
-                    for mask_l in self.viewer.layers
-                    if isinstance(mask_l, (Labels, Shapes))
-                ]
-                for mask_l in valid_mask_layers:
-                    if isinstance(mask_l, Shapes):
-                        mask_data = mask_l.to_labels(
-                            labels_shape=image_layer.data.shape
-                        )
-                    else:
-                        mask_data = mask_l.data
-                    if np.array_equal(mask_data, image_layer.metadata['mask']):
-                        matching_mask_layer_name = mask_l.name
-                        break  # Found a match, no need to continue
-                # Create mask layer if no match found
-                if matching_mask_layer_name is None:
-                    matching_mask_layer_name = f"Restored Mask: {layer_name}"
-                    self.viewer.add_labels(
-                        image_layer.metadata['mask'],
-                        name=matching_mask_layer_name,
-                        scale=image_layer.scale,
-                        units=image_layer.units,
-                    )
+                matching_mask_layer_name = self._restore_stored_mask(
+                    image_layer
+                )
+                invert = self._mask_invert_assignments[layer_name]
+                self.mask_invert_checkbox.blockSignals(True)
+                self.mask_invert_checkbox.setChecked(invert)
+                self.mask_invert_checkbox.blockSignals(False)
                 # With several layers selected each keeps its own mask,
                 # invert and labels; the editor change must not re-apply the
                 # primary layer's mask (with the checkbox's stale invert) to
@@ -7368,6 +7411,7 @@ class PlotterWidget(QWidget):
             return
 
         self._resetting_layer_choices = True
+        n_layers = len(self.viewer.layers)
 
         try:
             # Store current selection
@@ -7607,6 +7651,48 @@ class PlotterWidget(QWidget):
 
         finally:
             self._resetting_layer_choices = False
+        if len(self.viewer.layers) != n_layers:
+            # A layer added meanwhile (a restored mask) skipped this reset.
+            self.reset_layer_choices()
+        self._restore_stored_masks()
+
+    def _restore_stored_masks(self):
+        """Restore and apply the mask stored in each newly added layer.
+
+        Opening files with stored masks adds every layer at once but only
+        selects the first, so the plotter's selection handling would restore
+        just that one. Each layer is handled once, the first time it is seen.
+        """
+        phasor_layers = [
+            layer
+            for layer in self.viewer.layers
+            if isinstance(layer, Image)
+            and all(
+                key in layer.metadata
+                for key in ("G", "S", "G_original", "S_original")
+            )
+        ]
+        self._mask_restored_ids.intersection_update(
+            id(layer) for layer in phasor_layers
+        )
+        for layer in phasor_layers:
+            if id(layer) in self._mask_restored_ids:
+                continue
+            self._mask_restored_ids.add(id(layer))
+            if 'mask' not in layer.metadata:
+                continue
+            invert = bool(layer.metadata.get('mask_invert', False))
+            labels = layer.metadata.get('mask_labels')
+            # The primary layer was already assigned while it was selected.
+            mask_name = self._mask_assignments.get(
+                layer.name
+            ) or self._restore_stored_mask(layer)
+            self._apply_mask_to_phasor_data(
+                self.viewer.layers[mask_name],
+                layer,
+                invert=invert,
+                labels=labels,
+            )
 
     @staticmethod
     def _is_analysis_output_layer(layer):
@@ -8188,6 +8274,12 @@ class PlotterWidget(QWidget):
         self._apply_mask_array_to_phasor_data(
             mask_data, image_layer, invert=invert, labels=labels
         )
+        if isinstance(mask_layer, Shapes):
+            # Kept so an OME-TIFF export can restore the editable shapes.
+            image_layer.metadata['mask_shapes'] = {
+                'data': [np.asarray(v).copy() for v in mask_layer.data],
+                'shape_type': list(mask_layer.shape_type),
+            }
 
     def _apply_mask_array_to_phasor_data(
         self, mask_data, image_layer, invert=False, labels=None
@@ -8215,6 +8307,9 @@ class PlotterWidget(QWidget):
         mask_data = np.asarray(mask_data)
         image_layer.metadata['mask'] = mask_data.copy()
         image_layer.metadata['mask_invert'] = invert
+        # Only a Shapes mask has vertices; it sets them again after this.
+        # Removing a mask removes 'mask', which makes them unused.
+        image_layer.metadata.pop('mask_shapes', None)
         if labels is not None:
             image_layer.metadata['mask_labels'] = labels
         elif 'mask_labels' in image_layer.metadata:

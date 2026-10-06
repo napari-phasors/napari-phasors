@@ -408,6 +408,10 @@ def test_write_ometif_without_phasor_data(tmp_path):
             description = json.loads(tif.pages[0].description)
             assert "napari_phasors_settings" in description
 
+    # A 2D image has no signal axis: napari's own reader opens it as is.
+    ((read,),) = napari_get_reader(filepath)(filepath)
+    np.testing.assert_array_equal(read, data)
+
 
 def test_write_ometif_saves_z_spacing_for_3d_layer(tmp_path):
     """Save z-spacing metadata only when a Z axis is present."""
@@ -452,7 +456,12 @@ def test_write_ometif_does_not_save_z_spacing_for_2d_layer(tmp_path):
 
 
 def test_write_ometif_masked(tmp_path):
-    """Test that write_ome_tiff with export_masked=True applies the mask."""
+    """The mask, its invert flag, label selection and Shapes vertices are
+    stored in the file and read back into the layer metadata, while the
+    phasor data itself is written unmasked.
+    """
+    import tifffile
+
     time_constants = [0.1, 1, 10]
     raw_flim_data = make_raw_flim_data(time_constants=time_constants)
     harmonic = [1, 2, 3]
@@ -464,37 +473,13 @@ def test_write_ometif_masked(tmp_path):
     mask[0, 0] = 0
     intensity_image_layer.metadata["mask"] = mask
     intensity_image_layer.metadata["mask_invert"] = False
+    intensity_image_layer.metadata["mask_labels"] = [np.int64(1)]
+    square = np.array([[0, 1], [0, 4], [1, 4], [1, 1]], dtype=float)
+    intensity_image_layer.metadata["mask_shapes"] = {
+        "data": [square],
+        "shape_type": ["rectangle"],
+    }
 
-    # 1. Export with export_masked=True
-    filepath_masked = os.path.join(tmp_path, "test_masked.ome.tif")
-    write_ome_tiff(
-        filepath_masked,
-        [
-            (
-                intensity_image_layer.data,
-                {"metadata": intensity_image_layer.metadata},
-            )
-        ],
-        export_masked=True,
-    )
-
-    assert os.path.exists(filepath_masked)
-
-    # Read back and verify G, S, and mean have NaN at [0,0]
-    reader = napari_get_reader(filepath_masked, harmonics=harmonic)
-    layer_data_list = reader(filepath_masked)
-    metadata_masked = layer_data_list[0][1]["metadata"]
-    mean_masked = layer_data_list[0][0]
-
-    assert np.isnan(mean_masked[0, 0])
-    assert np.isnan(metadata_masked["G"][:, 0, 0]).all()
-    assert np.isnan(metadata_masked["S"][:, 0, 0]).all()
-
-    # The rest should not be NaN
-    assert not np.isnan(mean_masked[0, 1:]).any()
-    assert not np.isnan(metadata_masked["G"][:, 0, 1:]).any()
-
-    # 2. Export with export_masked=False
     filepath_unmasked = os.path.join(tmp_path, "test_unmasked.ome.tif")
     write_ome_tiff(
         filepath_unmasked,
@@ -504,7 +489,6 @@ def test_write_ometif_masked(tmp_path):
                 {"metadata": intensity_image_layer.metadata},
             )
         ],
-        export_masked=False,
     )
 
     reader_unmasked = napari_get_reader(filepath_unmasked, harmonics=harmonic)
@@ -515,114 +499,29 @@ def test_write_ometif_masked(tmp_path):
     assert not np.isnan(mean_unmasked[0, 0])
     assert not np.isnan(metadata_unmasked["G"][:, 0, 0]).any()
 
+    np.testing.assert_array_equal(metadata_unmasked["mask"], mask)
+    assert metadata_unmasked["mask_invert"] is False
+    assert metadata_unmasked["mask_labels"] == [1]
+    assert metadata_unmasked["mask_shapes"]["shape_type"] == ["rectangle"]
+    np.testing.assert_array_equal(
+        metadata_unmasked["mask_shapes"]["data"][0], square
+    )
+    with tifffile.TiffFile(filepath_unmasked) as tif:
+        assert [series.name for series in tif.series][:3] == [
+            "Phasor mean",
+            "Phasor real",
+            "Phasor imag",
+        ]
 
-def test_write_ometif_masked_phasor_same_ndim(tmp_path):
-    """Test write_ome_tiff with export_masked=True, has_phasor_data=True, and G.ndim == mask.ndim."""
-    from unittest.mock import patch
-
-    mean = np.ones((2, 5))
-    G = np.ones((2, 5))
-    S = np.ones((2, 5))
-    mask = np.ones((2, 5), dtype=int)
-    mask[0, 0] = 0  # invalid
-
-    metadata = {
-        "original_mean": mean,
-        "G_original": G,
-        "S_original": S,
-        "harmonics": [1],
-        "mask": mask,
-        "mask_invert": False,
-    }
-
-    filepath = os.path.join(tmp_path, "test_same_ndim.ome.tif")
-
-    with patch(
-        "napari_phasors._writer.phasor_to_ometiff"
-    ) as mock_phasor_to_ometiff:
-        write_ome_tiff(
-            filepath,
-            [(mean, {"metadata": metadata})],
-            export_masked=True,
+    # A damaged mask page is ignored; the phasors still load.
+    with tifffile.TiffWriter(filepath_unmasked, append="force") as tif:
+        tif.write(
+            mask,
+            description='{"napari_phasors_mask": "not a dict"}',
+            metadata=None,
         )
-
-        mock_phasor_to_ometiff.assert_called_once()
-        args, kwargs = mock_phasor_to_ometiff.call_args
-
-        called_mean = args[1]
-        called_G = args[2]
-        called_S = args[3]
-
-        assert np.isnan(called_mean[0, 0])
-        assert np.isnan(called_G[0, 0])
-        assert np.isnan(called_S[0, 0])
-
-        assert not np.isnan(called_mean[0, 1:]).any()
-        assert not np.isnan(called_G[0, 1:]).any()
-        assert not np.isnan(called_S[0, 1:]).any()
-
-
-def test_write_ometif_masked_non_phasor(tmp_path):
-    """Test write_ome_tiff with export_masked=True for non-phasor layers."""
-    from unittest.mock import patch
-
-    from napari.layers import Image
-
-    # Case 1: data.ndim > mask_invalid.ndim
-    data_3d = np.ones((3, 2, 5))
-    mask_2d = np.ones((2, 5), dtype=int)
-    mask_2d[0, 0] = 0  # invalid
-
-    layer_3d = Image(data_3d, name="layer_3d")
-    layer_3d.metadata = {
-        "mask": mask_2d,
-        "mask_invert": False,
-    }
-
-    filepath_3d = os.path.join(tmp_path, "test_non_phasor_3d.ome.tif")
-
-    with patch("tifffile.imwrite") as mock_imwrite:
-        write_ome_tiff(
-            filepath_3d,
-            layer_3d,
-            export_masked=True,
-        )
-
-        mock_imwrite.assert_called_once()
-        args, kwargs = mock_imwrite.call_args
-        written_data = args[1]
-
-        assert written_data.shape == (3, 2, 5)
-        assert np.isnan(written_data[:, 0, 0]).all()
-        assert not np.isnan(written_data[:, 0, 1:]).any()
-
-    # Case 2: data.ndim == mask_invalid.ndim with mask_invert = True
-    data_2d = np.ones((2, 5))
-    mask_2d_invert = np.zeros((2, 5), dtype=int)
-    mask_2d_invert[0, 0] = 1  # invalid when invert=True
-
-    layer_2d = Image(data_2d, name="layer_2d")
-    layer_2d.metadata = {
-        "mask": mask_2d_invert,
-        "mask_invert": True,
-    }
-
-    filepath_2d = os.path.join(tmp_path, "test_non_phasor_2d.ome.tif")
-
-    with patch("tifffile.imwrite") as mock_imwrite:
-        write_ome_tiff(
-            filepath_2d,
-            layer_2d,
-            export_masked=True,
-        )
-
-        mock_imwrite.assert_called_once()
-        args, kwargs = mock_imwrite.call_args
-        written_data = args[1]
-
-        assert written_data.shape == (2, 5)
-        assert np.isnan(written_data[0, 0])
-        assert not np.isnan(written_data[0, 1:]).any()
+    damaged = napari_get_reader(filepath_unmasked)(filepath_unmasked)
+    assert "mask" not in damaged[0][1]["metadata"]
 
 
 def test_export_layer_as_image_tuple_colormap(tmp_path):
@@ -1172,21 +1071,28 @@ def test_write_ometif_multilayer_list_naming(tmp_path):
     assert len(paths) == 2
     names = {os.path.basename(p) for p in paths}
     assert names == {"custom_img1.ome.tif", "custom_img2.ome.tif"}
+    # Base name matching a layer name -> just "<layer>.ome.tif".
+    paths = write_ome_tiff(str(tmp_path / "img1.ome.tif"), layers)
+    names = {os.path.basename(p) for p in paths}
+    assert names == {"img1.ome.tif", "img2.ome.tif"}
 
 
-def test_write_ometif_multi_save_via_viewer(make_napari_viewer, tmp_path):
-    """A single-layer call while multiple layers are selected in the viewer
-    triggers the multi-save naming path."""
+def test_write_ometif_single_layer_keeps_its_path(
+    make_napari_viewer, tmp_path
+):
+    """A single layer is written to the path given, whatever the viewer has
+    selected.
+
+    Regression: with several layers selected in the viewer, the layer name
+    was appended to a custom name the export widget had already built
+    ("<custom>_<layer>.ome.tif").
+    """
     viewer = make_napari_viewer()
     l1 = viewer.add_layer(_phasor_image("img1"))
     l2 = viewer.add_layer(_phasor_image("img2"))
     viewer.layers.selection = {l1, l2}
-    # Custom base name -> "<base>_<layer>.ome.tif".
-    paths = write_ome_tiff(str(tmp_path / "custom.ome.tif"), l1)
-    assert os.path.basename(paths[0]) == "custom_img1.ome.tif"
-    # Base name matching the layer name -> just "<layer>.ome.tif".
-    paths = write_ome_tiff(str(tmp_path / "img1.ome.tif"), l1)
-    assert os.path.basename(paths[0]) == "img1.ome.tif"
+    paths = write_ome_tiff(str(tmp_path / "img1 masked.ome.tif"), l1)
+    assert os.path.basename(paths[0]) == "img1 masked.ome.tif"
 
 
 def test_export_csv_skips_a_fully_nan_harmonic(tmp_path):
@@ -1392,3 +1298,120 @@ def test_read_ometif_warns_about_a_filter_it_cannot_apply(tmp_path):
     # The criterion is kept, and no pixel was dropped by it.
     assert _stack_mask(metadata) is None
     assert not np.isnan(metadata['G'][0]).all()
+
+
+# ---------------------------------------------------------------------------
+# Labels exported as images keep their label values
+# ---------------------------------------------------------------------------
+
+
+def _mask_labels(dtype=np.int32, name="mask"):
+    from napari.layers import Labels
+
+    data = np.zeros((12, 20), dtype=dtype)
+    data[2:6, 3:9] = 1
+    data[7:11, 10:19] = 3
+    return Labels(data, name=name)
+
+
+def test_export_labels_as_tiff_keeps_label_values(tmp_path):
+    import tifffile
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = _mask_labels()
+    out = export_layer_as_image(str(tmp_path / "mask.tif"), labels)
+
+    saved = tifffile.imread(out[0])
+    assert saved.shape == labels.data.shape
+    assert saved.dtype == labels.data.dtype
+    np.testing.assert_array_equal(saved, labels.data)
+
+
+def test_export_labels_as_png_is_16_bit_label_values(tmp_path):
+    from PIL import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = _mask_labels()
+    out = export_layer_as_image(str(tmp_path / "mask.png"), labels)
+
+    with Image.open(out[0]) as picture:
+        saved = np.array(picture)
+    assert saved.dtype == np.uint16
+    np.testing.assert_array_equal(saved, labels.data)
+
+
+def test_export_labels_beyond_16_bit_need_tiff(tmp_path):
+    """PNG cannot hold labels above 65535; TIFF keeps them."""
+    import tifffile
+    from napari.layers import Labels
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = Labels(np.array([[0, 70000], [1, 2]], dtype=np.int32))
+    with pytest.raises(ValueError, match="TIFF"):
+        export_layer_as_image(str(tmp_path / "big.png"), labels)
+
+    out = export_layer_as_image(str(tmp_path / "big.tif"), labels)
+    np.testing.assert_array_equal(tifffile.imread(out[0]), labels.data)
+
+
+def test_export_labels_jpeg_stays_a_picture(tmp_path):
+    from PIL import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    out = export_layer_as_image(str(tmp_path / "mask.jpg"), _mask_labels())
+    with Image.open(out[0]) as picture:
+        assert picture.mode == "RGB"
+
+
+def test_export_labels_layer_data_tuple_as_tiff(tmp_path):
+    import tifffile
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = _mask_labels()
+    out = export_layer_as_image(
+        str(tmp_path / "mask.tif"),
+        (labels.data, {"name": "mask"}, "labels"),
+    )
+    np.testing.assert_array_equal(tifffile.imread(out[0]), labels.data)
+
+
+def test_export_labels_multidimensional_exports_current_slice(tmp_path):
+    import tifffile
+    from napari.layers import Labels
+
+    from napari_phasors._writer import export_layer_as_image
+
+    data = np.zeros((3, 6, 7), dtype=np.uint16)
+    data[1, 2:4, 2:5] = 5
+    out = export_layer_as_image(
+        str(tmp_path / "stack.tif"), Labels(data), current_step=(1, 0, 0)
+    )
+    np.testing.assert_array_equal(tifffile.imread(out[0]), data[1])
+
+
+@pytest.mark.filterwarnings("ignore:projection mode")
+def test_exported_labels_image_converts_back_to_labels(tmp_path):
+    """Open the exported image and convert it: the Labels layer is restored."""
+    import tifffile
+    from napari.components import LayerList
+    from napari.layers import Image
+    from napari.layers._layer_actions import _convert_to_labels
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = _mask_labels()
+    out = export_layer_as_image(str(tmp_path / "mask.tif"), labels)
+
+    layers = LayerList()
+    image = Image(tifffile.imread(out[0]), name="mask")
+    layers.append(image)
+    layers.selection = {image}
+    _convert_to_labels(layers)
+
+    assert len(layers) == 1
+    np.testing.assert_array_equal(layers[0].data, labels.data)

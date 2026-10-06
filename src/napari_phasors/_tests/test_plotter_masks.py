@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-from napari.layers import Image
+from napari.layers import Image, Labels, Shapes
 from qtpy.QtCore import QEvent
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
@@ -90,10 +90,17 @@ def test_applying_and_restoring_a_mask_on_one_layer(make_viewer_model):
     )
     plotter._apply_mask_to_phasor_data(shapes_layer, layer)
     assert "mask" in layer.metadata
+    # Its vertices are kept so an OME-TIFF export can restore the shapes.
+    assert layer.metadata["mask_shapes"]["shape_type"] == ["polygon"]
+    np.testing.assert_array_equal(
+        layer.metadata["mask_shapes"]["data"][0], rect
+    )
 
-    # Applying without a label subset drops one stored earlier.
+    # Applying without a label subset drops one stored earlier; a non-Shapes
+    # mask drops the vertices.
     plotter._apply_mask_array_to_phasor_data(mask_data, layer, labels=[1])
     assert "mask_labels" in layer.metadata
+    assert "mask_shapes" not in layer.metadata
     plotter._apply_mask_array_to_phasor_data(mask_data, layer, labels=None)
     assert "mask_labels" not in layer.metadata
 
@@ -644,12 +651,114 @@ def test_restoring_a_stored_mask_recreates_its_layer(make_viewer_model):
         name="unrelated",
     )
 
+    # The layer's own invert flag and label selection come back with it.
+    mask[0, :] = 2
+    layer.metadata['mask_invert'] = True
+    layer.metadata['mask_labels'] = [1]
+
     plotter._restore_plot_settings_from_metadata()
 
     restored = f"Restored Mask: {layer.name}"
     assert restored in viewer.layers
     np.testing.assert_array_equal(viewer.layers[restored].data, mask)
     assert plotter.mask_layer_combobox.currentText() == restored
+    assert plotter.mask_invert_checkbox.isChecked()
+    assert plotter._mask_invert_assignments[layer.name] is True
+    assert plotter._mask_label_assignments[layer.name] == [1]
+    assert layer.metadata['mask_invert'] is True
+    assert layer.metadata['mask_labels'] == [1]
+
+    # A mask stored with Shapes vertices is restored as an editable Shapes
+    # layer rasterising to the same mask.
+    viewer.layers.remove(restored)
+    square = np.array([[0, 0], [0, 4], [4, 4], [4, 0]], dtype=float)
+    shapes_mask = Shapes([square], shape_type="polygon").to_labels(
+        labels_shape=mask.shape
+    )
+    layer.metadata['mask'] = shapes_mask
+    layer.metadata['mask_invert'] = False
+    layer.metadata['mask_shapes'] = {
+        'data': [square],
+        'shape_type': ['polygon'],
+    }
+
+    plotter._restore_plot_settings_from_metadata()
+
+    restored_shapes = viewer.layers[restored]
+    assert isinstance(restored_shapes, Shapes)
+    np.testing.assert_array_equal(
+        restored_shapes.to_labels(labels_shape=mask.shape), shapes_mask
+    )
+    assert not plotter.mask_invert_checkbox.isChecked()
+
+    # Opening a file with a stored mask inserts the layer: the mask layer is
+    # restored during that layer reset, selected, applied with the stored
+    # invert flag, and still follows edits.
+    for existing in list(viewer.layers):
+        viewer.layers.remove(existing)
+    opened = create_image_layer_with_phasors()
+    opened.metadata['mask'] = mask
+    opened.metadata['mask_invert'] = True
+    viewer.add_layer(opened)
+
+    def masked_pixels():
+        g = opened.metadata['G']
+        return np.isnan(g[0] if g.ndim == 3 else g)
+
+    restored = f"Restored Mask: {opened.name}"
+    assert plotter.mask_layer_combobox.currentText() == restored
+    np.testing.assert_array_equal(masked_pixels(), mask > 0)
+    viewer.layers[restored].data = np.zeros_like(mask)
+    assert not masked_pixels().any()
+
+    # With several layers selected every one gets its own mask back, not
+    # just the primary layer.
+    for existing in list(viewer.layers):
+        viewer.layers.remove(existing)
+    opened_layers = []
+    for index in range(3):
+        extra = create_image_layer_with_phasors()
+        extra.name = f"opened {index}"
+        extra.metadata['mask'] = np.roll(mask, index, axis=0)
+        extra.metadata['mask_invert'] = index == 1
+        opened_layers.append(extra)
+        viewer.add_layer(extra)
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer.name for layer in opened_layers]
+    )
+    plotter._restore_plot_settings_from_metadata()
+    for layer in opened_layers:
+        assigned = viewer.layers[plotter._mask_assignments[layer.name]]
+        np.testing.assert_array_equal(assigned.data, layer.metadata['mask'])
+        assert plotter._mask_invert_assignments[layer.name] is (
+            layer.name == "opened 1"
+        )
+
+    # Layers opened together are all added but only the first is selected;
+    # the others still get their mask layer and are masked.
+    for existing in list(viewer.layers):
+        viewer.layers.remove(existing)
+    opened_layers = []
+    for index in range(3):
+        extra = create_image_layer_with_phasors()
+        extra.name = f"batch {index}"
+        if index != 1:
+            extra.metadata['mask'] = np.roll(mask, index + 1, axis=0)
+        opened_layers.append(extra)
+        viewer.add_layer(extra)
+    assert plotter.get_selected_layer_names() == ["batch 0"]
+    for layer in opened_layers:
+        g = layer.metadata['G']
+        masked = np.isnan(g[0] if g.ndim == 3 else g)
+        if 'mask' in layer.metadata:
+            np.testing.assert_array_equal(masked, layer.metadata['mask'] <= 0)
+            assert any(
+                isinstance(other, Labels)
+                and np.array_equal(other.data, layer.metadata['mask'])
+                for other in viewer.layers
+            )
+        else:
+            assert not masked.all()
 
 
 def _setup_plotter_with_labels(make_viewer_model, n_labels=3):
