@@ -1905,9 +1905,9 @@ def test_fret_efficiency_filter(make_viewer_model, qtbot):
     )
 
     # The FRET map replaces the source's [Phasor] tag with [FRET efficiency].
-    assert "sample Intensity [FRET efficiency]" in viewer.layers
+    assert "sample [FRET efficiency]" in viewer.layers
     assert "FRET efficiency: sample Intensity [Phasor]" not in viewer.layers
-    output = viewer.layers["sample Intensity [FRET efficiency]"]
+    output = viewer.layers["sample [FRET efficiency]"]
     assert widget._fret_output_source(output) == layer.name
 
     baseline = layer.metadata['G'].copy()
@@ -2026,7 +2026,7 @@ def test_fret_efficiency_filter(make_viewer_model, qtbot):
 
     # Renaming the source renames the output.
     widget.rename_layer(layer.name, "renamed Intensity [Phasor]")
-    assert output.name == "renamed Intensity [FRET efficiency]"
+    assert output.name == "renamed [FRET efficiency]"
 
     # With the layer gone, the card falls back to a fresh, switched-off
     # criterion measured on the current harmonic.

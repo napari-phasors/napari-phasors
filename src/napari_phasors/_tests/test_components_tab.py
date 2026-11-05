@@ -2141,17 +2141,17 @@ def test_linear_projection_layer_names(make_viewer_model, qtbot):
 
     assert (
         comp._label_layer_name(layer.name, None)
-        == "FLIM data Intensity [Dominant component]"
+        == "FLIM data [Dominant component]"
     )
     assert (
         comp._label_layer_name(layer.name, 0)
-        == "FLIM data Intensity [Component 1 filtered]"
+        == "FLIM data [Component 1 filtered]"
     )
 
     assert layer.name == "FLIM data Intensity [Phasor]"
     _setup_linear_projection(comp)
     name1, _ = comp._linear_projection_component_names()
-    expected = f"FLIM data Intensity [(Linear Projection) {name1}]"
+    expected = f"FLIM data [(Linear Projection) {name1}]"
     assert comp.comp1_fractions_layer.name == expected
     assert expected in viewer.layers
     assert f"{name1} fractions: {layer.name}" not in viewer.layers
@@ -2161,7 +2161,7 @@ def test_linear_projection_layer_names(make_viewer_model, qtbot):
     comp._on_component_name_changed(0)
     assert (
         comp.comp1_fractions_layer.name
-        == "FLIM data Intensity [(Linear Projection) Donor]"
+        == "FLIM data [(Linear Projection) Donor]"
     )
 
     # Renaming the source keeps the bracketed analysis of its outputs.
@@ -2169,7 +2169,7 @@ def test_linear_projection_layer_names(make_viewer_model, qtbot):
     comp.rename_layer(layer.name, "renamed Intensity [Phasor]")
     assert (
         comp.comp1_fractions_layer.name
-        == f"renamed Intensity [(Linear Projection) {name1}]"
+        == f"renamed [(Linear Projection) {name1}]"
     )
 
 
@@ -2188,8 +2188,8 @@ def test_component_fit_layer_names_do_not_collide_with_projection(
         if is_component_fit_label(split_analysis_layer_name(lyr.name)[1])
     )
     assert fit_names == [
-        "FLIM data Intensity [(Component Fit) Component 1]",
-        "FLIM data Intensity [(Component Fit) Component 2]",
+        "FLIM data [(Component Fit) Component 1]",
+        "FLIM data [(Component Fit) Component 2]",
     ]
 
     lp_name = _lp_name("Component 1", layer.name)

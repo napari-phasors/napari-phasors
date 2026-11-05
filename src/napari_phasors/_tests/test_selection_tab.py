@@ -314,7 +314,7 @@ def test_manual_selections_on_a_layer(make_viewer_model, qtbot):
         analysis_layer_name("custom_selection", intensity_image_layer.name)
         in layer_names
     )
-    assert "FLIM data Intensity [custom_selection]" in layer_names
+    assert "FLIM data [custom_selection]" in layer_names
     assert not any(n.startswith("custom_selection: ") for n in layer_names)
 
 
