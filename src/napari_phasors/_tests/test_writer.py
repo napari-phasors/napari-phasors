@@ -1082,8 +1082,9 @@ def test_write_ometif_multilayer_list_naming(tmp_path):
         _phasor_image("a: Channel 0 [Phasor]"),
         _phasor_image("a [Phase]"),
     ]
+    # Joined as text: on Windows "a:" in a path component is a drive letter.
     paths = write_ome_tiff(
-        str(tmp_path / "a: Channel 0 [Phasor].ome.tif"), layers
+        f"{tmp_path}{os.sep}a: Channel 0 [Phasor].ome.tif", layers
     )
     names = {os.path.basename(p) for p in paths}
     assert names == {"a Channel 0 - Phasor.ome.tif", "a - Phase.ome.tif"}

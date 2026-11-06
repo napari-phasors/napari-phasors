@@ -816,10 +816,12 @@ def test_thresholds_survive_masking(make_viewer_model, qtbot):
     fw.apply_button_clicked()
     assert layer.metadata["settings"]["threshold"] == stored
 
-    # Moving the handle yourself supersedes the remembered value.
-    fw.threshold_slider.setValue(
-        (fw.threshold_slider.minimum(), fw.threshold_slider.maximum())
-    )
+    # Moving the handle yourself supersedes the remembered value. The handle
+    # is already at the extremes, and setting an unchanged value emits no
+    # signal on every Qt binding, so nudge it off first.
+    lo, hi = fw.threshold_slider.minimum(), fw.threshold_slider.maximum()
+    fw.threshold_slider.setValue((lo + 1, hi))
+    fw.threshold_slider.setValue((lo, hi))
     assert fw._offscreen_threshold_lower is None
     fw.apply_button_clicked()
     assert layer.metadata["settings"]["threshold"] is None
