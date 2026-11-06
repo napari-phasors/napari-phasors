@@ -22,6 +22,7 @@ The Performance section includes controls that take effect immediately for all s
 | **Parallel regions** | Accelerates a single large image by computing spatial bands concurrently. | Disabled by default. Turn ON to ensure faster median filtering and phasor transforms on high-resolution images. |
 | **Memory budget** | Toggle to cap the share of currently free RAM (5–95%) that concurrent workers may use (defaults to **50%** when active). | Disabled by default. When enabled, **50%** works well for most setups. Lower to **20–30%** on shared computers or laptops; raise to **70–80%** on dedicated high-memory workstations. |
 | **Phasor precision** | Selects storage precision for newly opened phasor layers: `As read` (`float64`) or `float32 (half memory)`. | Select **`float32`** when working with large time-lapses or multi-gigabyte datasets to cut memory usage in half. |
+| **Grid view** | Shows the selected layers side by side in napari's grid when more than one is selected. | Enabled by default. Turn OFF when selecting a few dozen layers or more makes the viewer slow to respond. |
 
 A live hint line underneath the controls displays your machine's detected CPU cores and the current memory allocation.
 
@@ -56,6 +57,14 @@ Switching **Phasor precision** to **`float32 (half memory)`** reduces storage to
 * **Is scientific precision affected?** In experimental FLIM and hyperspectral imaging, measurement uncertainty is dominated by photon Poisson noise (typically $pprox 10^{-2}$ to $10^{-3}$). In contrast, `float32` provides approximately 7 significant decimal digits of precision (errors $< 10^{-7}$), which is orders of magnitude finer than any experimental detector noise.
 * **When to use it:** Highly recommended when analyzing large 3D stacks, long time-lapse series, or many images simultaneously on a machine with 16 GB of RAM or less.
 * **Scope:** Applies to images opened *after* changing the setting. Existing open layers retain the precision they were created with.
+
+---
+
+### Grid View with Many Layers
+
+When several layers are selected in **Phasor Layers**, napari-phasors switches napari's grid mode on so each image gets its own tile. Every time a layer is shown, hidden, added or removed, napari redraws the whole grid, and that redraw becomes much slower as the number of visible layers grows: with about 60 visible layers a single selection change can keep the viewer busy for over ten seconds, while the phasor plot itself updates in well under a second.
+
+Turning **Grid view** off keeps napari in its normal single view, with the selected layers overlaid and the others hidden. Grid mode is then left to napari's own grid button, so you can still switch it on yourself when you want to compare tiles.
 
 ---
 

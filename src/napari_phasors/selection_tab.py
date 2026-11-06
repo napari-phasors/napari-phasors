@@ -56,9 +56,11 @@ from ._utils import (
     active_selection_region,
     analysis_layer_name,
     analysis_section_stylesheet,
+    batched_layer_updates,
     colormap_to_dict,
     make_section,
     make_slider_spin_row,
+    set_layer_visible,
     setup_primary_button,
     split_analysis_layer_name,
 )
@@ -1003,57 +1005,63 @@ class SelectionWidget(QWidget):
 
         selected_layer_names = {lyr.name for lyr in selected_layers}
 
-        for viewer_layer in self.viewer.layers:
-            if not isinstance(viewer_layer, Labels):
-                continue
-            if not hasattr(viewer_layer, "metadata"):
-                continue
+        with batched_layer_updates(self.viewer):
+            for viewer_layer in self.viewer.layers:
+                if not isinstance(viewer_layer, Labels):
+                    continue
+                if not hasattr(viewer_layer, "metadata"):
+                    continue
 
-            # Check metadata tags to identify layer type
-            if "napari_phasors_selection_type" in viewer_layer.metadata:
-                selection_type = viewer_layer.metadata[
-                    "napari_phasors_selection_type"
-                ]
-                source_layer = viewer_layer.metadata.get(
-                    "napari_phasors_source_layer"
-                )
+                # Check metadata tags to identify layer type
+                if "napari_phasors_selection_type" in viewer_layer.metadata:
+                    selection_type = viewer_layer.metadata[
+                        "napari_phasors_selection_type"
+                    ]
+                    source_layer = viewer_layer.metadata.get(
+                        "napari_phasors_source_layer"
+                    )
 
-                # Only manage layers belonging to the selected image layers
-                if source_layer in selected_layer_names:
-                    if (
-                        selection_type == "cursor_selection"
-                        or selection_type == "automatic_clustering"
-                    ):
-                        viewer_layer.visible = not show_manual
-                    elif selection_type == "manual":
-                        if show_manual:
-                            if (
-                                self.selection_id
-                                and self.selection_id != "None"
-                            ):
-                                viewer_layer.visible = (
-                                    split_analysis_layer_name(
-                                        viewer_layer.name
-                                    )[1]
-                                    == self.selection_id
-                                )
+                    # Only manage layers belonging to the selected image layers
+                    if source_layer in selected_layer_names:
+                        if (
+                            selection_type == "cursor_selection"
+                            or selection_type == "automatic_clustering"
+                        ):
+                            set_layer_visible(viewer_layer, not show_manual)
+                        elif selection_type == "manual":
+                            if show_manual:
+                                if (
+                                    self.selection_id
+                                    and self.selection_id != "None"
+                                ):
+                                    set_layer_visible(
+                                        viewer_layer,
+                                        split_analysis_layer_name(
+                                            viewer_layer.name
+                                        )[1]
+                                        == self.selection_id,
+                                    )
+                                else:
+                                    set_layer_visible(viewer_layer, True)
                             else:
-                                viewer_layer.visible = True
-                        else:
-                            viewer_layer.visible = False
-                else:
-                    viewer_layer.visible = False
+                                set_layer_visible(viewer_layer, False)
+                    else:
+                        set_layer_visible(viewer_layer, False)
 
     def _set_labels_layer_visibility(self, visible):
         """Toggle the visibility of all selection layers for the active tab."""
         if not visible:
-            for viewer_layer in self.viewer.layers:
-                if not isinstance(viewer_layer, Labels) or not hasattr(
-                    viewer_layer, "metadata"
-                ):
-                    continue
-                if "napari_phasors_selection_type" in viewer_layer.metadata:
-                    viewer_layer.visible = False
+            with batched_layer_updates(self.viewer):
+                for viewer_layer in self.viewer.layers:
+                    if not isinstance(viewer_layer, Labels) or not hasattr(
+                        viewer_layer, "metadata"
+                    ):
+                        continue
+                    if (
+                        "napari_phasors_selection_type"
+                        in viewer_layer.metadata
+                    ):
+                        set_layer_visible(viewer_layer, False)
         else:
             self._manage_labels_layer_visibility(
                 show_manual=self.is_manual_selection_mode()
@@ -1183,15 +1191,16 @@ class SelectionWidget(QWidget):
             return
 
         selected_layers = self._get_selected_layers()
-        for layer in selected_layers:
-            selection_layer_name = analysis_layer_name(
-                self.selection_id, layer.name
-            )
-            selection_layer = self._find_phasors_layer_by_name(
-                selection_layer_name
-            )
-            if selection_layer is not None:
-                selection_layer.visible = visible
+        with batched_layer_updates(self.viewer):
+            for layer in selected_layers:
+                selection_layer_name = analysis_layer_name(
+                    self.selection_id, layer.name
+                )
+                selection_layer = self._find_phasors_layer_by_name(
+                    selection_layer_name
+                )
+                if selection_layer is not None:
+                    set_layer_visible(selection_layer, visible)
 
     def _connect_show_overlay_signal(self):
         """Ensure show_color_overlay_signal is connected only to the current layer's visibility."""
@@ -1260,6 +1269,29 @@ class SelectionWidget(QWidget):
             return
 
         if selection_id is None or selection_id == "":
+            with batched_layer_updates(self.viewer):
+                for layer in selected_layers:
+                    for i in range(
+                        self.selection_input_widget.phasor_selection_id_combobox.count()
+                    ):
+                        sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(
+                            i
+                        )
+                        if sel_id != "None":
+                            selection_layer_name = analysis_layer_name(
+                                sel_id, layer.name
+                            )
+                            existing_layer = self._find_phasors_layer_by_name(
+                                selection_layer_name
+                            )
+                            if existing_layer is not None:
+                                set_layer_visible(existing_layer, False)
+
+            self.parent_widget.plot(selection_id_data=None)
+            return
+
+        # Hide other selections for all layers
+        with batched_layer_updates(self.viewer):
             for layer in selected_layers:
                 for i in range(
                     self.selection_input_widget.phasor_selection_id_combobox.count()
@@ -1267,51 +1299,32 @@ class SelectionWidget(QWidget):
                     sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(
                         i
                     )
-                    if sel_id != "None":
-                        selection_layer_name = analysis_layer_name(
+                    if sel_id != "None" and sel_id != selection_id:
+                        other_layer_name = analysis_layer_name(
                             sel_id, layer.name
                         )
-                        existing_layer = self._find_phasors_layer_by_name(
-                            selection_layer_name
+                        other_layer = self._find_phasors_layer_by_name(
+                            other_layer_name
                         )
-                        if existing_layer is not None:
-                            existing_layer.visible = False
+                        if other_layer is not None:
+                            set_layer_visible(other_layer, False)
 
-            self.parent_widget.plot(selection_id_data=None)
-            return
-
-        # Hide other selections for all layers
-        for layer in selected_layers:
-            for i in range(
-                self.selection_input_widget.phasor_selection_id_combobox.count()
-            ):
-                sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(
-                    i
+            # Show current selection for all layers
+            need_to_create = False
+            for layer in selected_layers:
+                selection_layer_name = analysis_layer_name(
+                    selection_id, layer.name
                 )
-                if sel_id != "None" and sel_id != selection_id:
-                    other_layer_name = analysis_layer_name(sel_id, layer.name)
-                    other_layer = self._find_phasors_layer_by_name(
-                        other_layer_name
-                    )
-                    if other_layer is not None:
-                        other_layer.visible = False
+                selection_layer = self._find_phasors_layer_by_name(
+                    selection_layer_name
+                )
+                if selection_layer is None:
+                    need_to_create = True
+                else:
+                    set_layer_visible(selection_layer, True)
 
-        # Show current selection for all layers
-        need_to_create = False
-        for layer in selected_layers:
-            selection_layer_name = analysis_layer_name(
-                selection_id, layer.name
-            )
-            selection_layer = self._find_phasors_layer_by_name(
-                selection_layer_name
-            )
-            if selection_layer is None:
-                need_to_create = True
-            else:
-                selection_layer.visible = True
-
-        if need_to_create:
-            self.create_phasors_selected_layer()
+            if need_to_create:
+                self.create_phasors_selected_layer()
 
         # Collect selection data from all selected layers for the phasor plot
         all_selection_data = []
@@ -1705,49 +1718,51 @@ class SelectionWidget(QWidget):
                 else:
                     color_dict[cid] = (0.0, 0.0, 0.0, 0.0)
 
-        # Create selection layer for each selected layer
-        for layer in selected_layers:
-            spatial_shape = layer.data.shape
+        # Create selection layer for each selected layer, with one
+        # scene-graph rebuild for all of them.
+        with batched_layer_updates(self.viewer):
+            for layer in selected_layers:
+                spatial_shape = layer.data.shape
 
-            # Get selection map from metadata if it exists, otherwise create empty
-            if (
-                "settings" in layer.metadata
-                and "selections" in layer.metadata["settings"]
-                and "manual_selections"
-                in layer.metadata["settings"]["selections"]
-                and self.selection_id
-                in layer.metadata["settings"]["selections"][
-                    "manual_selections"
-                ]
-            ):
-                selection_map = layer.metadata["settings"]["selections"][
-                    "manual_selections"
-                ][self.selection_id].copy()
-            else:
-                selection_map = np.zeros(spatial_shape, dtype=np.uint32)
+                # Get selection map from metadata if it exists, otherwise create empty
+                if (
+                    "settings" in layer.metadata
+                    and "selections" in layer.metadata["settings"]
+                    and "manual_selections"
+                    in layer.metadata["settings"]["selections"]
+                    and self.selection_id
+                    in layer.metadata["settings"]["selections"][
+                        "manual_selections"
+                    ]
+                ):
+                    selection_map = layer.metadata["settings"]["selections"][
+                        "manual_selections"
+                    ][self.selection_id].copy()
+                else:
+                    selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
-            layer_name = analysis_layer_name(self.selection_id, layer.name)
+                layer_name = analysis_layer_name(self.selection_id, layer.name)
 
-            # Check if layer already exists, skip if it does
-            existing_layer = self._find_phasors_layer_by_name(layer_name)
-            if existing_layer is not None:
-                continue
+                # Check if layer already exists, skip if it does
+                existing_layer = self._find_phasors_layer_by_name(layer_name)
+                if existing_layer is not None:
+                    continue
 
-            phasors_selected_layer = Labels(
-                selection_map,
-                name=layer_name,
-                scale=layer.scale,
-                units=layer.units,
-                colormap=DirectLabelColormap(
-                    color_dict=color_dict, name="manual_selection_colors"
-                ),
-                metadata={
-                    "napari_phasors_selection_type": "manual",
-                    "napari_phasors_source_layer": layer.name,
-                },
-            )
+                phasors_selected_layer = Labels(
+                    selection_map,
+                    name=layer_name,
+                    scale=layer.scale,
+                    units=layer.units,
+                    colormap=DirectLabelColormap(
+                        color_dict=color_dict, name="manual_selection_colors"
+                    ),
+                    metadata={
+                        "napari_phasors_selection_type": "manual",
+                        "napari_phasors_source_layer": layer.name,
+                    },
+                )
 
-            self.viewer.add_layer(phasors_selected_layer)
+                self.viewer.add_layer(phasors_selected_layer)
 
         self._connect_show_overlay_signal()
 
@@ -2082,31 +2097,33 @@ class AutomaticClusteringWidget(QWidget):
             # Populate the table with cluster information
             self._populate_cluster_table()
 
-            # Step 4: Apply the same cluster parameters to each layer
-            for layer_info in layer_data:
-                layer = layer_info["layer"]
-                g = layer_info["g"]
-                s = layer_info["s"]
-                spatial_shape = layer_info["spatial_shape"]
+            # One scene-graph rebuild for the labels of every layer.
+            with batched_layer_updates(self.viewer):
+                # Step 4: Apply the same cluster parameters to each layer
+                for layer_info in layer_data:
+                    layer = layer_info["layer"]
+                    g = layer_info["g"]
+                    s = layer_info["s"]
+                    spatial_shape = layer_info["spatial_shape"]
 
-                # Create selection map using elliptic cursor masks
-                selection_map = np.zeros(spatial_shape, dtype=np.uint32)
+                    # Create selection map using elliptic cursor masks
+                    selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
-                # Apply each cluster using elliptic cursor
-                for idx, cluster in enumerate(self._clusters):
-                    mask = mask_from_elliptic_cursor(
-                        g,
-                        s,
-                        cluster["g"],
-                        cluster["s"],
-                        radius=cluster["radius"],
-                        radius_minor=cluster["radius_minor"],
-                        angle=cluster["angle"],
-                    )
-                    selection_map[mask] = idx + 1
+                    # Apply each cluster using elliptic cursor
+                    for idx, cluster in enumerate(self._clusters):
+                        mask = mask_from_elliptic_cursor(
+                            g,
+                            s,
+                            cluster["g"],
+                            cluster["s"],
+                            radius=cluster["radius"],
+                            radius_minor=cluster["radius_minor"],
+                            angle=cluster["angle"],
+                        )
+                        selection_map[mask] = idx + 1
 
-                # Create labels layer
-                self._create_or_update_labels_layer(layer, selection_map)
+                    # Create labels layer
+                    self._create_or_update_labels_layer(layer, selection_map)
 
         except Exception as e:  # noqa: BLE001
             print(f"Error applying clustering: {e}")
@@ -2270,54 +2287,54 @@ class AutomaticClusteringWidget(QWidget):
 
         current_harmonic = self.parent_widget.harmonic
 
-        for layer in selected_layers:
-            g_array = layer.metadata.get("G")
-            s_array = layer.metadata.get("S")
+        with batched_layer_updates(self.viewer):
+            for layer in selected_layers:
+                g_array = layer.metadata.get("G")
+                s_array = layer.metadata.get("S")
 
-            if g_array is None or s_array is None:
-                continue
-
-            # Extract correct harmonic if arrays are 3D
-            if g_array.ndim > layer.data.ndim:
-                harmonics_array = layer.metadata.get("harmonics")
-                if harmonics_array is not None:
-                    harmonics_array = np.atleast_1d(harmonics_array)
-                    try:
-                        harmonic_idx = int(
-                            np.where(harmonics_array == current_harmonic)[0][0]
-                        )
-                    except (IndexError, ValueError):
-                        continue
-                else:
-                    harmonic_idx = 0
-                g = g_array[harmonic_idx]
-                s = s_array[harmonic_idx]
-            else:
-                g = g_array
-                s = s_array
-
-            spatial_shape = layer.data.shape
-
-            # Create selection map
-            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
-
-            # Apply each cluster
-            for idx, cluster in enumerate(self._clusters):
-                if cluster.get("harmonic", 1) != current_harmonic:
+                if g_array is None or s_array is None:
                     continue
-                mask = mask_from_elliptic_cursor(
-                    g,
-                    s,
-                    cluster["g"],
-                    cluster["s"],
-                    radius=cluster["radius"],
-                    radius_minor=cluster["radius_minor"],
-                    angle=cluster["angle"],
-                )
-                selection_map[mask] = idx + 1
 
-            # Update labels layer
-            self._create_or_update_labels_layer(layer, selection_map)
+                # Extract correct harmonic if arrays are 3D
+                if g_array.ndim > layer.data.ndim:
+                    harmonics_array = layer.metadata.get("harmonics")
+                    if harmonics_array is not None:
+                        harmonics_array = np.atleast_1d(harmonics_array)
+                        try:
+                            matches = harmonics_array == current_harmonic
+                            harmonic_idx = int(np.where(matches)[0][0])
+                        except (IndexError, ValueError):
+                            continue
+                    else:
+                        harmonic_idx = 0
+                    g = g_array[harmonic_idx]
+                    s = s_array[harmonic_idx]
+                else:
+                    g = g_array
+                    s = s_array
+
+                spatial_shape = layer.data.shape
+
+                # Create selection map
+                selection_map = np.zeros(spatial_shape, dtype=np.uint32)
+
+                # Apply each cluster
+                for idx, cluster in enumerate(self._clusters):
+                    if cluster.get("harmonic", 1) != current_harmonic:
+                        continue
+                    mask = mask_from_elliptic_cursor(
+                        g,
+                        s,
+                        cluster["g"],
+                        cluster["s"],
+                        radius=cluster["radius"],
+                        radius_minor=cluster["radius_minor"],
+                        angle=cluster["angle"],
+                    )
+                    selection_map[mask] = idx + 1
+
+                # Update labels layer
+                self._create_or_update_labels_layer(layer, selection_map)
 
     def _update_cluster_statistics(self):
         """Update the count and percentage columns in the cluster table."""
@@ -2521,12 +2538,13 @@ class AutomaticClusteringWidget(QWidget):
 
     def _clear_all_labels_layers(self):
         """Remove all cluster selection labels layers."""
-        for _layer_name, labels_layer in list(self._label_layers.items()):
-            try:
-                if labels_layer in self.viewer.layers:
-                    self.viewer.layers.remove(labels_layer)
-            except (ValueError, KeyError):
-                pass
+        with batched_layer_updates(self.viewer):
+            for _layer_name, labels_layer in list(self._label_layers.items()):
+                try:
+                    if labels_layer in self.viewer.layers:
+                        self.viewer.layers.remove(labels_layer)
+                except (ValueError, KeyError):
+                    pass
         self._label_layers.clear()
 
     def clear_all_patches(self):
@@ -2608,7 +2626,7 @@ class AutomaticClusteringWidget(QWidget):
             existing_layer.colormap = DirectLabelColormap(
                 color_dict=color_dict, name="cluster_colors"
             )
-            existing_layer.visible = True
+            set_layer_visible(existing_layer, True)
         else:
             labels_layer = Labels(
                 selection_map,
@@ -4129,12 +4147,15 @@ class CursorSelectionWidget(QWidget):
         selected_layers = self._get_selected_layers()
         if not selected_layers:
             return
-        for layer in selected_layers:
-            layer_name = analysis_layer_name("Cursor Selection", layer.name)
-            for viewer_layer in list(self.viewer.layers):
-                if viewer_layer.name == layer_name:
-                    self.viewer.layers.remove(viewer_layer)
-                    break
+        with batched_layer_updates(self.viewer):
+            for layer in selected_layers:
+                layer_name = analysis_layer_name(
+                    "Cursor Selection", layer.name
+                )
+                for viewer_layer in list(self.viewer.layers):
+                    if viewer_layer.name == layer_name:
+                        self.viewer.layers.remove(viewer_layer)
+                        break
         self._phasors_selected_layer = None
 
     @staticmethod
@@ -4270,17 +4291,19 @@ class CursorSelectionWidget(QWidget):
             self._update_cursor_statistics()
             return
 
-        for layer in selected_layers:
-            g, s = self._layer_harmonic_arrays(layer, current_harmonic)
-            if g is None:
-                continue
-            selection_map = np.zeros(layer.data.shape, dtype=np.uint32)
-            for idx, cursor in enumerate(visible_cursors):
-                mask = self._cursor_mask(cursor, g, s)
-                selection_map[mask] = idx + 1
-            self._create_or_update_labels_layer(
-                layer, selection_map, visible_cursors
-            )
+        # One scene-graph rebuild for the labels of every layer.
+        with batched_layer_updates(self.viewer):
+            for layer in selected_layers:
+                g, s = self._layer_harmonic_arrays(layer, current_harmonic)
+                if g is None:
+                    continue
+                selection_map = np.zeros(layer.data.shape, dtype=np.uint32)
+                for idx, cursor in enumerate(visible_cursors):
+                    mask = self._cursor_mask(cursor, g, s)
+                    selection_map[mask] = idx + 1
+                self._create_or_update_labels_layer(
+                    layer, selection_map, visible_cursors
+                )
 
         self._update_cursor_statistics()
 
@@ -4352,7 +4375,7 @@ class CursorSelectionWidget(QWidget):
             existing_layer.colormap = DirectLabelColormap(
                 color_dict=color_dict, name="cursor_selection_colors"
             )
-            existing_layer.visible = True
+            set_layer_visible(existing_layer, True)
             self._phasors_selected_layer = existing_layer
         else:
             labels_layer = Labels(

@@ -30,6 +30,7 @@ function above them is Qt-free and safe to call from a worker thread.
 
 import functools
 import uuid
+import weakref
 
 import numpy as np
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
@@ -87,7 +88,7 @@ METRIC_UNITS = {
     APPARENT_PHASE_LIFETIME: "ns",
     APPARENT_MODULATION_LIFETIME: "ns",
     NORMAL_LIFETIME: "ns",
-    PHASE: "rad",
+    PHASE: "°",
     MODULATION: "",
     FRET_EFFICIENCY: "",
     COMPONENT_FRACTION: "",
@@ -98,7 +99,7 @@ METRIC_FALLBACK_RANGE = {
     APPARENT_PHASE_LIFETIME: (0.0, 10.0),
     APPARENT_MODULATION_LIFETIME: (0.0, 10.0),
     NORMAL_LIFETIME: (0.0, 10.0),
-    PHASE: (0.0, float(2.0 * np.pi)),
+    PHASE: (0.0, 360.0),
     MODULATION: (0.0, 1.0),
     FRET_EFFICIENCY: (0.0, 1.0),
     COMPONENT_FRACTION: (0.0, 1.0),
@@ -164,7 +165,6 @@ def new_filter(
     mode=KEEP,
     enabled=True,
     params=None,
-    wrap_phase=False,
 ):
     """Return a new criterion dict for *metric* over ``[minimum, maximum]``."""
     return {
@@ -175,7 +175,6 @@ def new_filter(
         'max': float(maximum),
         'mode': EXCLUDE if mode == EXCLUDE else KEEP,
         'enabled': bool(enabled),
-        'wrap_phase': bool(wrap_phase),
         'params': dict(params) if params else {},
     }
 
@@ -214,7 +213,6 @@ def _coerce_filter(raw):
         mode=raw.get('mode', KEEP),
         enabled=raw.get('enabled', True),
         params=params if isinstance(params, dict) else None,
-        wrap_phase=raw.get('wrap_phase', False),
     )
     stored_id = raw.get('id')
     if isinstance(stored_id, str) and stored_id:
@@ -469,7 +467,6 @@ def compute_metric(
     *,
     harmonic=1,
     frequency=None,
-    wrap_phase=False,
     params=None,
     context=None,
 ):
@@ -488,9 +485,6 @@ def compute_metric(
         Harmonic the coordinates belong to; scales the frequency.
     frequency : float, optional
         Excitation frequency in MHz. Required by the lifetime metrics.
-    wrap_phase : bool, optional
-        Wrap the phase into ``[0, 2pi)`` instead of ``(-pi, pi]``, matching
-        the full-polar plot mode.
     params : dict, optional
         Extra metric parameters. ``FRET efficiency`` reads its donor
         trajectory from here, ``Component fraction`` its component
@@ -540,11 +534,13 @@ def compute_metric(
             phase_values, modulation_values = phasor_to_polar(real, imag)
         if metric == MODULATION:
             return np.asarray(modulation_values, dtype=float)
-        phase_values = np.asarray(phase_values, dtype=float)
-        if wrap_phase:
-            with np.errstate(invalid='ignore'):
-                phase_values = np.mod(phase_values, 2.0 * np.pi)
-        return phase_values
+        # In degrees, always wrapped into [0, 360): that is the range the
+        # sliders span in every plot mode, so a negative angle must not fall
+        # outside it.
+        with np.errstate(invalid='ignore'):
+            return np.mod(
+                np.degrees(np.asarray(phase_values, dtype=float)), 360.0
+            )
 
     if metric == FRET_EFFICIENCY:
         return _compute_fret_efficiency(real, imag, harmonic, params)
@@ -669,7 +665,6 @@ def combined_mask(
             plane_imag,
             harmonic=entry['harmonic'],
             frequency=entry['params'].get('frequency'),
-            wrap_phase=entry['wrap_phase'],
             params=entry['params'],
             context=context,
         )
@@ -844,6 +839,91 @@ def kept_fraction(mask, mean=None):
     if total == 0:
         return 0.0
     return float((~mask).sum()) / total
+
+
+def own_filter_range_label(layer, metrics):
+    """Return ``"in 0.2 – 0.8"`` for *layer*'s enabled *metrics*, or ``None``.
+
+    The statistics table heads its pixel columns with it, and shows them only
+    when there is one: no enabled criterion of the tab means no filter whose
+    pixels there would be to count.
+    """
+    parts = [
+        f"{'outside' if f['mode'] == EXCLUDE else 'in'} "
+        f"{f['min']:g} – {f['max']:g}"
+        for f in get_filters(layer)
+        if f['enabled'] and f['metric'] in metrics
+    ]
+    return ", ".join(parts) or None
+
+
+#: ``{layer: (token, count)}`` -- the last pixel count measured per layer.
+#: Measuring one re-runs the median filter over the whole image, while the
+#: histogram it is shown beside is redrawn on every slider tick.
+_REFERENCE_COUNTS = weakref.WeakKeyDictionary()
+
+
+def reference_pixel_count(layer, metrics, filter_params=None):
+    """Return the pixels of *layer* the criteria on *metrics* are a share of.
+
+    Everything the intensity threshold, the median filter, the mask and the
+    criteria of the other tabs left behind, or ``None`` when the layer has no
+    phasor data to measure.
+    """
+    others = [f for f in get_filters(layer) if f['metric'] not in metrics]
+    meta = layer.metadata
+    token = repr(
+        (
+            filter_params,
+            others,
+            meta.get('mask_labels'),
+            meta.get('mask_invert'),
+            [
+                id(meta.get(key))
+                for key in (
+                    'original_mean',
+                    'G_original',
+                    'S_original',
+                    'mask',
+                )
+            ],
+        )
+    )
+    cached = _REFERENCE_COUNTS.get(layer)
+    if cached is not None and cached[0] == token:
+        return cached[1]
+    mean, real, imag = baseline_arrays(layer, filter_params)
+    if mean is None:
+        return None
+    measurable = np.isfinite(mean)
+    dropped = combined_mask(others, mean, real, imag, meta.get('harmonics'))
+    if dropped is not None:
+        measurable &= ~dropped
+    count = int(measurable.sum())
+    _REFERENCE_COUNTS[layer] = (token, count)
+    return count
+
+
+def feed_filter_statistics(
+    histogram_widget, layers, metrics, filter_params=None
+):
+    """Tell *histogram_widget* which filter its pixel counts are inside of.
+
+    Records the range of the first of *layers*' enabled criteria on
+    *metrics*, and how many pixels each layer had before them. With no such
+    criterion nothing is recorded, and the statistics table leaves its pixel
+    columns out.
+    """
+    label = own_filter_range_label(layers[0], metrics) if layers else None
+    totals = {}
+    for layer in layers if label else ():
+        count = reference_pixel_count(
+            layer, metrics, filter_params(layer) if filter_params else None
+        )
+        if count is not None:
+            totals[layer.name] = count
+    histogram_widget.set_series_ranges({None: label} if label else {})
+    histogram_widget.set_dataset_totals(totals)
 
 
 def serialize_filter_applies(method):

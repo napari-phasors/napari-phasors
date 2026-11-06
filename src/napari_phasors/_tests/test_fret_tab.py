@@ -1887,6 +1887,14 @@ def test_draw_fret_trajectory_overlay_uses_style_settings():
     plt.close(fig)
 
 
+def headers_of(table):
+    """Return the column headings of *table*."""
+    return [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+
+
 def test_fret_efficiency_filter(make_viewer_model, qtbot):
     """The efficiency criterion: frozen parameters, pixels removed everywhere,
     histogram, report, toggling, following the trajectory, other tabs'
@@ -1940,6 +1948,15 @@ def test_fret_efficiency_filter(make_viewer_model, qtbot):
     assert 0 < len(plotted) < before_points
     assert plotted.min() >= median - 1e-9
 
+    # Its pixel counts show beside the statistics, as a share of the pixels
+    # the criterion started from.
+    table = parent.fret_statistics_dock_widget.layer_stats_table
+    headers = headers_of(table)
+    pixels = next(i for i, name in enumerate(headers) if "Pixels in" in name)
+    assert headers[pixels + 1].startswith("FRET efficiency % in 0.74")
+    assert int(table.item(0, pixels).text()) == len(plotted)
+    assert 0 < float(table.item(0, pixels + 1).text().rstrip("%")) < 100
+
     # The card and the summary say how much of the image survives; a single
     # filter needs no stack summary.
     assert "keeps" in card.stat_label.text()
@@ -1948,6 +1965,7 @@ def test_fret_efficiency_filter(make_viewer_model, qtbot):
     # Clearing the criterion restores every pixel it had hidden.
     card.enabled_check.setChecked(False)
     np.testing.assert_allclose(layer.metadata['G'], baseline)
+    assert not any("Pixels" in name for name in headers_of(table))
     card.enabled_check.setChecked(True)
     assert np.isnan(layer.metadata['G']).any()
     card.enabled_check.setChecked(False)

@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QCompleter,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -40,6 +41,7 @@ from qtpy.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -4167,6 +4169,21 @@ class WriterWidget(PopoutWindowMixin, QWidget):
     _popout_max_width = 520
     _popout_height = 560
 
+    # File formats; each is also the save dialog's filter.
+    _OME = "Phasor as OME-TIFF (*.ome.tif)"
+    _PNG = "Layer as PNG image (*.png)"
+    _TIFF = "Layer as TIFF image (*.tif)"
+    _SVG = "Layer as SVG image (*.svg)"
+    _FORMATS = (
+        _OME,
+        "Layer data as CSV (*.csv)",
+        _PNG,
+        "Layer as JPEG image (*.jpg)",
+        _TIFF,
+        _SVG,
+    )
+    _PICTURE_FORMATS = _FORMATS[2:]
+
     def __init__(self, viewer: "napari.viewer.Viewer"):
         """Initialize the widget."""
         super().__init__()
@@ -4191,9 +4208,9 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
         ome_info = QLabel(
             "• <b>OME-TIFF:</b> Saves mean intensity and phasor coordinates"
-            " with metadata including napari-phasors settings if exported layer"
-            "contains phasor features. If not layer data is exported as"
-            "single-channel image with metadata."
+            " with metadata including napari-phasors settings and the applied"
+            " mask if exported layer contains phasor features. If not layer"
+            " data is exported as single-channel image with metadata."
         )
         ome_info.setWordWrap(True)
         self.main_layout.addWidget(ome_info)
@@ -4208,7 +4225,10 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
         image_info = QLabel(
             "• <b>Image (PNG/JPEG/TIFF/SVG):</b> Exports visual representation "
-            "with applied colormap and contrast. Optional colorbar can be included"
+            "with applied colormap and contrast, at the chosen DPI and figure "
+            "height. Labels layers are exported as PNG/TIFF with their label "
+            "values (to open and convert back to Labels), unless colored "
+            "export is checked, and as SVG/JPEG in color"
         )
         image_info.setWordWrap(True)
         self.main_layout.addWidget(image_info)
@@ -4232,19 +4252,48 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
         self.main_layout.addLayout(export_layer_layout)
 
-        self.colorbar_checkbox = QCheckBox(
-            "Include colorbar (for image exports)"
-        )
+        self.main_layout.addWidget(QLabel("File format:"))
+        self.format_combobox = QComboBox()
+        self.format_combobox.addItems(self._FORMATS)
+        self.main_layout.addWidget(self.format_combobox)
+
+        # Options, each shown only when it applies to the format and layers.
+        self.colorbar_checkbox = QCheckBox("Include colorbar")
         self.colorbar_checkbox.setChecked(True)
         self.main_layout.addWidget(self.colorbar_checkbox)
 
-        self.mask_checkbox = QCheckBox("Export masked OME-TIFF")
-        self.mask_checkbox.setChecked(True)
-        self.mask_checkbox.hide()
-        self.main_layout.addWidget(self.mask_checkbox)
+        self.labels_color_checkbox = QCheckBox(
+            "Export Labels as colored PNG/TIFF (not convertible back)"
+        )
+        self.main_layout.addWidget(self.labels_color_checkbox)
+
+        self.figure_options = QWidget()
+        figure_layout = QHBoxLayout(self.figure_options)
+        figure_layout.setContentsMargins(0, 0, 0, 0)
+        figure_layout.addWidget(QLabel("DPI:"))
+        self.dpi_spinbox = QSpinBox()
+        self.dpi_spinbox.setRange(50, 1200)
+        self.dpi_spinbox.setSingleStep(50)
+        self.dpi_spinbox.setValue(300)
+        figure_layout.addWidget(self.dpi_spinbox)
+        figure_layout.addWidget(QLabel("Figure height (in):"))
+        self.figure_height_spinbox = QDoubleSpinBox()
+        self.figure_height_spinbox.setRange(1, 50)
+        self.figure_height_spinbox.setDecimals(1)
+        self.figure_height_spinbox.setSingleStep(0.5)
+        self.figure_height_spinbox.setValue(8)
+        figure_layout.addWidget(self.figure_height_spinbox)
+        figure_layout.addStretch(1)
+        self.main_layout.addWidget(self.figure_options)
 
         self.export_layer_combobox.selectionChanged.connect(
-            self._update_mask_checkbox_visibility
+            self._select_default_format
+        )
+        self.format_combobox.currentTextChanged.connect(
+            self._update_option_visibility
+        )
+        self.labels_color_checkbox.toggled.connect(
+            self._update_option_visibility
         )
 
         # The FLIMari controls live in their own dialog; this button, at the
@@ -4315,39 +4364,22 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             show_error("No layer selected")
             return
 
-        # Define filters for the native dialog
-        filters = [
-            "Phasor as OME-TIFF (*.ome.tif)",
-            "Layer data as CSV (*.csv)",
-            "Layer as PNG image (*.png)",
-            "Layer as JPEG image (*.jpg)",
-            "Layer as TIFF image (*.tif)",
-            "Layer as SVG image (*.svg)",
-        ]
-        # Join filters with ';;' for the native dialog format
-        filter_str = ";;".join(filters)
-
-        # Pre-fill filename with first layer name so the dialog
-        # always has a valid default and the user can just confirm.
-        default_name = selected_layers[0]
-
-        # Use static method to invoke the native OS dialog
+        # The dialog offers only the chosen format. Its file name is
+        # pre-filled with the first layer's name, so it can just be confirmed.
+        file_format = self.format_combobox.currentText()
         file_path, selected_filter = QFileDialog.getSaveFileName(
-            self, "Select Export Location", default_name, filter_str
+            self, "Select Export Location", selected_layers[0], file_format
         )
 
         if file_path:
-            include_colorbar = self.colorbar_checkbox.isChecked()
-            export_masked = (
-                self.mask_checkbox.isVisible()
-                and self.mask_checkbox.isChecked()
-            )
             exported = self._save_file(
                 file_path,
-                selected_filter,
-                include_colorbar,
+                selected_filter or file_format,
+                self.colorbar_checkbox.isChecked(),
                 selected_layers,
-                export_masked=export_masked,
+                labels_as_ids=not self.labels_color_checkbox.isChecked(),
+                dpi=self.dpi_spinbox.value(),
+                figure_height=self.figure_height_spinbox.value(),
             )
             if exported:
                 self.close()
@@ -4499,17 +4531,43 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.flimari_button.setEnabled(can_export)
         self.flimari_open_button.setEnabled(can_export)
 
-    def _update_mask_checkbox_visibility(self, event=None):
-        """Show/hide the mask checkbox based on whether any selected layer has a mask."""
-        selected_layers = self.export_layer_combobox.checkedItems()
-        any_masked = False
-        for name in selected_layers:
-            if name in self.viewer.layers:
-                layer = self.viewer.layers[name]
-                if 'mask' in getattr(layer, 'metadata', {}):
-                    any_masked = True
-                    break
-        self.mask_checkbox.setVisible(any_masked)
+    def _checked_layers(self):
+        """Return the layers checked for export."""
+        return [
+            self.viewer.layers[name]
+            for name in self.export_layer_combobox.checkedItems()
+            if name in self.viewer.layers
+        ]
+
+    def _select_default_format(self, event=None):
+        """Default to OME-TIFF for phasor layers, SVG for Labels, else PNG."""
+        from ._flimari import has_phasor_data
+
+        layers = self._checked_layers()
+        if any(has_phasor_data(layer) for layer in layers):
+            file_format = self._OME
+        elif layers and all(isinstance(layer, Labels) for layer in layers):
+            file_format = self._SVG
+        else:
+            file_format = self._PNG
+        self.format_combobox.setCurrentText(file_format)
+        self._update_option_visibility()
+
+    def _update_option_visibility(self, event=None):
+        """Show only the options that apply to the format and the layers."""
+        layers = self._checked_layers()
+        file_format = self.format_combobox.currentText()
+        picture = file_format in self._PICTURE_FORMATS
+        has_image = any(not isinstance(layer, Labels) for layer in layers)
+        has_labels = any(isinstance(layer, Labels) for layer in layers)
+        label_values = file_format in (self._PNG, self._TIFF)
+        self.colorbar_checkbox.setVisible(picture and has_image)
+        self.labels_color_checkbox.setVisible(label_values and has_labels)
+        # Labels exported as their values draw no figure.
+        draws_labels = has_labels and (
+            not label_values or self.labels_color_checkbox.isChecked()
+        )
+        self.figure_options.setVisible(picture and (has_image or draws_labels))
 
     def _populate_combobox(self):
         """Populate combobox with image and labels layers."""
@@ -4531,10 +4589,6 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         for layer in list(self._connected_metadata_layers):
             with suppress(Exception):
                 layer.events.metadata.disconnect(
-                    self._update_mask_checkbox_visibility
-                )
-            with suppress(Exception):
-                layer.events.metadata.disconnect(
                     self._update_flimari_button_state
                 )
         self._connected_metadata_layers.clear()
@@ -4542,14 +4596,11 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         for layer in image_layers:
             with suppress(Exception):
                 layer.events.metadata.connect(
-                    self._update_mask_checkbox_visibility
-                )
-                layer.events.metadata.connect(
                     self._update_flimari_button_state
                 )
                 self._connected_metadata_layers.add(layer)
 
-        self._update_mask_checkbox_visibility()
+        self._select_default_format()
         self._update_flimari_button_state()
         self._refresh_export_button()
 
@@ -4567,10 +4618,6 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             for layer in list(self._connected_metadata_layers):
                 with suppress(Exception):
                     layer.events.metadata.disconnect(
-                        self._update_mask_checkbox_visibility
-                    )
-                with suppress(Exception):
-                    layer.events.metadata.disconnect(
                         self._update_flimari_button_state
                     )
             self._connected_metadata_layers.clear()
@@ -4584,7 +4631,9 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         selected_filter,
         include_colorbar=False,
         selected_layers=None,
-        export_masked=False,
+        labels_as_ids=True,
+        dpi=300,
+        figure_height=8.0,
     ):
         """Callback whenever the export location and name are specified."""
         if selected_layers is None:
@@ -4647,9 +4696,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
             try:
                 if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
-                    write_ome_tiff(
-                        final_path, export_layer, export_masked=export_masked
-                    )
+                    write_ome_tiff(final_path, export_layer)
                 elif selected_filter == "Layer data as CSV (*.csv)":
                     export_layer_as_csv(final_path, export_layer)
                 elif selected_filter in [
@@ -4663,6 +4710,9 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                         export_layer,
                         include_colorbar=include_colorbar,
                         current_step=self.viewer.dims.current_step,
+                        labels_as_ids=labels_as_ids,
+                        dpi=dpi,
+                        figure_height=figure_height,
                     )
                 show_info(f"Exported {export_layer.name} to {final_path}")
                 return True
@@ -4686,11 +4736,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                     layer_file_path = os.path.join(directory, filename)
 
                     if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
-                        write_ome_tiff(
-                            layer_file_path,
-                            export_layer,
-                            export_masked=export_masked,
-                        )
+                        write_ome_tiff(layer_file_path, export_layer)
                     elif selected_filter == "Layer data as CSV (*.csv)":
                         export_layer_as_csv(layer_file_path, export_layer)
                     elif selected_filter in [
@@ -4704,6 +4750,9 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                             export_layer,
                             include_colorbar=include_colorbar,
                             current_step=self.viewer.dims.current_step,
+                            labels_as_ids=labels_as_ids,
+                            dpi=dpi,
+                            figure_height=figure_height,
                         )
 
                     exported_count += 1
