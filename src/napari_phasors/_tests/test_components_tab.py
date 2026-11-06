@@ -2319,7 +2319,8 @@ def test_linear_projection_layer_names(make_viewer_model, qtbot):
     )
 
     # Absolute concentration: a run adds one tagged map per quantity and
-    # stores its calibration.
+    # stores its calibration. The maps take the source's units.
+    layer.units = ("um", "um")
     reference = _concentration_ready(viewer, layer, parent, comp)
     _enable_second_component(comp)
     comp._run_analysis()
@@ -2344,6 +2345,7 @@ def test_linear_projection_layer_names(make_viewer_model, qtbot):
     assert tag['units'] == "mM"
     assert tag['harmonic'] == 1
     assert tag['source_layer'] == layer.name
+    assert total_map.units == layer.units
     assert total_map.colormap.name == "viridis"
     block = layer.metadata['settings']['component_analysis']
     assert block['analysis_type'] == ABSOLUTE_CONCENTRATION

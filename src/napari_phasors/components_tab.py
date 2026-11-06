@@ -6482,6 +6482,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 data,
                 name=default_name,
                 scale=source.scale,
+                units=source.units,
                 colormap=colormap,
                 contrast_limits=limits,
             )
