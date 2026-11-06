@@ -2157,14 +2157,30 @@ _ANALYSIS_TAG_RE = re.compile(
 )
 
 
+def _source_base_name(source_name: str) -> tuple[str, str]:
+    """Return ``(base, duplicate_suffix)`` of a phasor layer name.
+
+    The ``[Phasor]`` tag goes, and so do the word ``Intensity`` and the
+    ``:`` before a channel that :func:`format_phasor_layer_name` adds, so
+    ``"s Intensity: Channel 0 [Phasor]"`` has base ``"s Channel 0"``. A
+    name without the tag (a renamed layer) is kept as it is.
+    """
+    match = _PHASOR_TAG_RE.search(source_name)
+    if match is None:
+        return source_name, ""
+    base = re.sub(r" Intensity(?=:|$)", "", source_name[: match.start()])
+    return base.replace(":", ""), match.group("dup") or ""
+
+
 def analysis_layer_name(analysis: str, source_name: str) -> str:
     """Return the name of a layer derived from a phasor layer by an analysis.
 
     The analysis goes in the trailing square brackets, in place of the
     ``[Phasor]`` tag of the source layer, so
     ``analysis_layer_name("FRET efficiency", "s Intensity [Phasor]")`` is
-    ``"s Intensity [FRET efficiency]"``. A source that carries no
-    ``[Phasor]`` tag (a renamed layer) simply gets the tag appended.
+    ``"s [FRET efficiency]"`` (see :func:`phasor_layer_base_name`). A source
+    that carries no ``[Phasor]`` tag (a renamed layer) simply gets the tag
+    appended.
 
     Parameters
     ----------
@@ -2179,12 +2195,7 @@ def analysis_layer_name(analysis: str, source_name: str) -> str:
     str
         Name of the derived layer.
     """
-    match = _PHASOR_TAG_RE.search(source_name)
-    if match:
-        base = source_name[: match.start()]
-        dup = match.group("dup") or ""
-    else:
-        base, dup = source_name, ""
+    base, dup = _source_base_name(source_name)
     return f"{base} [{analysis}]{dup}"
 
 
@@ -2262,11 +2273,31 @@ def is_component_fit_label(label: str | None) -> bool:
 
 
 def phasor_layer_base_name(name: str) -> str:
-    """Return *name* without its trailing ``[Phasor]`` tag (if any)."""
-    match = _PHASOR_TAG_RE.search(name)
-    if match is None:
-        return name
-    return name[: match.start()] + (match.group("dup") or "")
+    """Return the base that :func:`analysis_layer_name` gives *name*.
+
+    That is *name* without its trailing ``[Phasor]`` tag and the
+    ``Intensity`` word and ``:`` that come with it, if it has the tag.
+    """
+    base, dup = _source_base_name(name)
+    return base + dup
+
+
+_INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\[\]\x00-\x1f]')
+
+
+def layer_file_stem(layer_name: str) -> str:
+    """Return a file name stem for a layer, safe on every platform.
+
+    A trailing ``[<analysis>]`` tag becomes ``" - <analysis>"``, then the
+    characters Windows does not allow in file names (where ``:`` silently
+    writes to a hidden stream and leaves an empty file) and any other square
+    brackets are dropped, so ``"s Channel 0 [FRET efficiency]"`` gives
+    ``"s Channel 0 - FRET efficiency"``.
+    """
+    base, label = split_analysis_layer_name(layer_name)
+    stem = layer_name if label is None else f"{base} - {label}"
+    stem = _INVALID_FILENAME_CHARS_RE.sub("", stem)
+    return " ".join(stem.split()).rstrip(". ") or "layer"
 
 
 def extract_channel_label(

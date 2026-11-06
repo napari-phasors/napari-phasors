@@ -1075,6 +1075,20 @@ def test_write_ometif_multilayer_list_naming(tmp_path):
     paths = write_ome_tiff(str(tmp_path / "img1.ome.tif"), layers)
     names = {os.path.basename(p) for p in paths}
     assert names == {"img1.ome.tif", "img2.ome.tif"}
+    # Characters Windows does not allow in file names are dropped (a ':'
+    # there writes to a hidden stream and leaves an empty file) and an
+    # analysis tag becomes ' - <analysis>'.
+    layers = [
+        _phasor_image("a: Channel 0 [Phasor]"),
+        _phasor_image("a [Phase]"),
+    ]
+    # Joined as text: on Windows "a:" in a path component is a drive letter.
+    paths = write_ome_tiff(
+        f"{tmp_path}{os.sep}a: Channel 0 [Phasor].ome.tif", layers
+    )
+    names = {os.path.basename(p) for p in paths}
+    assert names == {"a Channel 0 - Phasor.ome.tif", "a - Phase.ome.tif"}
+    assert all(os.path.getsize(p) > 0 for p in paths)
 
 
 def test_write_ometif_single_layer_keeps_its_path(

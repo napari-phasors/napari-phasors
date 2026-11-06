@@ -24,6 +24,7 @@ from napari_phasors._utils import (
     extract_channel_suffix,
     format_phasor_layer_name,
     is_component_fit_label,
+    layer_file_stem,
     name_match_stem,
     parse_component_analysis_label,
     phasor_layer_base_name,
@@ -810,14 +811,18 @@ def test_rank_mask_candidates_is_deterministic():
 
 
 def test_analysis_layer_name_replaces_phasor_tag():
-    """The analysis goes in the trailing brackets in place of [Phasor]."""
+    """The analysis replaces [Phasor], and 'Intensity' and ':' go."""
     assert (
         analysis_layer_name("FRET efficiency", "sample Intensity [Phasor]")
-        == "sample Intensity [FRET efficiency]"
+        == "sample [FRET efficiency]"
     )
     assert (
         analysis_layer_name("Phase", "sample Intensity: Channel 1 [Phasor]")
-        == "sample Intensity: Channel 1 [Phase]"
+        == "sample Channel 1 [Phase]"
+    )
+    assert (
+        analysis_layer_name("Phase", "sample Stack Intensity [Phasor]")
+        == "sample Stack [Phase]"
     )
 
 
@@ -830,7 +835,7 @@ def test_analysis_layer_name_keeps_napari_duplicate_suffix():
     """napari's trailing ' [1]' de-duplication suffix stays last."""
     assert (
         analysis_layer_name("Phase", "img Intensity [Phasor] [1]")
-        == "img Intensity [Phase] [1]"
+        == "img [Phase] [1]"
     )
 
 
@@ -840,7 +845,7 @@ def test_split_analysis_layer_name_round_trip():
     name = analysis_layer_name("(Linear Projection) Donor", source)
     base, analysis = split_analysis_layer_name(name)
     assert analysis == "(Linear Projection) Donor"
-    assert base == phasor_layer_base_name(source) == "sample Intensity"
+    assert base == phasor_layer_base_name(source) == "sample"
 
 
 def test_split_analysis_layer_name_without_brackets():
@@ -849,12 +854,33 @@ def test_split_analysis_layer_name_without_brackets():
 
 
 def test_phasor_layer_base_name():
-    """The [Phasor] tag (and only it) is stripped from a source name."""
-    assert phasor_layer_base_name("a Intensity [Phasor]") == "a Intensity"
-    assert phasor_layer_base_name("a Intensity [Phasor] [2]") == (
-        "a Intensity [2]"
+    """The [Phasor] tag, with its 'Intensity' and ':', is stripped."""
+    assert phasor_layer_base_name("a Intensity [Phasor]") == "a"
+    assert phasor_layer_base_name("a Intensity [Phasor] [2]") == "a [2]"
+    assert (
+        phasor_layer_base_name("a Intensity: Channel 0 [Phasor]")
+        == "a Channel 0"
     )
+    assert phasor_layer_base_name("a Intensity") == "a Intensity"
     assert phasor_layer_base_name("a [Phase]") == "a [Phase]"
+
+
+@pytest.mark.parametrize(
+    "name, stem",
+    [
+        (
+            "s Channel 0 [(Linear Projection) Donor]",
+            "s Channel 0 - (Linear Projection) Donor",
+        ),
+        ("s Intensity: Channel 0 [Phasor]", "s Intensity Channel 0 - Phasor"),
+        ("s [Phase] [1]", "s 1 - Phase"),
+        ('Restored Mask: a<b>c/d\\e|f?g*h"', "Restored Mask abcdefgh"),
+        ("[]", "layer"),
+    ],
+)
+def test_layer_file_stem(name, stem):
+    """Layer names become file stems Windows accepts, [tag] as ' - tag'."""
+    assert layer_file_stem(name) == stem
 
 
 def test_component_analysis_label_round_trip():

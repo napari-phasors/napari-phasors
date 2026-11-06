@@ -2253,7 +2253,7 @@ def test_writer_widget_export_multiple_layers(
 
     viewer = make_viewer_model()
     viewer.add_image(np.random.rand(10, 10), name="Layer1")
-    viewer.add_image(np.random.rand(10, 10), name="Layer2")
+    viewer.add_image(np.random.rand(10, 10), name="Layer2: Ch 0 [Phase]")
 
     widget = WriterWidget(viewer)
 
@@ -2265,11 +2265,18 @@ def test_writer_widget_export_multiple_layers(
     )
 
     # Select multiple layers
-    widget.export_layer_combobox.setCheckedItems(["Layer1", "Layer2"])
+    widget.export_layer_combobox.setCheckedItems(
+        ["Layer1", "Layer2: Ch 0 [Phase]"]
+    )
 
     with patch("napari_phasors._widget.export_layer_as_csv") as mock_csv:
         widget._open_file_dialog()
         assert mock_csv.call_count == 2
+    # File names drop the characters Windows does not allow.
+    assert [os.path.basename(c.args[0]) for c in mock_csv.call_args_list] == [
+        "export_test_Layer1.csv",
+        "export_test_Layer2 Ch 0 - Phase.csv",
+    ]
 
     # Also test error handling
     mock_save_path2 = str(tmp_path / "export_test2")

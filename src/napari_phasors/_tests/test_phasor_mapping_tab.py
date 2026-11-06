@@ -1224,7 +1224,7 @@ def test_mapping_output_name_puts_analysis_in_brackets(
     for output_type in ("Phase", "Modulation"):
         mapping_widget.output_mode_combobox.setCurrentText(output_type)
         mapping_widget._on_calculate_lifetime_clicked()
-        name = f"FLIM data Intensity [{output_type}]"
+        name = f"FLIM data [{output_type}]"
         assert name in viewer.layers
         assert mapping_widget._mapping_output_info(viewer.layers[name]) == (
             output_type,
@@ -1232,8 +1232,8 @@ def test_mapping_output_name_puts_analysis_in_brackets(
         )
 
     mapping_widget.rename_layer(layer.name, "renamed Intensity [Phasor]")
-    assert "renamed Intensity [Phase]" in viewer.layers
-    assert "renamed Intensity [Modulation]" in viewer.layers
+    assert "renamed [Phase]" in viewer.layers
+    assert "renamed [Modulation]" in viewer.layers
 
 
 def test_phasor_mapping_widget_single_harmonic_layer(

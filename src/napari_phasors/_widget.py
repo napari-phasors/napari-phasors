@@ -79,6 +79,7 @@ from ._utils import (
     PopoutWindowMixin,
     TileLayoutDialog,
     emphasize_primary_button,
+    layer_file_stem,
     natural_sort_key,
     setup_primary_button,
     show_activity_progress,
@@ -4365,10 +4366,14 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             return
 
         # The dialog offers only the chosen format. Its file name is
-        # pre-filled with the first layer's name, so it can just be confirmed.
+        # pre-filled with the first layer's file name, so it can just be
+        # confirmed.
         file_format = self.format_combobox.currentText()
         file_path, selected_filter = QFileDialog.getSaveFileName(
-            self, "Select Export Location", selected_layers[0], file_format
+            self,
+            "Select Export Location",
+            layer_file_stem(selected_layers[0]),
+            file_format,
         )
 
         if file_path:
@@ -4674,11 +4679,13 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             base_name = full_basename
 
         # Determine if user provided a custom name.
-        # The dialog is pre-filled with the first selected layer's name,
-        # so if the base name still matches that default we treat it as
-        # "no custom input".
+        # The dialog is pre-filled with the first selected layer's file
+        # name, so if the base name still matches that default we treat it
+        # as "no custom input".
         user_provided_name = bool(
-            base_name and base_name != selected_layers[0]
+            base_name
+            and base_name
+            not in (selected_layers[0], layer_file_stem(selected_layers[0]))
         )
 
         # Export logic based on number of layers and whether name was provided
@@ -4689,10 +4696,14 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
             if user_provided_name:
                 # Use the provided name
-                final_path = os.path.join(directory, base_name + ext)
+                final_path = os.path.join(
+                    directory, layer_file_stem(base_name) + ext
+                )
             else:
                 # Use layer name
-                final_path = os.path.join(directory, layer_name + ext)
+                final_path = os.path.join(
+                    directory, layer_file_stem(layer_name) + ext
+                )
 
             try:
                 if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
@@ -4728,10 +4739,12 @@ class WriterWidget(PopoutWindowMixin, QWidget):
 
                     if user_provided_name:
                         # Use provided name + layer name
-                        filename = f"{base_name}_{layer_name}{ext}"
+                        filename = (
+                            layer_file_stem(f"{base_name}_{layer_name}") + ext
+                        )
                     else:
                         # Use just layer name
-                        filename = f"{layer_name}{ext}"
+                        filename = layer_file_stem(layer_name) + ext
 
                     layer_file_path = os.path.join(directory, filename)
 
