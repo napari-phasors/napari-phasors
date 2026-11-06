@@ -24,7 +24,7 @@ from napari.layers import Labels
 from phasorpy.io import phasor_to_ometiff
 
 from ._parallel import parallel_map, workers_for_memory
-from ._utils import show_activity_progress
+from ._utils import layer_file_stem, show_activity_progress
 
 if TYPE_CHECKING:
     DataType = Union[Any, Sequence[Any]]
@@ -157,7 +157,8 @@ def _get_export_path(
 
     napari saves several selected layers with one call holding all of them,
     so only a multi-layer call adds the layer name; a single layer is written
-    to ``path`` as given.
+    to ``path``. The file name goes through :func:`layer_file_stem`, since a
+    layer name can hold characters Windows does not allow in file names.
     """
     directory = os.path.dirname(path)
     full_basename = os.path.basename(path)
@@ -175,13 +176,13 @@ def _get_export_path(
             ext = default_ext
 
     if len(layers_to_export) == 1:
-        filename = f"{base_name}{ext}"
+        stem = base_name
     elif base_name in layer_names:
-        filename = f"{layer_name}{ext}"
+        stem = layer_name
     else:
-        filename = f"{base_name}_{layer_name}{ext}"
+        stem = f"{base_name}_{layer_name}"
 
-    return os.path.join(directory, filename)
+    return os.path.join(directory, layer_file_stem(stem) + ext)
 
 
 def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
