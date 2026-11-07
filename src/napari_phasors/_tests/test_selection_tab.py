@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 from napari.layers import Labels
-from phasorpy.cluster import phasor_cluster_kmeans
+from phasorpy.cluster import phasor_cluster_gmm, phasor_cluster_kmeans
 from qtpy.QtCore import QEvent, Qt
 from qtpy.QtGui import QColor, QFocusEvent, QValidator
 from qtpy.QtWidgets import (
@@ -127,6 +127,29 @@ def test_selection_widget_initial_state(make_viewer_model, qtbot):
     assert clustering.num_clusters_spinbox.minimum() == 2
     assert clustering.num_clusters_spinbox.maximum() == 100
     assert clustering.num_clusters_spinbox.value() == 2
+    # The advanced options start collapsed, leave the choice of the number
+    # of runs and iterations to scikit-learn and show only the GMM rows.
+    assert clustering.advanced_options_section._content.isHidden()
+    assert clustering._clustering_kwargs(clustering.METHOD_GMM) == {
+        "random_state": 0,
+        "sigma": 2.0,
+        "covariance_type": "full",
+        "init_params": "kmeans",
+    }
+    assert clustering.n_init_spinbox.text() == "Auto"
+    assert clustering.max_iter_spinbox.text() == "Default"
+    assert not clustering.sigma_spinbox.isHidden()
+    assert clustering.kmeans_init_combobox.isHidden()
+    clustering.clustering_method_combobox.setCurrentText("K-means")
+    assert clustering.sigma_spinbox.isHidden()
+    assert clustering.covariance_combobox.isHidden()
+    assert not clustering.kmeans_init_combobox.isHidden()
+    assert not clustering.random_seed_spinbox.isHidden()
+    assert clustering._clustering_kwargs(clustering.METHOD_KMEANS) == {
+        "random_state": 0,
+        "init": "k-means++",
+    }
+    clustering.clustering_method_combobox.setCurrentIndex(0)
     assert hasattr(clustering, "apply_button")
     assert hasattr(clustering, "clear_button")
     assert clustering.apply_button.text() == "Apply Clustering"
@@ -1928,7 +1951,8 @@ def test_automatic_clustering(make_viewer_model, qtbot):
     ):
         assert marker.axes is ax
         assert marker.get_marker() == "o"
-        assert marker.get_markeredgecolor() == "black"
+        assert marker.get_markersize() == 10
+        assert marker.get_markeredgecolor() == "#000000"
         color = cluster["color"]
         assert marker.get_markerfacecolor()[:3] == pytest.approx(
             (color.redF(), color.greenF(), color.blueF())
@@ -1940,6 +1964,23 @@ def test_automatic_clustering(make_viewer_model, qtbot):
     assert widget._centroid_artists == []
     widget.show_centroids_toggle.setChecked(True)
     assert len(widget._centroid_artists) == 3
+
+    # The centroid style dialog restyles every marker.
+    widget.centroid_style_button.click()
+    dialog = widget.centroid_style_dialog
+    assert dialog.isVisible()
+    widget.centroid_style_button.click()
+    assert widget.centroid_style_dialog is dialog
+    widget.centroid_marker_combobox.setCurrentText("Star")
+    widget.centroid_size_spin.setValue(14)
+    widget.centroid_edge_width_spin.setValue(3)
+    widget.centroid_edge_color_button.color_changed.emit(QColor("white"))
+    assert len(widget._centroid_artists) == 3
+    for marker in widget._centroid_artists:
+        assert marker.get_marker() == "*"
+        assert marker.get_markersize() == 14
+        assert marker.get_markeredgewidth() == 3
+        assert marker.get_markeredgecolor() == "#ffffff"
 
     # A new cluster colour reaches the plot, labels layer and centroid.
     red = QColor(255, 0, 0)
@@ -1956,11 +1997,20 @@ def test_automatic_clustering(make_viewer_model, qtbot):
     selection_tab.selection_mode_combobox.setCurrentText("Cursor Selection")
     assert not parent._cluster_coloring_active
     assert widget._centroid_artists == []
+    # Restyling hidden centroids keeps them hidden; Reset restores the
+    # default style once they are drawn again.
+    widget.centroid_style_reset_button.click()
+    assert widget._centroid_artists == []
+    assert widget.centroid_style == widget.DEFAULT_CENTROID_STYLE
+    assert widget.centroid_edge_color_button.color() == QColor("#000000")
+    dialog.close()
     selection_tab.selection_mode_combobox.setCurrentText(
         "Automatic Clustering"
     )
     assert parent._cluster_coloring_active
     assert len(widget._centroid_artists) == 3
+    assert widget._centroid_artists[0].get_marker() == "o"
+    assert widget._centroid_artists[0].get_markersize() == 10
     assert np.max(artist.color_indices) == 3
     parent.tab_widget.setCurrentWidget(parent.components_tab)
     assert not parent._cluster_coloring_active
@@ -2049,6 +2099,43 @@ def test_automatic_clustering(make_viewer_model, qtbot):
         analysis_layer_name("Cluster Selection", layer.name)
         not in viewer.layers
     )
+
+    # The advanced options reach phasorpy, and through it scikit-learn.
+    widget.random_seed_spinbox.setValue(7)
+    widget.n_init_spinbox.setValue(3)
+    widget.max_iter_spinbox.setValue(50)
+    widget.kmeans_init_combobox.setCurrentText("Random")
+    widget.sigma_spinbox.setValue(1.0)
+    widget.covariance_combobox.setCurrentText("Spherical")
+    widget.gmm_init_combobox.setCurrentText("Random from data")
+    common = {"random_state": 7, "n_init": 3, "max_iter": 50}
+    with patch(
+        "napari_phasors.selection_tab.phasor_cluster_kmeans",
+        wraps=phasor_cluster_kmeans,
+    ) as kmeans:
+        widget._apply_clustering()
+    assert kmeans.call_args.kwargs == {
+        "clusters": 3,
+        "init": "random",
+        **common,
+    }
+    assert len(widget._clusters) == 3
+    widget.clustering_method_combobox.setCurrentIndex(0)
+    with patch(
+        "napari_phasors.selection_tab.phasor_cluster_gmm",
+        wraps=phasor_cluster_gmm,
+    ) as gmm:
+        widget._apply_clustering()
+    assert gmm.call_args.kwargs == {
+        "clusters": 3,
+        "sigma": 1.0,
+        "covariance_type": "spherical",
+        "init_params": "random_from_data",
+        **common,
+    }
+    # Spherical clusters are circles.
+    for cluster in widget._clusters:
+        assert cluster["radius"] == pytest.approx(cluster["radius_minor"])
 
     # A failing run leaves no stale clusters behind.
     widget.clustering_method_combobox.setCurrentText("K-means")

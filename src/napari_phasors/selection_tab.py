@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -53,6 +54,7 @@ from ._canvas import (
     _make_selector_icon,
 )
 from ._utils import (
+    CollapsibleSection,
     CurrentPageStackedWidget,
     active_selection_region,
     analysis_layer_name,
@@ -1904,6 +1906,42 @@ class AutomaticClusteringWidget(QWidget):
         ("K-means", METHOD_KMEANS),
     ]
 
+    #: (combobox text, scikit-learn value) of the advanced option choices.
+    GMM_COVARIANCE_TYPES = [
+        ("Full", "full"),
+        ("Tied", "tied"),
+        ("Diagonal", "diag"),
+        ("Spherical", "spherical"),
+    ]
+    GMM_INIT_METHODS = [
+        ("K-means", "kmeans"),
+        ("K-means++", "k-means++"),
+        ("Random", "random"),
+        ("Random from data", "random_from_data"),
+    ]
+    KMEANS_INIT_METHODS = [
+        ("K-means++", "k-means++"),
+        ("Random", "random"),
+    ]
+
+    #: (combobox text, matplotlib marker) of the centroid markers.
+    CENTROID_MARKERS = [
+        ("Circle", "o"),
+        ("Square", "s"),
+        ("Diamond", "D"),
+        ("Triangle", "^"),
+        ("Hexagon", "h"),
+        ("Star", "*"),
+        ("Plus", "P"),
+        ("Cross", "X"),
+    ]
+    DEFAULT_CENTROID_STYLE = {
+        "marker": "o",
+        "size": 10.0,
+        "edge_width": 1.5,
+        "edge_color": "#000000",
+    }
+
     def __init__(self, viewer, parent_widget):
         """Initialize the AutomaticClusteringWidget."""
         super().__init__()
@@ -1922,6 +1960,8 @@ class AutomaticClusteringWidget(QWidget):
         self._cluster_maps = {}  # {image_layer_name: np.ndarray}
         # Method the current clusters were computed with.
         self._cluster_method = None
+        self.centroid_style = dict(self.DEFAULT_CENTROID_STYLE)
+        self.centroid_style_dialog = None
 
         self._setup_ui()
 
@@ -1960,6 +2000,7 @@ class AutomaticClusteringWidget(QWidget):
         self.num_clusters_spinbox.setValue(2)
         clusters_layout.addWidget(self.num_clusters_spinbox, 1)
         params_box_layout.addLayout(clusters_layout)
+        params_box_layout.addWidget(self._make_advanced_options())
         layout.addWidget(params_box)
 
         # Display options section
@@ -1982,6 +2023,19 @@ class AutomaticClusteringWidget(QWidget):
         )
         self.show_centroids_toggle.toggled.connect(self._on_show_centroids)
         display_box_layout.addWidget(self.show_centroids_toggle)
+
+        buttons_row = QHBoxLayout()
+        self.centroid_style_button = QPushButton("Edit Centroid Style...")
+        self.centroid_style_button.setToolTip(
+            "Edit the marker, size and edge of the centroids in the phasor "
+            "plot."
+        )
+        self.centroid_style_button.clicked.connect(
+            self._open_centroid_style_dialog
+        )
+        buttons_row.addWidget(self.centroid_style_button)
+        buttons_row.addStretch()
+        display_box_layout.addLayout(buttons_row)
         layout.addWidget(display_box)
 
         # Apply clustering button (validated)
@@ -2050,6 +2104,136 @@ class AutomaticClusteringWidget(QWidget):
         layout.addWidget(self.clear_button)
 
         layout.addStretch()
+
+    def _make_advanced_options(self):
+        """Return the collapsed section with the optional clustering
+        arguments; rows that do not apply to the picked method are hidden."""
+        form = self._advanced_options_form = QFormLayout()
+        form.setContentsMargins(0, 4, 0, 0)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        # (field, methods) of every row, to show only the rows of the
+        # picked method.
+        self._option_rows = []
+
+        def add_row(text, field, tooltip, methods):
+            label = QLabel(text)
+            for widget in (label, field):
+                widget.setToolTip(tooltip)
+            form.addRow(label, field)
+            self._option_rows.append((field, methods))
+            return field
+
+        def combobox(choices):
+            box = QComboBox()
+            box.addItems([text for text, _ in choices])
+            return box
+
+        both = (self.METHOD_GMM, self.METHOD_KMEANS)
+        self.sigma_spinbox = QDoubleSpinBox()
+        self.sigma_spinbox.setRange(0.5, 5.0)
+        self.sigma_spinbox.setSingleStep(0.1)
+        self.sigma_spinbox.setValue(2.0)
+        add_row(
+            "Ellipse size (sigma):",
+            self.sigma_spinbox,
+            "Radii of the cluster ellipses, in standard deviations. Pixels "
+            "outside every ellipse stay unassigned.\nThe default 2 covers "
+            "about 98% of a cluster.",
+            (self.METHOD_GMM,),
+        )
+        self.covariance_combobox = add_row(
+            "Covariance type:",
+            combobox(self.GMM_COVARIANCE_TYPES),
+            "Shape of the clusters: Full fits any ellipse, Tied gives every "
+            "cluster the same ellipse,\nDiagonal keeps the ellipse axes "
+            "along G and S, and Spherical fits circles.",
+            (self.METHOD_GMM,),
+        )
+        self.gmm_init_combobox = add_row(
+            "Initialization:",
+            combobox(self.GMM_INIT_METHODS),
+            "How the starting clusters are chosen.",
+            (self.METHOD_GMM,),
+        )
+        self.kmeans_init_combobox = add_row(
+            "Initialization:",
+            combobox(self.KMEANS_INIT_METHODS),
+            "How the starting centroids are chosen. K-means++ spreads them "
+            "out and usually converges faster.",
+            (self.METHOD_KMEANS,),
+        )
+        # 0 leaves the choice to scikit-learn.
+        self.n_init_spinbox = QSpinBox()
+        self.n_init_spinbox.setRange(0, 100)
+        self.n_init_spinbox.setSpecialValueText("Auto")
+        add_row(
+            "Initializations:",
+            self.n_init_spinbox,
+            "Number of runs from different starting points; the best run "
+            "is kept.\nMore runs are slower but less likely to end in a poor "
+            "solution. Auto uses scikit-learn's default.",
+            both,
+        )
+        self.max_iter_spinbox = QSpinBox()
+        self.max_iter_spinbox.setRange(0, 100000)
+        self.max_iter_spinbox.setSingleStep(50)
+        self.max_iter_spinbox.setSpecialValueText("Default")
+        add_row(
+            "Max iterations:",
+            self.max_iter_spinbox,
+            "Maximum number of iterations of each run. Default uses "
+            "scikit-learn's default (100 for GMM, 300 for k-means).",
+            both,
+        )
+        self.random_seed_spinbox = QSpinBox()
+        self.random_seed_spinbox.setRange(0, 2**31 - 1)
+        add_row(
+            "Random seed:",
+            self.random_seed_spinbox,
+            "Seed of the random starting points. The same seed and settings "
+            "give the same clusters.",
+            both,
+        )
+
+        container = QWidget()
+        container.setLayout(form)
+        self.advanced_options_section = CollapsibleSection(
+            "Advanced options", text_color="#c7c7c7"
+        )
+        self.advanced_options_section.add_widget(container)
+        self.clustering_method_combobox.currentIndexChanged.connect(
+            self._update_method_options
+        )
+        self._update_method_options()
+        return self.advanced_options_section
+
+    def _update_method_options(self, _index=None):
+        """Show only the advanced options of the picked method."""
+        method = self._selected_method()
+        for field, methods in self._option_rows:
+            # Hiding the row, not just its widgets, also drops its spacing.
+            self._advanced_options_form.setRowVisible(field, method in methods)
+
+    def _clustering_kwargs(self, method):
+        """Return the optional arguments of the phasorpy function of
+        *method*, as set in the advanced options."""
+        kwargs = {"random_state": self.random_seed_spinbox.value()}
+        for key, spinbox in (
+            ("n_init", self.n_init_spinbox),
+            ("max_iter", self.max_iter_spinbox),
+        ):
+            if spinbox.value():
+                kwargs[key] = spinbox.value()
+        if method == self.METHOD_KMEANS:
+            index = self.kmeans_init_combobox.currentIndex()
+            kwargs["init"] = self.KMEANS_INIT_METHODS[index][1]
+        else:
+            kwargs["sigma"] = self.sigma_spinbox.value()
+            index = self.covariance_combobox.currentIndex()
+            kwargs["covariance_type"] = self.GMM_COVARIANCE_TYPES[index][1]
+            index = self.gmm_init_combobox.currentIndex()
+            kwargs["init_params"] = self.GMM_INIT_METHODS[index][1]
+        return kwargs
 
     def _selected_method(self):
         """Return the method key picked in the method combobox."""
@@ -2143,6 +2327,7 @@ class AutomaticClusteringWidget(QWidget):
                 g_merged,
                 s_merged,
                 clusters=n_clusters,
+                **self._clustering_kwargs(self.METHOD_GMM),
             )
         )
 
@@ -2198,7 +2383,7 @@ class AutomaticClusteringWidget(QWidget):
             np.where(finite, g_merged, np.nan),
             np.where(finite, s_merged, np.nan),
             clusters=n_clusters,
-            random_state=0,
+            **self._clustering_kwargs(self.METHOD_KMEANS),
         )
 
         self._cluster_method = self.METHOD_KMEANS
@@ -2622,17 +2807,18 @@ class AutomaticClusteringWidget(QWidget):
             if cluster.get("harmonic", 1) != current_harmonic:
                 continue
             color = cluster["color"]
+            style = self.centroid_style
             # Added as a bare line (not ``ax.plot``) so the marker never
             # rescales the phasor plot axes.
             marker = Line2D(
                 [cluster["g"]],
                 [cluster["s"]],
                 linestyle="none",
-                marker="o",
-                markersize=10,
+                marker=style["marker"],
+                markersize=style["size"],
                 markerfacecolor=(color.redF(), color.greenF(), color.blueF()),
-                markeredgecolor="black",
-                markeredgewidth=1.5,
+                markeredgecolor=style["edge_color"],
+                markeredgewidth=style["edge_width"],
                 zorder=6,
             )
             ax.add_line(marker)
@@ -2650,6 +2836,113 @@ class AutomaticClusteringWidget(QWidget):
         self._draw_centroids()
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _open_centroid_style_dialog(self):
+        """Open the dialog editing the style of the centroid markers."""
+        if (
+            self.centroid_style_dialog is not None
+            and self.centroid_style_dialog.isVisible()
+        ):
+            self.centroid_style_dialog.raise_()
+            self.centroid_style_dialog.activateWindow()
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Centroid Style")
+        dialog.setMinimumWidth(360)
+        vbox = QVBoxLayout(dialog)
+        style = self.centroid_style
+
+        marker_row = QHBoxLayout()
+        marker_row.addWidget(QLabel("Marker:"))
+        self.centroid_marker_combobox = QComboBox()
+        markers = [marker for _, marker in self.CENTROID_MARKERS]
+        self.centroid_marker_combobox.addItems(
+            [text for text, _ in self.CENTROID_MARKERS]
+        )
+        self.centroid_marker_combobox.setCurrentIndex(
+            markers.index(style["marker"])
+        )
+        self.centroid_marker_combobox.currentIndexChanged.connect(
+            lambda index: self._set_centroid_style("marker", markers[index])
+        )
+        marker_row.addWidget(self.centroid_marker_combobox, 1)
+        vbox.addLayout(marker_row)
+
+        size_row, _, self.centroid_size_spin = make_slider_spin_row(
+            "Size:",
+            2.0,
+            30.0,
+            style["size"],
+            1,
+            lambda value: self._set_centroid_style("size", value),
+            step=0.5,
+        )
+        vbox.addLayout(size_row)
+        edge_row, _, self.centroid_edge_width_spin = make_slider_spin_row(
+            "Edge width:",
+            0.0,
+            5.0,
+            style["edge_width"],
+            1,
+            lambda value: self._set_centroid_style("edge_width", value),
+        )
+        vbox.addLayout(edge_row)
+
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("Edge color:"))
+        self.centroid_edge_color_button = ColorButton(
+            QColor(style["edge_color"])
+        )
+        self.centroid_edge_color_button.color_changed.connect(
+            lambda color: self._set_centroid_style("edge_color", color.name())
+        )
+        color_row.addWidget(self.centroid_edge_color_button)
+        color_row.addStretch()
+        vbox.addLayout(color_row)
+
+        buttons_layout = QHBoxLayout()
+        self.centroid_style_reset_button = QPushButton("Reset")
+        self.centroid_style_reset_button.setToolTip(
+            "Restore the default centroid style."
+        )
+        self.centroid_style_reset_button.clicked.connect(
+            self._reset_centroid_style
+        )
+        buttons_layout.addWidget(self.centroid_style_reset_button)
+        buttons_layout.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        buttons_layout.addWidget(close_button)
+        vbox.addLayout(buttons_layout)
+
+        self.centroid_style_dialog = dialog
+        dialog.show()
+
+    def _reset_centroid_style(self):
+        """Restore the default centroid style."""
+        default = self.DEFAULT_CENTROID_STYLE
+        # The controls drive the style through their value handlers.
+        markers = [marker for _, marker in self.CENTROID_MARKERS]
+        self.centroid_marker_combobox.setCurrentIndex(
+            markers.index(default["marker"])
+        )
+        self.centroid_size_spin.setValue(default["size"])
+        self.centroid_edge_width_spin.setValue(default["edge_width"])
+        self.centroid_edge_color_button.set_color(
+            QColor(default["edge_color"])
+        )
+        self._set_centroid_style("edge_color", default["edge_color"])
+
+    def _set_centroid_style(self, key, value):
+        """Change one property of the centroid markers and redraw them.
+
+        Markers hidden by another mode or tab stay hidden; they take the
+        new style when they are drawn again.
+        """
+        self.centroid_style[key] = value
+        if self._centroid_artists:
+            self._on_show_centroids()
 
     def _clustering_mode_active(self):
         """Return whether this mode is what the Selection tab shows."""
