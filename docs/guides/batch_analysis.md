@@ -205,14 +205,14 @@ interactive-widget equivalent.
 
 ## Selection
 
-Labels phasor regions with manual cursors or automatic GMM clustering, and
+Labels phasor regions with manual cursors or automatic clustering, and
 exports a selection (labels) image per file. See {doc}`phasor_selection` for
 the interactive-widget equivalent.
 
 | Parameter | Description |
 |---|---|
 | **Harmonic** | Harmonic whose phasor coordinates the cursors/clustering act on. |
-| **Mode** | **Manual cursors** or **Automatic clustering (GMM)**. |
+| **Mode** | **Manual cursors** or **Automatic clustering**. |
 
 ### Manual cursors
 
@@ -229,12 +229,16 @@ Each cursor row (**+ Add cursor**) has:
 | **φ₋, φ₊** *(Polar)* | Minimum/maximum phase bounds, in degrees. |
 | **m₋, m₊** *(Polar)* | Minimum/maximum modulation bounds. |
 
-### Automatic clustering (GMM)
+### Automatic clustering
+
+Each file is clustered on its own, with a fixed random seed so a rerun on the
+same files gives the same clusters.
 
 | Parameter | Description |
 |---|---|
-| **Number of clusters** | Number of clusters (regions) the GMM fits to the phasor data. |
-| **Sigma** | Size of each cluster's elliptic region, in standard deviations of the fitted Gaussian. |
+| **Method** | **GMM (Gaussian Mixture Model)** fits one ellipse per cluster; pixels outside every ellipse stay unassigned. **K-means** assigns every valid pixel to the cluster with the nearest centroid. |
+| **Number of clusters** | Number of clusters (regions) to find in the phasor data of each file. |
+| **Sigma** *(GMM)* | Size of each cluster's elliptic region, in standard deviations of the fitted Gaussian. |
 
 ### Outputs
 

@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from napari.layers import Image, Labels
 from napari.utils.notifications import show_error, show_info, show_warning
-from phasorpy.cluster import phasor_cluster_gmm
+from phasorpy.cluster import phasor_cluster_gmm, phasor_cluster_kmeans
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
 from phasorpy.cursor import (
     mask_from_circular_cursor,
@@ -730,10 +730,12 @@ def _apply_selection(layer, selection):
     """Build a cursor-selection labels image for ``layer``.
 
     Mirrors ``SelectionWidget`` headlessly. In ``"manual"`` mode each cursor
-    (circular/elliptic/polar) labels its region with an integer id; in
+    (circular/elliptic/polar) labels its region with an integer id. In
     ``"cluster"`` mode GMM clusters (``phasor_cluster_gmm``) are turned
-    into elliptic-cursor regions. Returns a single
-    :class:`napari.layers.Labels` (empty list if no usable phasor data).
+    into elliptic-cursor regions, and k-means clusters
+    (``phasor_cluster_kmeans``) label every valid pixel with its cluster.
+    Returns a single :class:`napari.layers.Labels` (empty list if no usable
+    phasor data).
     """
     harmonic = selection["harmonic"]
     real, imag = _select_harmonic_arrays(layer, harmonic)
@@ -747,26 +749,41 @@ def _apply_selection(layer, selection):
         real_flat = np.asarray(real).ravel()
         imag_flat = np.asarray(imag).ravel()
         finite = np.isfinite(real_flat) & np.isfinite(imag_flat)
-        center_real, center_imag, radius, radius_minor, angle = (
-            phasor_cluster_gmm(
-                real_flat[finite],
-                imag_flat[finite],
-                clusters=cluster.get("clusters", 2),
-                sigma=cluster.get("sigma", 2.0),
+        clusters = cluster.get("clusters", 2)
+        # Seeded, so a rerun on the same files gives the same clusters.
+        if cluster.get("method", "gmm") == "kmeans":
+            # Infinite coordinates are missing, like NaN; labels are -1 there.
+            _, _, labels = phasor_cluster_kmeans(
+                np.where(finite, real_flat, np.nan),
+                np.where(finite, imag_flat, np.nan),
+                clusters=clusters,
+                random_state=0,
             )
-        )
+            selection_map = (labels.astype(np.int64) + 1).astype(np.uint32)
+            selection_map = selection_map.reshape(np.shape(real))
+        else:
+            center_real, center_imag, radius, radius_minor, angle = (
+                phasor_cluster_gmm(
+                    real_flat[finite],
+                    imag_flat[finite],
+                    clusters=clusters,
+                    sigma=cluster.get("sigma", 2.0),
+                    random_state=0,
+                )
+            )
+            for idx in range(clusters):
+                mask = mask_from_elliptic_cursor(
+                    real,
+                    imag,
+                    [center_real[idx]],
+                    [center_imag[idx]],
+                    radius=[radius[idx]],
+                    radius_minor=[radius_minor[idx]],
+                    angle=[angle[idx]],
+                )[0]
+                selection_map[mask] = idx + 1
         color_dict = {None: (0.0, 0.0, 0.0, 0.0)}
-        for idx in range(len(center_real)):
-            mask = mask_from_elliptic_cursor(
-                real,
-                imag,
-                [center_real[idx]],
-                [center_imag[idx]],
-                radius=[radius[idx]],
-                radius_minor=[radius_minor[idx]],
-                angle=[angle[idx]],
-            )[0]
-            selection_map[mask] = idx + 1
+        for idx in range(clusters):
             color_dict[idx + 1] = _cursor_rgba(
                 None, idx, cluster.get("colors")
             )
@@ -851,7 +868,7 @@ def _selection_statistics(layer, selection, selection_map):
 
     Mirrors the interactive Selection tab's tables: for each manual cursor the
     pixel count inside its region and that count as a percentage of the layer's
-    valid (finite) pixels; for GMM clustering the same per cluster, computed
+    valid (finite) pixels; for clustering the same per cluster, computed
     from the produced ``selection_map`` (with each cluster's centroid). Manual
     cursor counts are computed from each cursor's own mask (so they match the
     interactive per-cursor table even where cursors overlap).
@@ -3166,7 +3183,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         self.selection_group, body, content = self._enable_section(
             "Enable cursor selection",
-            "Label phasor regions with manual cursors or automatic GMM "
+            "Label phasor regions with manual cursors or automatic "
             "clustering, and export a selection (labels) image per file.",
         )
         group_layout = QVBoxLayout(body)
@@ -3188,12 +3205,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         config_row.addWidget(QLabel("Mode:"))
         self.selection_mode_combo = QComboBox()
         self.selection_mode_combo.addItem("Manual cursors", "manual")
-        self.selection_mode_combo.addItem(
-            "Automatic clustering (GMM)", "cluster"
-        )
+        self.selection_mode_combo.addItem("Automatic clustering", "cluster")
         self.selection_mode_combo.setToolTip(
             "Define regions with manually placed cursors, or detect them "
-            "automatically with Gaussian-mixture (GMM) clustering."
+            "automatically with GMM or k-means clustering."
         )
         self.selection_mode_combo.currentIndexChanged.connect(
             self._on_selection_mode_changed
@@ -3215,14 +3230,31 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         manual_layout.addWidget(add_button)
         inputs_layout.addWidget(self.selection_manual_widget)
 
-        # Automatic clustering (GMM).
+        # Automatic clustering.
         self.selection_cluster_widget = QWidget()
-        cluster_form = self._form(self.selection_cluster_widget)
+        cluster_form = self._cluster_form = self._form(
+            self.selection_cluster_widget
+        )
+        self.cluster_method_combo = QComboBox()
+        self.cluster_method_combo.addItem(
+            "GMM (Gaussian Mixture Model)", "gmm"
+        )
+        self.cluster_method_combo.addItem("K-means", "kmeans")
+        self.cluster_method_combo.setToolTip(
+            "GMM fits one ellipse per cluster; pixels outside every ellipse "
+            "stay unassigned.\nK-means assigns every pixel to the cluster "
+            "with the nearest centroid."
+        )
+        self.cluster_method_combo.currentIndexChanged.connect(
+            self._on_selection_mode_changed
+        )
+        cluster_form.addRow("Method:", self.cluster_method_combo)
         self.cluster_count_spin = QSpinBox()
         self.cluster_count_spin.setRange(2, 100)
         self.cluster_count_spin.setValue(2)
         self.cluster_count_spin.setToolTip(
-            "Number of clusters (regions) the GMM fits to the phasor data."
+            "Number of clusters (regions) to find in the phasor data of each "
+            "file."
         )
         cluster_form.addRow("Number of clusters:", self.cluster_count_spin)
         self.cluster_sigma_spin = QDoubleSpinBox()
@@ -3238,9 +3270,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         inputs_layout.addWidget(
             self._note(
-                "Manual circular/elliptic/polar cursors, or automatic GMM "
+                "Manual circular/elliptic/polar cursors, or automatic "
                 "clusters, label their region in a selection image (one id "
-                "each). Angles and polar phase bounds are in degrees."
+                "each). Each file is clustered on its own. Angles and polar "
+                "phase bounds are in degrees."
             )
         )
         group_layout.addWidget(inputs_box)
@@ -3290,6 +3323,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         mode = self.selection_mode_combo.currentData()
         self.selection_manual_widget.setVisible(mode == "manual")
         self.selection_cluster_widget.setVisible(mode == "cluster")
+        self._cluster_form.setRowVisible(
+            self.cluster_sigma_spin,
+            self.cluster_method_combo.currentData() == "gmm",
+        )
 
     def _add_cursor_row(self, g=0.0, s=0.0, radius=0.05):
         """Append a cursor row centred at (*g*, *s*) with the given *radius*."""
@@ -5533,6 +5570,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "mode": self.selection_mode_combo.currentData(),
             "cursors": cursors,
             "cluster": {
+                "method": self.cluster_method_combo.currentData(),
                 "clusters": self.cluster_count_spin.value(),
                 "sigma": self.cluster_sigma_spin.value(),
             },
