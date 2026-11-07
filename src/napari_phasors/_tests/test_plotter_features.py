@@ -889,6 +889,66 @@ def test_update_grid_view(make_viewer_model):
     assert c.visible is False
     assert comp_c.visible is False
 
+    # The grid switch and every visibility change share one batched update,
+    # so napari rebuilds the scene graph once rather than once per layer.
+    log = []
+    viewer.layers.events.begin_batch.connect(lambda e: log.append("begin"))
+    viewer.layers.events.end_batch.connect(lambda e: log.append("end"))
+    viewer.grid.events.enabled.connect(lambda e: log.append("grid"))
+    for layer in (a, b, c, comp_a, comp_c):
+        layer.events.visible.connect(lambda e: log.append("visible"))
+    viewer.grid.enabled = False
+    log.clear()
+    plotter._update_grid_view([b, c])
+    assert log[0] == "begin"
+    assert log[-1] == "end"
+    assert log.count("begin") == log.count("end") == 1
+    assert "grid" in log
+    # a and comp_a are hidden, c and comp_c shown; b is left alone.
+    assert log.count("visible") == 4
+
+
+def test_auto_grid_view_switch(make_viewer_model, qtbot):
+    """The Grid view switch stops multi-layer selections from turning grid
+    mode on, leaves grid mode to napari while off, and still syncs layer
+    visibility."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+
+    layers = []
+    for i in range(3):
+        layer = create_image_layer_with_phasors()
+        layer.name = f"layer_{i}"
+        viewer.add_layer(layer)
+        layers.append(layer)
+    a, b, c = layers
+
+    assert plotter.auto_grid_checkbox.isChecked() is True
+    plotter._update_grid_view([a, b])
+    assert viewer.grid.enabled is True
+
+    # Off: grid mode is left, and a multi-layer selection keeps it off while
+    # visibility still follows the selection.
+    plotter.auto_grid_checkbox.setChecked(False)
+    assert viewer.grid.enabled is False
+    plotter._update_grid_view([b, c])
+    assert viewer.grid.enabled is False
+    assert (a.visible, b.visible, c.visible) == (False, True, True)
+
+    # Grid mode set with napari's own button is not touched either way.
+    viewer.grid.enabled = True
+    plotter._update_grid_view([a])
+    assert viewer.grid.enabled is True
+    viewer.grid.enabled = False
+
+    # On again: applied to the current selection straight away.
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        ["layer_0", "layer_1"]
+    )
+    plotter.auto_grid_checkbox.setChecked(True)
+    assert viewer.grid.enabled is True
+
 
 def test_update_layer_visibility_for_selection(make_viewer_model):
     """Selected intensity layers and their analysis layers are shown, the

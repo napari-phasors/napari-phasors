@@ -17,16 +17,20 @@ from napari_phasors._synthetic_generator import (
 from napari_phasors._utils import (
     analysis_layer_name,
     apply_filter_and_threshold,
+    batched_layer_updates,
     colormap_to_dict,
     component_analysis_label,
     extract_channel_label,
     extract_channel_suffix,
     format_phasor_layer_name,
     is_component_fit_label,
+    layer_file_stem,
     name_match_stem,
     parse_component_analysis_label,
     phasor_layer_base_name,
     rank_mask_candidates,
+    set_grid_enabled,
+    set_layer_visible,
     split_analysis_layer_name,
     threshold_li,
     threshold_otsu,
@@ -807,14 +811,18 @@ def test_rank_mask_candidates_is_deterministic():
 
 
 def test_analysis_layer_name_replaces_phasor_tag():
-    """The analysis goes in the trailing brackets in place of [Phasor]."""
+    """The analysis replaces [Phasor], and 'Intensity' and ':' go."""
     assert (
         analysis_layer_name("FRET efficiency", "sample Intensity [Phasor]")
-        == "sample Intensity [FRET efficiency]"
+        == "sample [FRET efficiency]"
     )
     assert (
         analysis_layer_name("Phase", "sample Intensity: Channel 1 [Phasor]")
-        == "sample Intensity: Channel 1 [Phase]"
+        == "sample Channel 1 [Phase]"
+    )
+    assert (
+        analysis_layer_name("Phase", "sample Stack Intensity [Phasor]")
+        == "sample Stack [Phase]"
     )
 
 
@@ -827,7 +835,7 @@ def test_analysis_layer_name_keeps_napari_duplicate_suffix():
     """napari's trailing ' [1]' de-duplication suffix stays last."""
     assert (
         analysis_layer_name("Phase", "img Intensity [Phasor] [1]")
-        == "img Intensity [Phase] [1]"
+        == "img [Phase] [1]"
     )
 
 
@@ -837,7 +845,7 @@ def test_split_analysis_layer_name_round_trip():
     name = analysis_layer_name("(Linear Projection) Donor", source)
     base, analysis = split_analysis_layer_name(name)
     assert analysis == "(Linear Projection) Donor"
-    assert base == phasor_layer_base_name(source) == "sample Intensity"
+    assert base == phasor_layer_base_name(source) == "sample"
 
 
 def test_split_analysis_layer_name_without_brackets():
@@ -846,12 +854,33 @@ def test_split_analysis_layer_name_without_brackets():
 
 
 def test_phasor_layer_base_name():
-    """The [Phasor] tag (and only it) is stripped from a source name."""
-    assert phasor_layer_base_name("a Intensity [Phasor]") == "a Intensity"
-    assert phasor_layer_base_name("a Intensity [Phasor] [2]") == (
-        "a Intensity [2]"
+    """The [Phasor] tag, with its 'Intensity' and ':', is stripped."""
+    assert phasor_layer_base_name("a Intensity [Phasor]") == "a"
+    assert phasor_layer_base_name("a Intensity [Phasor] [2]") == "a [2]"
+    assert (
+        phasor_layer_base_name("a Intensity: Channel 0 [Phasor]")
+        == "a Channel 0"
     )
+    assert phasor_layer_base_name("a Intensity") == "a Intensity"
     assert phasor_layer_base_name("a [Phase]") == "a [Phase]"
+
+
+@pytest.mark.parametrize(
+    "name, stem",
+    [
+        (
+            "s Channel 0 [(Linear Projection) Donor]",
+            "s Channel 0 - (Linear Projection) Donor",
+        ),
+        ("s Intensity: Channel 0 [Phasor]", "s Intensity Channel 0 - Phasor"),
+        ("s [Phase] [1]", "s 1 - Phase"),
+        ('Restored Mask: a<b>c/d\\e|f?g*h"', "Restored Mask abcdefgh"),
+        ("[]", "layer"),
+    ],
+)
+def test_layer_file_stem(name, stem):
+    """Layer names become file stems Windows accepts, [tag] as ' - tag'."""
+    assert layer_file_stem(name) == stem
 
 
 def test_component_analysis_label_round_trip():
@@ -874,3 +903,78 @@ def test_parse_component_analysis_label_rejects_other_labels(label):
     """Non component labels are not mistaken for fraction layers."""
     assert parse_component_analysis_label(label) is None
     assert not is_component_fit_label(label)
+
+
+def test_set_layer_visible_skips_unchanged_writes(make_viewer_model):
+    """Only a real change reaches napari's ``visible`` setter and event."""
+    viewer = make_viewer_model()
+    layer = viewer.add_image(np.zeros((4, 4)))
+    events = []
+    layer.events.visible.connect(lambda e: events.append(layer.visible))
+
+    assert set_layer_visible(layer, True) is False
+    assert events == []
+    assert set_layer_visible(layer, False) is True
+    assert set_layer_visible(layer, 0) is False
+    assert set_layer_visible(layer, 1) is True
+    assert events == [False, True]
+
+
+def test_batched_layer_updates(make_viewer_model):
+    """A block batches its changes into one rebuild, starting right before
+    the first change; a block without changes, a nested block or a viewer
+    without layers does not batch."""
+    viewer = make_viewer_model()
+    layer = viewer.add_image(np.zeros((4, 4)))
+    log = []
+    viewer.layers.events.begin_batch.connect(lambda e: log.append("begin"))
+    viewer.layers.events.end_batch.connect(lambda e: log.append("end"))
+    viewer.layers.events.inserted.connect(lambda e: log.append("inserted"))
+    viewer.layers.events.removed.connect(lambda e: log.append("removed"))
+    layer.events.visible.connect(lambda e: log.append("visible"))
+    viewer.grid.events.enabled.connect(lambda e: log.append("grid"))
+
+    # Nothing structural changes: no batch, so napari rebuilds nothing.
+    with batched_layer_updates(viewer):
+        layer.data = np.ones((4, 4))
+        assert set_layer_visible(layer, True) is False
+        assert set_grid_enabled(viewer, False) is False
+    assert log == []
+
+    # Adding a layer starts the batch before the layer is inserted, and
+    # nested blocks join the outer one.
+    with batched_layer_updates(viewer):
+        with batched_layer_updates(viewer):
+            added = viewer.add_image(np.zeros((4, 4)))
+        assert log == ["begin", "inserted"]
+        viewer.layers.remove(added)
+    assert log == ["begin", "inserted", "removed", "end"]
+
+    # A visibility or grid change through the helpers starts it too.
+    for change in (
+        lambda: set_layer_visible(layer, False),
+        lambda: set_grid_enabled(viewer, True),
+    ):
+        log.clear()
+        with batched_layer_updates(viewer):
+            change()
+            change()
+        assert log[0] == "begin"
+        assert log[-1] == "end"
+        assert len(log) == 3
+
+    # An error still ends the batch, and the next block batches again.
+    log.clear()
+    with pytest.raises(RuntimeError), batched_layer_updates(viewer):
+        set_layer_visible(layer, True)
+        raise RuntimeError
+    assert log == ["begin", "visible", "end"]
+    log.clear()
+    with batched_layer_updates(viewer):
+        set_layer_visible(layer, False)
+    assert log == ["begin", "visible", "end"]
+
+    ran = []
+    with batched_layer_updates(None):
+        ran.append(True)
+    assert ran == [True]

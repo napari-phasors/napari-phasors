@@ -33,7 +33,7 @@ The defaults below come from the format mapping in
 | `.fbd` | `frame=-1`, `keepdims=False`, `channel=None` |
 | `.sdt` | no extra defaults |
 | `.lsm` | no extra defaults |
-| `.tif`, `.tiff` | no extra defaults |
+| `.tif`, `.tiff` | no extra defaults; a TIFF with no signal axis (2D or an RGB picture), or whose phasors cannot be computed, opens as a plain image with napari's own reader |
 | `.czi` | no extra defaults |
 | `.flif` | no extra defaults |
 | `.bh`, `.b&h` | no extra defaults |
@@ -42,7 +42,7 @@ The defaults below come from the format mapping in
 | `.bin` | no extra defaults |
 | `.json` (raw) | `channel=0`, `dtype=None` |
 | `.h5` (BrightEyes-MCS) | `dataset=None` (the file's default product), `time=0`, `depth=0`, `channel=0` |
-| `.ome.tif`, `.ome.tiff` | no extra defaults |
+| `.ome.tif`, `.ome.tiff` | no extra defaults; an OME-TIFF without phasor coordinates is read like a `.tif` |
 | `.r64`, `.ref` | no extra defaults |
 | `.ifli` | `channel=0` |
 | `.lif` (processed) | `image=None` |

@@ -15,7 +15,7 @@ of three output modes:
 | Mode | Description |
 |------|-------------|
 | **Lifetime** | Computes apparent phase lifetime, apparent modulation lifetime, or normal lifetime (ns) |
-| **Phase** | Computes the polar angle of the phasor (radians) |
+| **Phase** | Computes the polar angle of the phasor (degrees) |
 | **Modulation** | Computes the polar modulus of the phasor (0 – 1) |
 
 ## Lifetime mode
@@ -64,7 +64,7 @@ anywhere on the plot and compare it with the image colors. Turn it on with
 | **Transparency** | Transparency of the mesh. |
 | **Clip mesh to semicircle** | Only shows the mesh inside the universal semicircle (semicircle plot geometry only). |
 | **Show colorbar** | Adds a colorbar for the mesh next to the phasor plot. |
-| **Phase range (rad)** / **Modulation range** | *Phase and Modulation modes.* Restrict the mesh to a band of phase angles and/or modulations. |
+| **Phase range (°)** / **Modulation range** | *Phase and Modulation modes.* Restrict the mesh to a band of phase angles and/or modulations. |
 | **Lifetime range (ns)** | *Lifetime mode.* Restricts the mesh to a band of lifetimes of the selected lifetime type. |
 
 **Auto** fits a range to the plotted data. Each range is stored with the

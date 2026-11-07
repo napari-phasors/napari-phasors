@@ -439,10 +439,31 @@ def test_reader_ometiff_extension():
     assert callable(reader)
 
 
-def test_reader_tiff_extension():
-    """Test .tiff extension maps to raw reader."""
-    reader = napari_get_reader("test_file.tiff")
-    assert callable(reader)
+def test_reader_tiff_without_phasors_opens_as_image(tmp_path, monkeypatch):
+    """A TIFF that yields no phasors is read by napari's own reader.
+
+    That is a TIFF with no signal axis (an RGB picture), or one whose phasor
+    transform fails, which is also warned about.
+    """
+    import tifffile
+
+    rgb = np.zeros((6, 8, 3), dtype=np.uint8)
+    path = str(tmp_path / "picture.tiff")
+    tifffile.imwrite(path, rgb, photometric="rgb")
+    ((data,),) = napari_get_reader(path)(path)
+    np.testing.assert_array_equal(data, rgb)
+
+    stack = np.ones((4, 6, 8), dtype=np.float32)
+    path = str(tmp_path / "stack.tif")
+    tifffile.imwrite(path, stack)
+
+    def fail(*args, **kwargs):
+        raise ValueError("bad signal")
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fail)
+    with pytest.warns(UserWarning, match="bad signal"):
+        ((data,),) = napari_get_reader(path)(path)
+    np.testing.assert_array_equal(data, stack)
 
 
 def test_raw_reader_tiff_does_not_forward_widget_axis_option_to_imread(

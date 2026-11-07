@@ -226,7 +226,7 @@ Each cursor row (**+ Add cursor**) has:
 | **r** *(Circular, Elliptic)* | Radius (major radius for Elliptic). |
 | **rₘ** *(Elliptic)* | Minor radius. |
 | **∠** *(Elliptic)* | Rotation angle, in degrees. |
-| **φ₋, φ₊** *(Polar)* | Minimum/maximum phase bounds, in radians. |
+| **φ₋, φ₊** *(Polar)* | Minimum/maximum phase bounds, in degrees. |
 | **m₋, m₊** *(Polar)* | Minimum/maximum modulation bounds. |
 
 ### Automatic clustering (GMM)
@@ -252,10 +252,31 @@ equivalent and for the analysis-type concepts.
 
 | Parameter | Description |
 |---|---|
-| **Analysis type** | **Linear Projection** (two components) or **Component Fit** (multi-component fit). |
+| **Analysis type** | **Linear Projection** (two components), **Component Fit** (multi-component fit), or **Absolute Concentration** (two components, see below). |
 | **Frequency (MHz)** | Used to convert a typed lifetime into G/S coordinates. |
 | **Harmonic** | Harmonic whose component G/S locations are currently being edited. Fits with more than 3 components need locations at several harmonics: switch this selector and enter G/S for each required harmonic. |
 | **Component G/S locations** *(required)* | One row per component (**+ Add component**), each with a name, G, S, and an optional lifetime (ns) field that, when a value is entered, converts to G/S automatically. Each component also has its own fraction-image colormap. |
+
+### Concentration calibration
+
+Shown when **Analysis type** is **Absolute Concentration**; see
+{doc}`component_analysis` for the model and what the calibration solution
+needs. Each file gets a concentration image of the calibrated component, plus
+the other component's and the total when **Also export ... and total
+concentrations** is checked. Their histograms are labelled with the unit.
+
+| Parameter | Description |
+|---|---|
+| **Calibrated component** | The component the calibration solution is made of. |
+| **Reference solution** *(required)* | A layer of the calibration solution loaded in the viewer and processed like the files, measured when the batch starts at the **Harmonic** above; or **Manual values**. |
+| **Intensity**, **Phasor** | The reference's mean intensity and G/S. Read-only when measured on a layer; typed G/S are kept per harmonic. |
+| **Concentration** *(required)* | Known concentration of the calibration solution, and its unit. |
+| **Also export ... and total concentrations** | Also exports the other component's concentration and the total. |
+| **Brightness ratio** | Molecular brightness of the other component relative to the calibrated one. |
+
+**Copy settings…** from a layer analysed in the **Components** tab copies
+the calibration too, with the stored reference as manual values (or its layer,
+if it is open), and sets the harmonic the analysis ran at.
 
 ### Fraction images and phasor plot styling
 
@@ -296,7 +317,7 @@ per file. See {doc}`phasor_mapping` for the interactive-widget equivalent.
 | **Mesh transparency** | Transparency of the mesh overlay. |
 | **Clip mesh to semicircle** | Only shows the mesh inside the universal semicircle (semicircle plot geometry only). |
 | **Range** | **Auto (range from all files)** computes a single phase/modulation range, and one range per lifetime mesh, pooled across every file at export; uncheck to set fixed ranges manually. |
-| **Phase range (rad)** | Manual minimum/maximum phase for the mesh, when Auto is off. |
+| **Phase range (°)** | Manual minimum/maximum phase for the mesh, when Auto is off. |
 | **Modulation range** | Manual minimum/maximum modulation for the mesh, when Auto is off. |
 | **Lifetime range (ns)** | Manual minimum/maximum lifetime for every lifetime mesh, when Auto is off. |
 
