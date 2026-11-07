@@ -236,6 +236,8 @@ def test_merge_split_markers_keeps_consistent_files(
         {"frame": -1, "channel": None, "keepdims": False},
         {"frame": -1, "channel": 0},
         {"frame": 0, "channel": 1, "keepdims": True},
+        {"frame": -1, "channel": 0, "refine": False},
+        {"frame": -1, "channel": 0, "refine": False, "scanner_line_start": 60},
     ],
 )
 def test_matches_phasorpy_by_default(fbd_file, kwargs):
@@ -274,23 +276,16 @@ def test_explicit_laser_factor_is_honored(fbd_file):
 
 
 def test_refine_false_keeps_the_header_factor(fbd_file):
-    """``refine=False`` is the setting phasorpy's reader cannot reach.
+    """Without an explicit factor, refining replaces the header's value.
 
-    Without an explicit factor, refining replaces the header's value with
-    one solved from the frame durations. phasorpy always refines, so the
-    header's own factor is unreachable through it -- which is what the
-    ``(-1.0, refine=False)`` candidate of :func:`match_reference_settings`
-    needs to be able to try.
+    The header's own factor is what the ``(-1.0, refine=False)`` candidate
+    of :func:`match_reference_settings` tries.
     """
     with quiet():
         header = signal_from_fbd(fbd_file, frame=-1, channel=0, refine=False)
         refined = signal_from_fbd(fbd_file, frame=-1, channel=0, refine=True)
-        theirs = phasorpy_signal_from_fbd(fbd_file, frame=-1, channel=0)
     assert header.attrs["laser_factor"] != refined.attrs["laser_factor"]
     assert not np.array_equal(header.values, refined.values)
-    # phasorpy's reader is the refining one, and reports no factor at all
-    assert np.array_equal(theirs.values, refined.values)
-    assert "laser_factor" not in theirs.attrs
 
 
 def test_scanner_line_start_shifts_image(fbd_file):

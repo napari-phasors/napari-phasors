@@ -2642,8 +2642,8 @@ class FbdWidget(AdvancedOptionsWidget):
         self.refine.addItems(["Auto", "Always", "If needed", "Never"])
         self.refine.setToolTip(
             "Recompute pixel dwell time and laser factor from the detected "
-            "frame durations. Refining overwrites the laser factor above, so "
-            "'Auto' refines only when no laser factor is given."
+            "frame durations. 'Auto' refines only when no laser factor is "
+            "given."
         )
         self.refine.currentIndexChanged.connect(
             lambda _: self._update_signal_plot()
