@@ -172,8 +172,8 @@ Two extra controls cover the cases the header cannot describe:
   the image along the slow scan axis. Prefer this over typing a number, which
   is only valid for one `fbdfile` release.
 - **Refine settings** recomputes the pixel dwell time and laser factor from
-  the detected frame durations. Refining *overwrites* the laser factor, so
-  the default, **Auto**, refines only when no laser factor was given. Choose
+  the detected frame durations. The default, **Auto**, refines only when no
+  laser factor was given. Choose
   **Always**, **If needed**, or **Never** to decide explicitly.
 
 ### Matching a SimFCS reference image
