@@ -16,10 +16,12 @@ The **Components** tab of the **Phasor Plot** widget lets you decompose phasor d
 - Overlay a histogram of the first component's fraction along the line (two-component Linear Projection only)
 - Style the text labels for each component (size, bold, italic, color)
 
-Two analysis modes are available:
+Three analysis modes are available:
 
 - **Two-component fit projection**
 - **Multi-component fit**
+- **Absolute concentration** of a two-component mixture, calibrated on a
+  solution of known concentration
 
 ## Selecting component locations
 
@@ -103,6 +105,65 @@ Use this mode when your data contains more than two components.
 
 This mode uses multi-component fitting in phasor space and is appropriate for
 more complex mixtures.
+
+(absolute-concentration)=
+## Absolute concentration
+
+Use this mode to measure how much of each component a pixel holds, rather
+than in what proportion: for example the free and enzyme-bound NADH
+concentrations of a cell. The phasor of a pixel gives the balance between the
+two components, and its intensity, scaled by a calibration solution of known
+concentration, gives the amount. The model is
+[`phasor_component_concentration`](https://www.phasorpy.org/docs/stable/api/component/#phasorpy.component.phasor_component_concentration)
+from PhasorPy, after
+[Ma et al. (2016)](https://doi.org/10.1364/BOE.7.002441); the
+[PhasorPy tutorial](https://www.phasorpy.org/docs/stable/tutorials/applications/phasorpy_nadh_concentration/)
+walks through the NADH case.
+
+The calibration solution contains only one of the two components (the
+*calibrated* one) at a known concentration. It must be acquired with the same
+instrument settings as the samples (laser power, detector gain, acquisition
+time and objective), and processed the same way: open it as a layer, then
+calibrate, filter and threshold it like the samples.
+
+1. Place the two components, for NADH typically free NADH (0.4 ns) and bound
+   NADH (3.4 ns), typed in as lifetimes.
+2. Set **Analysis Method** to **Absolute Concentration**. The
+   **Concentration calibration** section appears under the components.
+3. Fill in the calibration (see the table below).
+4. Click **Calculate Absolute Concentrations**.
+
+| Control | Purpose |
+|---|---|
+| **Calibrated component** | The component the calibration solution is made of (free NADH). Its concentration is always computed. |
+| **Reference solution** | The layer of the calibration solution. Its mean intensity and phasor center at the current harmonic are measured, shown below it, and measured again at every run, so a reference processed after it was picked counts as it is now. Choose **Manual values** to type them in instead. |
+| **Intensity**, **G**, **S** | The reference's mean intensity and phasor. Read-only while they are measured on a layer. Typed phasors are kept per harmonic, like the component positions. |
+| **Concentration** | The known concentration of the calibration solution and its unit (**mM**, **µM**, **nM**, **M**, or any unit typed in). The results are in the same unit. |
+| **Also compute ... and total concentrations** | Also computes the other component's concentration, and the total of both. |
+| **Brightness ratio** | Molecular brightness of the other component relative to the calibrated one. Needed for the second component: bound NADH is about 3 to 5 times brighter than free NADH, and 1 treats both as equally bright (as Ma et al. did). |
+| **Show total in histogram and statistics** | Plots the total concentration next to the components checked on their cards. |
+
+Each analysed image gets an `<image> [(Absolute Concentration) <component>]`
+layer, plus one for the second component and an
+`<image> [(Absolute Concentration) Total]` layer when the second component is
+computed. Pixels where the model is undefined are left empty
+(NaN). The histogram and statistics docks switch to concentrations, labelled
+with their unit, and each component card's **Show in histogram and
+statistics** toggle works as it does for fractions.
+
+> [!NOTE]
+> The measured reference is stored with the analysis. A layer analysed
+> against a reference that is no longer open (for example a saved OME-TIFF
+> reopened later) restores the stored intensity and phasor as manual values,
+> so running the analysis again reproduces the same concentrations. Renaming
+> the reference layer keeps it selected.
+
+Re-running the analysis updates the concentration layers in place, keeping
+their colormap and display range. The display range is measured again when
+the calibration changes (another reference, concentration, unit or
+brightness ratio), since that rescales every value. Fraction filters keep
+working in this mode: they filter on the linear-projection fraction of the
+two components.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20fit%20analysis.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20fit%20analysis.mp4" type="video/mp4">

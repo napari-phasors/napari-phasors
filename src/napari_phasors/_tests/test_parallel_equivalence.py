@@ -393,7 +393,10 @@ def test_component_fit_matrix(
     force_split, split_spy, n_harmonics, n_components, nan_fraction
 ):
     """Fitting fractions band by band gives the same fractions."""
-    from napari_phasors.components_tab import _fit_components
+    from napari_phasors.components_tab import (
+        _fit_components,
+        component_concentrations,
+    )
 
     rng = np.random.default_rng(6)
     shape = (240, 48)
@@ -416,6 +419,25 @@ def test_component_fit_matrix(
         f"{n_harmonics}h/{n_components}c/nan={nan_fraction}",
     )
     assert split_spy["bands"] > 0
+
+    # Absolute concentrations computed band by band are the same
+    # concentrations, with and without the second component.
+    plane_real = real if n_harmonics == 1 else real[0]
+    plane_imag = imag if n_harmonics == 1 else imag[0]
+    for brightness_ratio in (None, 1.5):
+        assert_identical_both_ways(
+            lambda ratio=brightness_ratio: component_concentrations(
+                mean + 1,
+                plane_real,
+                plane_imag,
+                [0.9, 0.25],
+                [0.25, 0.43],
+                (50.0, 0.8, 0.28),
+                2.0,
+                ratio,
+            ),
+            f"concentration/ratio={brightness_ratio}/nan={nan_fraction}",
+        )
 
 
 def test_rowwise_reassembles_every_return_shape(force_split):
@@ -852,7 +874,9 @@ def test_phasor_mapping_matrix(force_split, make_viewer_model, n_layers):
 
 @pytest.mark.parametrize("n_layers", (1, 3))
 def test_components_analysis_matrix(force_split, make_viewer_model, n_layers):
-    """Component fractions match whether the layers are fitted in a pool."""
+    """Component fractions and absolute concentrations match whether the
+    layers are analysed in a pool."""
+    from napari_phasors.components_tab import ABSOLUTE_CONCENTRATION
     from napari_phasors.plotter import PlotterWidget
 
     def run():
@@ -863,12 +887,30 @@ def test_components_analysis_matrix(force_split, make_viewer_model, n_layers):
         widget = plotter.components_tab
         plotter.tab_widget.setCurrentWidget(widget)
         results = {}
-        for analysis in ("Linear Projection", "Component Fit"):
+        for analysis in (
+            "Linear Projection",
+            "Component Fit",
+            ABSOLUTE_CONCENTRATION,
+        ):
             widget.analysis_type_combo.setCurrentText(analysis)
-            for index, (g, s) in enumerate(((0.2, 0.1), (0.8, 0.5))):
+            coords = (
+                ((0.9, 0.25), (0.25, 0.43))
+                if analysis == ABSOLUTE_CONCENTRATION
+                else ((0.2, 0.1), (0.8, 0.5))
+            )
+            for index, (g, s) in enumerate(coords):
                 widget.components[index].g_edit.setText(str(g))
                 widget.components[index].s_edit.setText(str(s))
                 widget._on_component_coords_changed(index)
+            if analysis == ABSOLUTE_CONCENTRATION:
+                for edit, value in (
+                    (widget.reference_mean_edit, "50"),
+                    (widget.reference_g_edit, "0.8"),
+                    (widget.reference_s_edit, "0.28"),
+                ):
+                    edit.setText(value)
+                widget.second_component_checkbox.setChecked(True)
+                widget.brightness_ratio_edit.setText("1.5")
             widget._run_analysis()
             results[analysis] = {
                 name: data
@@ -882,5 +924,6 @@ def test_components_analysis_matrix(force_split, make_viewer_model, n_layers):
 
     sequential, parallel = both_ways(run)
     for analysis, maps in sequential.items():
-        assert len(maps) >= n_layers, f"{analysis} produced no fraction maps"
-    assert_same(parallel, sequential, "component fractions")
+        assert len(maps) >= n_layers, f"{analysis} produced no maps"
+    assert len(sequential[ABSOLUTE_CONCENTRATION]) == 3 * n_layers
+    assert_same(parallel, sequential, "component analyses")
