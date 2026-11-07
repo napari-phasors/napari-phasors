@@ -7,6 +7,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 from napari.layers import Image
+from phasorpy.cluster import phasor_cluster_kmeans
 from qtpy.QtWidgets import QDoubleSpinBox
 
 from napari_phasors._batch_analysis import (
@@ -838,7 +839,8 @@ def test_selection_statistics_manual():
 
 
 def test_selection_statistics_cluster():
-    """Cluster stats sum to 100% of the valid pixels across clusters."""
+    """Cluster stats sum to 100% of the valid pixels across clusters, for
+    GMM (the default method) and k-means."""
     layer = _make_phasor_layer(harmonic=[1, 2])
     selection = {
         "harmonic": 1,
@@ -849,6 +851,34 @@ def test_selection_statistics_cluster():
     rows = _selection_statistics(layer, selection, selection_map)
     assert rows
     assert all(row["type"] == "cluster" for row in rows)
+    assert abs(sum(row["percent"] for row in rows) - 100.0) < 1e-6
+    # GMM is seeded, so a rerun gives the same clusters.
+    rerun = _apply_selection(layer, selection)[0].data
+    np.testing.assert_array_equal(rerun, selection_map)
+
+    # K-means labels every valid pixel with phasorpy's label, shifted by one,
+    # and leaves infinite coordinates unassigned.
+    real = layer.metadata["G"][0]
+    imag = layer.metadata["S"][0]
+    real.flat[0] = np.inf
+    selection["cluster"] = {"method": "kmeans", "clusters": 3}
+    selection_map = _apply_selection(layer, selection)[0].data
+    finite = np.isfinite(real) & np.isfinite(imag)
+    _, _, labels = phasor_cluster_kmeans(
+        np.where(finite, real, np.nan),
+        np.where(finite, imag, np.nan),
+        clusters=3,
+        random_state=0,
+    )
+    np.testing.assert_array_equal(selection_map, labels.astype(int) + 1)
+    assert selection_map.flat[0] == 0
+    assert np.all(selection_map[finite] >= 1)
+    rows = _selection_statistics(layer, selection, selection_map)
+    assert [row["region"] for row in rows] == [
+        "Cluster 1",
+        "Cluster 2",
+        "Cluster 3",
+    ]
     assert abs(sum(row["percent"] for row in rows) - 100.0) < 1e-6
 
 
@@ -1640,6 +1670,15 @@ def test_collect_selection_cluster_mode(qtbot, make_viewer_model):
     selection = widget.build_pipeline([1, 2]).selection
     assert selection["mode"] == "cluster"
     assert selection["cluster"]["clusters"] == 3
+    assert selection["cluster"]["method"] == "gmm"
+    assert not widget.cluster_sigma_spin.isHidden()
+
+    # Sigma only applies to GMM.
+    widget.cluster_method_combo.setCurrentText("K-means")
+    assert widget.cluster_sigma_spin.isHidden()
+    assert widget.build_pipeline([1, 2]).selection["cluster"]["method"] == (
+        "kmeans"
+    )
 
 
 def test_per_tab_exports_end_to_end(qtbot, make_viewer_model, tmp_path):

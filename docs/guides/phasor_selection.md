@@ -77,12 +77,23 @@ Cluster phasors automatically with one of two methods, picked in the **Clusterin
 
 Set the **Number of Clusters** and click **Apply Clustering**. The result is mapped back to the image as a labels layer where each pixel carries the label of its cluster. The table lists each cluster's center, pixel count and percentage; use its **Color** button to recolor a cluster (on the phasor plot and in the labels layer) and **×** to remove one.
 
+**Advanced options**, collapsed by default, tune the fit. Only the options of the picked method are shown:
+
+- **Ellipse size (sigma)** (GMM): the radii of the ellipses, in standard deviations.
+- **Covariance type** (GMM): **Full** fits any ellipse, **Tied** gives every cluster the same ellipse, **Diagonal** keeps the ellipse axes along G and S, and **Spherical** fits circles.
+- **Initialization**: how the starting clusters are chosen.
+- **Initializations**: the number of runs from different starting points; the best run is kept. **Auto** uses scikit-learn's default.
+- **Max iterations**: the maximum number of iterations of each run. **Default** uses scikit-learn's default.
+- **Random seed**: the same seed and settings give the same clusters.
+
 The **Display settings** section has two toggles:
 
 - **Color phasor plot by cluster** paints each histogram bin, scatter point or contour with the color of its cluster.
 - **Show centroids** marks the center of each cluster on the phasor plot.
 
-Each GMM ellipse is centered on the fitted Gaussian's mean, with its major/minor radii scaled from the eigenvalues of the fitted covariance by a fixed scaling factor (sigma = 2, not user-adjustable in this tab). At that default scaling, each ellipse is a **~98.2% confidence ellipse** of its cluster's distribution (i.e., about 98.2% of the pixels belonging to that Gaussian component are expected to fall inside the drawn ellipse.)
+Click **Edit Centroid Style...** to change the **Marker**, **Size**, **Edge width** and **Edge color** of the centroids. **Reset** restores the default style.
+
+Each GMM ellipse is centered on the fitted Gaussian's mean, with its major/minor radii scaled from the eigenvalues of the fitted covariance by the **Ellipse size (sigma)** option. At the default sigma = 2, each ellipse is a **~98.2% confidence ellipse** of its cluster's distribution (i.e., about 98.2% of the pixels belonging to that Gaussian component are expected to fall inside the drawn ellipse.)
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/automatic%20clustering.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/automatic%20clustering.mp4" type="video/mp4">
