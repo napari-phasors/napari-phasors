@@ -1,21 +1,10 @@
 """Read FLIMbox FBD files with full control over reconstruction settings.
 
-:py:func:`phasorpy.io.signal_from_fbd` calls :py:meth:`fbdfile.FbdFile.asimage`
-without forwarding ``refine``, which defaults to ``True``, so
-:py:meth:`fbdfile.FbdFile.refine_settings` always recomputes
-``pixel_dwell_time`` and ``laser_factor`` from the detected frame durations.
-The header's own ``laser_factor`` is therefore unreachable through it: there is
-no way to ask for the file to be reconstructed exactly as recorded.
-
-(Up to :py:mod:`fbdfile` 2026.8.8 refining also discarded a ``laser_factor``
-the caller had passed. 2026.8.30 added ``not self._laser_factor_provided`` to
-that branch, so an explicit factor now survives refining upstream as well.
-This module is pinned to 2026.8.30 and does not rely on the older behavior.)
-
-This module provides a drop-in replacement that forwards ``refine`` and any
-other :py:class:`fbdfile.FbdFile` setting (``scanner_line_start``,
-``scanner_frame_start``, ``pixel_dwell_time``, ...), so files whose headers do
-not describe the acquisition correctly can still be reconstructed.
+:py:func:`signal_from_fbd` has the signature and output of
+:py:func:`phasorpy.io.signal_from_fbd`, which forwards ``refine`` and the
+:py:class:`fbdfile.FbdFile` settings since PhasorPy 0.13. It adds what that
+reader cannot do: derive the IOTech laser factor from the header, and start
+frames whose marker was recorded twice at their first marker.
 
 Files recorded with an IOTech scanner card are a known case: the header's
 ``x_starting_pixel`` omits the hardware trigger latency that SimFCS applies
@@ -87,7 +76,7 @@ DEFAULT_CANDIDATES: tuple[tuple[float | str, bool | None], ...] = (
 
 In order: the SimFCS-matching factor derived from the header, the header's
 own factor used verbatim, and the factor refined from the detected frame
-durations (what :py:func:`phasorpy.io.signal_from_fbd` always does).
+durations (what :py:func:`phasorpy.io.signal_from_fbd` does by default).
 """
 
 
@@ -240,8 +229,8 @@ def signal_from_fbd(
     """Return phase histogram and metadata from FLIMbox FBD file.
 
     Same signature and return value as
-    :py:func:`phasorpy.io.signal_from_fbd`, plus control over ``refine`` and
-    the remaining :py:class:`fbdfile.FbdFile` settings.
+    :py:func:`phasorpy.io.signal_from_fbd`, plus the :py:data:`IOTECH`
+    laser factor and a different ``refine`` default.
 
     Parameters
     ----------
@@ -310,7 +299,7 @@ def signal_from_fbd(
 
     want_iotech = _is_iotech(laser_factor)
     if refine is _UNSET:
-        # refining overwrites laser_factor, so honor an explicit value
+        # fbdfile refines a derived factor away, as it is set after opening
         refine = not (want_iotech or float(laser_factor) >= 0.0)
 
     integrate_frames = 0 if frame is None or frame >= 0 else 1
