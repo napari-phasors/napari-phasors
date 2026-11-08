@@ -3,10 +3,11 @@ import contextlib
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import ListedColormap
+from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Ellipse, Wedge
 from napari.layers import Labels
 from napari.utils import DirectLabelColormap
-from phasorpy.cluster import phasor_cluster_gmm
+from phasorpy.cluster import phasor_cluster_gmm, phasor_cluster_kmeans
 from phasorpy.cursor import (
     mask_from_circular_cursor,
     mask_from_elliptic_cursor,
@@ -28,6 +29,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -52,6 +54,7 @@ from ._canvas import (
     _make_selector_icon,
 )
 from ._utils import (
+    CollapsibleSection,
     CurrentPageStackedWidget,
     active_selection_region,
     analysis_layer_name,
@@ -1875,8 +1878,12 @@ class AutomaticClusteringWidget(QWidget):
     """
     Widget for automatic clustering selection in phasor plots.
 
-    This widget provides controls for automatic clustering using
-    Gaussian Mixture Models (GMM) from phasorpy.
+    This widget provides controls for automatic clustering using either
+    Gaussian Mixture Models (GMM) or k-means from phasorpy.
+
+    GMM clusters are elliptical regions, so a pixel is assigned to the
+    ellipse that contains it. K-means partitions the phasor coordinates,
+    assigning every valid pixel to the cluster with the nearest centroid.
 
     Parameters
     ----------
@@ -1891,6 +1898,50 @@ class AutomaticClusteringWidget(QWidget):
         for r, g, b, _ in [plt.get_cmap("Set1")(i) for i in range(9)]
     ]
 
+    METHOD_GMM = "gmm"
+    METHOD_KMEANS = "kmeans"
+    #: (combobox text, method key), in combobox order.
+    METHODS = [
+        ("GMM (Gaussian Mixture Model)", METHOD_GMM),
+        ("K-means", METHOD_KMEANS),
+    ]
+
+    #: (combobox text, scikit-learn value) of the advanced option choices.
+    GMM_COVARIANCE_TYPES = [
+        ("Full", "full"),
+        ("Tied", "tied"),
+        ("Diagonal", "diag"),
+        ("Spherical", "spherical"),
+    ]
+    GMM_INIT_METHODS = [
+        ("K-means", "kmeans"),
+        ("K-means++", "k-means++"),
+        ("Random", "random"),
+        ("Random from data", "random_from_data"),
+    ]
+    KMEANS_INIT_METHODS = [
+        ("K-means++", "k-means++"),
+        ("Random", "random"),
+    ]
+
+    #: (combobox text, matplotlib marker) of the centroid markers.
+    CENTROID_MARKERS = [
+        ("Circle", "o"),
+        ("Square", "s"),
+        ("Diamond", "D"),
+        ("Triangle", "^"),
+        ("Hexagon", "h"),
+        ("Star", "*"),
+        ("Plus", "P"),
+        ("Cross", "X"),
+    ]
+    DEFAULT_CENTROID_STYLE = {
+        "marker": "o",
+        "size": 10.0,
+        "edge_width": 1.5,
+        "edge_color": "#000000",
+    }
+
     def __init__(self, viewer, parent_widget):
         """Initialize the AutomaticClusteringWidget."""
         super().__init__()
@@ -1900,9 +1951,17 @@ class AutomaticClusteringWidget(QWidget):
         # Store cluster data: list of dicts with cluster info (one per cluster)
         self._clusters = []
         self._ellipse_patches = []
+        self._centroid_artists = []
         self._phasors_selected_layer = None
         # Store label layers per image layer
         self._label_layers = {}  # {image_layer_name: labels_layer}
+        # Per-pixel cluster ids (0 = no cluster) per image layer, as shown
+        # in the labels layers; also used to colour the phasor plot.
+        self._cluster_maps = {}  # {image_layer_name: np.ndarray}
+        # Method the current clusters were computed with.
+        self._cluster_method = None
+        self.centroid_style = dict(self.DEFAULT_CENTROID_STYLE)
+        self.centroid_style_dialog = None
 
         self._setup_ui()
 
@@ -1920,7 +1979,15 @@ class AutomaticClusteringWidget(QWidget):
         method_layout.addWidget(QLabel("Clustering Method:"))
         self.clustering_method_combobox = QComboBox()
         self.clustering_method_combobox.addItems(
-            ["GMM (Gaussian Mixture Model)"]
+            [text for text, _ in self.METHODS]
+        )
+        self.clustering_method_combobox.setToolTip(
+            "GMM fits one ellipse per cluster; pixels outside every ellipse "
+            "stay unassigned.\nK-means assigns every pixel to the cluster "
+            "with the nearest centroid."
+        )
+        self.clustering_method_combobox.currentIndexChanged.connect(
+            self._refresh_apply_button_if_ready
         )
         method_layout.addWidget(self.clustering_method_combobox, 1)
         params_box_layout.addLayout(method_layout)
@@ -1933,7 +2000,43 @@ class AutomaticClusteringWidget(QWidget):
         self.num_clusters_spinbox.setValue(2)
         clusters_layout.addWidget(self.num_clusters_spinbox, 1)
         params_box_layout.addLayout(clusters_layout)
+        params_box_layout.addWidget(self._make_advanced_options())
         layout.addWidget(params_box)
+
+        # Display options section
+        display_box, display_box_layout = make_section("Display settings")
+        self.color_plot_toggle = QToggleSwitch("Color phasor plot by cluster")
+        self.color_plot_toggle.setChecked(True)
+        self.color_plot_toggle.setToolTip(
+            "Paint the histogram bins, scatter points or contours of the "
+            "phasor plot with the color of the cluster they belong to."
+        )
+        self.color_plot_toggle.toggled.connect(
+            self.refresh_phasor_plot_coloring
+        )
+        display_box_layout.addWidget(self.color_plot_toggle)
+
+        self.show_centroids_toggle = QToggleSwitch("Show centroids")
+        self.show_centroids_toggle.setChecked(True)
+        self.show_centroids_toggle.setToolTip(
+            "Mark the center of each cluster on the phasor plot."
+        )
+        self.show_centroids_toggle.toggled.connect(self._on_show_centroids)
+        display_box_layout.addWidget(self.show_centroids_toggle)
+
+        buttons_row = QHBoxLayout()
+        self.centroid_style_button = QPushButton("Edit Centroid Style...")
+        self.centroid_style_button.setToolTip(
+            "Edit the marker, size and edge of the centroids in the phasor "
+            "plot."
+        )
+        self.centroid_style_button.clicked.connect(
+            self._open_centroid_style_dialog
+        )
+        buttons_row.addWidget(self.centroid_style_button)
+        buttons_row.addStretch()
+        display_box_layout.addLayout(buttons_row)
+        layout.addWidget(display_box)
 
         # Apply clustering button (validated)
         self.apply_button = QPushButton("Apply Clustering")
@@ -2002,6 +2105,145 @@ class AutomaticClusteringWidget(QWidget):
 
         layout.addStretch()
 
+    def _make_advanced_options(self):
+        """Return the collapsed section with the optional clustering
+        arguments; rows that do not apply to the picked method are hidden."""
+        form = self._advanced_options_form = QFormLayout()
+        form.setContentsMargins(0, 4, 0, 0)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        # (field, methods) of every row, to show only the rows of the
+        # picked method.
+        self._option_rows = []
+
+        def add_row(text, field, tooltip, methods):
+            label = QLabel(text)
+            for widget in (label, field):
+                widget.setToolTip(tooltip)
+            form.addRow(label, field)
+            self._option_rows.append((field, methods))
+            return field
+
+        def combobox(choices):
+            box = QComboBox()
+            box.addItems([text for text, _ in choices])
+            return box
+
+        both = (self.METHOD_GMM, self.METHOD_KMEANS)
+        self.sigma_spinbox = QDoubleSpinBox()
+        self.sigma_spinbox.setRange(0.5, 5.0)
+        self.sigma_spinbox.setSingleStep(0.1)
+        self.sigma_spinbox.setValue(2.0)
+        add_row(
+            "Ellipse size (sigma):",
+            self.sigma_spinbox,
+            "Radii of the cluster ellipses, in standard deviations. Pixels "
+            "outside every ellipse stay unassigned.\nThe default 2 covers "
+            "about 98% of a cluster.",
+            (self.METHOD_GMM,),
+        )
+        self.covariance_combobox = add_row(
+            "Covariance type:",
+            combobox(self.GMM_COVARIANCE_TYPES),
+            "Shape of the clusters: Full fits any ellipse, Tied gives every "
+            "cluster the same ellipse,\nDiagonal keeps the ellipse axes "
+            "along G and S, and Spherical fits circles.",
+            (self.METHOD_GMM,),
+        )
+        self.gmm_init_combobox = add_row(
+            "Initialization:",
+            combobox(self.GMM_INIT_METHODS),
+            "How the starting clusters are chosen.",
+            (self.METHOD_GMM,),
+        )
+        self.kmeans_init_combobox = add_row(
+            "Initialization:",
+            combobox(self.KMEANS_INIT_METHODS),
+            "How the starting centroids are chosen. K-means++ spreads them "
+            "out and usually converges faster.",
+            (self.METHOD_KMEANS,),
+        )
+        # 0 leaves the choice to scikit-learn.
+        self.n_init_spinbox = QSpinBox()
+        self.n_init_spinbox.setRange(0, 100)
+        self.n_init_spinbox.setSpecialValueText("Auto")
+        add_row(
+            "Initializations:",
+            self.n_init_spinbox,
+            "Number of runs from different starting points; the best run "
+            "is kept.\nMore runs are slower but less likely to end in a poor "
+            "solution. Auto uses scikit-learn's default.",
+            both,
+        )
+        self.max_iter_spinbox = QSpinBox()
+        self.max_iter_spinbox.setRange(0, 100000)
+        self.max_iter_spinbox.setSingleStep(50)
+        self.max_iter_spinbox.setSpecialValueText("Default")
+        add_row(
+            "Max iterations:",
+            self.max_iter_spinbox,
+            "Maximum number of iterations of each run. Default uses "
+            "scikit-learn's default (100 for GMM, 300 for k-means).",
+            both,
+        )
+        self.random_seed_spinbox = QSpinBox()
+        self.random_seed_spinbox.setRange(0, 2**31 - 1)
+        add_row(
+            "Random seed:",
+            self.random_seed_spinbox,
+            "Seed of the random starting points. The same seed and settings "
+            "give the same clusters.",
+            both,
+        )
+
+        container = QWidget()
+        container.setLayout(form)
+        self.advanced_options_section = CollapsibleSection(
+            "Advanced options", text_color="#c7c7c7"
+        )
+        self.advanced_options_section.add_widget(container)
+        self.clustering_method_combobox.currentIndexChanged.connect(
+            self._update_method_options
+        )
+        self._update_method_options()
+        return self.advanced_options_section
+
+    def _update_method_options(self, _index=None):
+        """Show only the advanced options of the picked method."""
+        method = self._selected_method()
+        for field, methods in self._option_rows:
+            # Hiding the row, not just its widgets, also drops its spacing.
+            self._advanced_options_form.setRowVisible(field, method in methods)
+
+    def _clustering_kwargs(self, method):
+        """Return the optional arguments of the phasorpy function of
+        *method*, as set in the advanced options."""
+        kwargs = {"random_state": self.random_seed_spinbox.value()}
+        for key, spinbox in (
+            ("n_init", self.n_init_spinbox),
+            ("max_iter", self.max_iter_spinbox),
+        ):
+            if spinbox.value():
+                kwargs[key] = spinbox.value()
+        if method == self.METHOD_KMEANS:
+            index = self.kmeans_init_combobox.currentIndex()
+            kwargs["init"] = self.KMEANS_INIT_METHODS[index][1]
+        else:
+            kwargs["sigma"] = self.sigma_spinbox.value()
+            index = self.covariance_combobox.currentIndex()
+            kwargs["covariance_type"] = self.GMM_COVARIANCE_TYPES[index][1]
+            index = self.gmm_init_combobox.currentIndex()
+            kwargs["init_params"] = self.GMM_INIT_METHODS[index][1]
+        return kwargs
+
+    def _selected_method(self):
+        """Return the method key picked in the method combobox."""
+        index = max(self.clustering_method_combobox.currentIndex(), 0)
+        return self.METHODS[index][1]
+
+    def _is_kmeans(self):
+        """Return whether the current clusters were computed with k-means."""
+        return self._cluster_method == self.METHOD_KMEANS
+
     def _apply_clustering(self):
         """Apply automatic clustering using the selected method."""
         if self.parent_widget is None:
@@ -2015,121 +2257,46 @@ class AutomaticClusteringWidget(QWidget):
         self._clear_clusters(clear_patches_only=True)
 
         n_clusters = self.num_clusters_spinbox.value()
+        method = self._selected_method()
+        harmonic = self.parent_widget.harmonic
 
-        # Step 1: Collect and merge g, s data from all selected layers
-        g_list = []
-        s_list = []
-        layer_data = []  # Store layer info for later use
-
+        # Step 1: Collect g, s data from all selected layers
+        layer_data = []  # (layer, g, s) for each layer with phasor data
         for layer in selected_layers:
-            g_array = layer.metadata.get("G")
-            s_array = layer.metadata.get("S")
-
-            if g_array is None or s_array is None:
-                continue
-
-            # Extract correct harmonic if arrays have extra dimension
-            if g_array.ndim > layer.data.ndim:
-                harmonic = self.parent_widget.harmonic
-                # Harmonic numbering starts at 1, but array indexing starts at 0
-                g = g_array[harmonic - 1]
-                s = s_array[harmonic - 1]
-            else:
-                g = g_array
-                s = s_array
-
-            spatial_shape = layer.data.shape
-
-            # Collect data for merging
-            g_list.append(g.ravel())
-            s_list.append(s.ravel())
-            layer_data.append(
-                {
-                    "layer": layer,
-                    "g": g,
-                    "s": s,
-                    "spatial_shape": spatial_shape,
-                }
+            g, s = CursorSelectionWidget._layer_harmonic_arrays(
+                layer, harmonic
             )
+            if g is None:
+                continue
+            layer_data.append((layer, g, s))
 
-        if not g_list:
+        if not layer_data:
             return
 
-        # Step 2: Merge all g, s data from all layers
-        g_merged = np.concatenate(g_list)
-        s_merged = np.concatenate(s_list)
+        # Step 2: Merge all g, s data from all layers, so every layer is
+        # clustered with the same cluster parameters.
+        g_merged = np.concatenate([g.ravel() for _, g, _ in layer_data])
+        s_merged = np.concatenate([s.ravel() for _, _, s in layer_data])
 
-        # Step 3: Perform GMM clustering on merged data
+        # Step 3: Cluster the merged data and label each layer, with one
+        # scene-graph rebuild for the labels of every layer.
         try:
-            center_real, center_imag, radius, radius_minor, angle = (
-                phasor_cluster_gmm(
-                    g_merged,
-                    s_merged,
-                    clusters=n_clusters,
-                )
-            )
-
-            # Draw ellipses for the clusters (only once, not per layer)
-            self._draw_cluster_ellipses(
-                center_real,
-                center_imag,
-                radius,
-                radius_minor,
-                angle,
-                self.parent_widget.harmonic,
-            )
-
-            # Store individual cluster information
-            self._clusters.clear()
-            for i in range(n_clusters):
-                color_idx = i % len(self.DEFAULT_COLORS)
-                cluster_data = {
-                    "g": center_real[i],
-                    "s": center_imag[i],
-                    "radius": radius[i],
-                    "radius_minor": radius_minor[i],
-                    "angle": angle[i],
-                    "color": self.DEFAULT_COLORS[color_idx],
-                    "harmonic": self.parent_widget.harmonic,
-                }
-                self._clusters.append(cluster_data)
-
-            # Populate the table with cluster information
-            self._populate_cluster_table()
-
-            # One scene-graph rebuild for the labels of every layer.
             with batched_layer_updates(self.viewer):
-                # Step 4: Apply the same cluster parameters to each layer
-                for layer_info in layer_data:
-                    layer = layer_info["layer"]
-                    g = layer_info["g"]
-                    s = layer_info["s"]
-                    spatial_shape = layer_info["spatial_shape"]
-
-                    # Create selection map using elliptic cursor masks
-                    selection_map = np.zeros(spatial_shape, dtype=np.uint32)
-
-                    # Apply each cluster using elliptic cursor
-                    for idx, cluster in enumerate(self._clusters):
-                        mask = mask_from_elliptic_cursor(
-                            g,
-                            s,
-                            cluster["g"],
-                            cluster["s"],
-                            radius=cluster["radius"],
-                            radius_minor=cluster["radius_minor"],
-                            angle=cluster["angle"],
-                        )
-                        selection_map[mask] = idx + 1
-
-                    # Create labels layer
-                    self._create_or_update_labels_layer(layer, selection_map)
-
+                if method == self.METHOD_KMEANS:
+                    self._apply_kmeans(
+                        layer_data, g_merged, s_merged, n_clusters, harmonic
+                    )
+                else:
+                    self._apply_gmm(
+                        layer_data, g_merged, s_merged, n_clusters, harmonic
+                    )
         except Exception as e:  # noqa: BLE001
             print(f"Error applying clustering: {e}")
             import traceback
 
             traceback.print_exc()
+            self._clear_clusters()
+            return
 
         # Enable clear button
         self.clear_button.setEnabled(True)
@@ -2137,9 +2304,105 @@ class AutomaticClusteringWidget(QWidget):
         # Update statistics
         self._update_cluster_statistics()
 
+        self._draw_centroids()
+        self.refresh_phasor_plot_coloring()
+
         # Redraw canvas
-        if self.parent_widget is not None:
-            self.parent_widget.canvas_widget.canvas.draw_idle()
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _new_cluster(self, index, g, s, harmonic, **params):
+        """Return the stored description of the cluster at *index*."""
+        return {
+            "g": g,
+            "s": s,
+            "color": self.DEFAULT_COLORS[index % len(self.DEFAULT_COLORS)],
+            "harmonic": harmonic,
+            **params,
+        }
+
+    def _apply_gmm(self, layer_data, g_merged, s_merged, n_clusters, harmonic):
+        """Fit GMM ellipses and label each layer's pixels inside them."""
+        center_real, center_imag, radius, radius_minor, angle = (
+            phasor_cluster_gmm(
+                g_merged,
+                s_merged,
+                clusters=n_clusters,
+                **self._clustering_kwargs(self.METHOD_GMM),
+            )
+        )
+
+        self._cluster_method = self.METHOD_GMM
+        self._clusters = [
+            self._new_cluster(
+                i,
+                center_real[i],
+                center_imag[i],
+                harmonic,
+                radius=radius[i],
+                radius_minor=radius_minor[i],
+                angle=angle[i],
+            )
+            for i in range(n_clusters)
+        ]
+
+        # Draw ellipses for the clusters (only once, not per layer)
+        self._draw_cluster_ellipses(
+            center_real,
+            center_imag,
+            radius,
+            radius_minor,
+            angle,
+            harmonic,
+        )
+        self._populate_cluster_table()
+
+        # Apply the same cluster parameters to each layer
+        for layer, g, s in layer_data:
+            selection_map = np.zeros(g.shape, dtype=np.uint32)
+            for idx, cluster in enumerate(self._clusters):
+                mask = mask_from_elliptic_cursor(
+                    g,
+                    s,
+                    cluster["g"],
+                    cluster["s"],
+                    radius=cluster["radius"],
+                    radius_minor=cluster["radius_minor"],
+                    angle=cluster["angle"],
+                )
+                selection_map[mask] = idx + 1
+            self._create_or_update_labels_layer(layer, selection_map)
+
+    def _apply_kmeans(
+        self, layer_data, g_merged, s_merged, n_clusters, harmonic
+    ):
+        """Partition the phasors with k-means and label each layer."""
+        # phasorpy only skips NaN coordinates; infinities would reach
+        # scikit-learn and make it fail, so treat them as missing too.
+        finite = np.isfinite(g_merged) & np.isfinite(s_merged)
+        center_real, center_imag, labels = phasor_cluster_kmeans(
+            np.where(finite, g_merged, np.nan),
+            np.where(finite, s_merged, np.nan),
+            clusters=n_clusters,
+            **self._clustering_kwargs(self.METHOD_KMEANS),
+        )
+
+        self._cluster_method = self.METHOD_KMEANS
+        self._clusters = [
+            self._new_cluster(i, center_real[i], center_imag[i], harmonic)
+            for i in range(n_clusters)
+        ]
+        self._populate_cluster_table()
+
+        # Labels are -1 for missing coordinates; shift so 0 means "none"
+        # and cluster i is labelled i + 1, as for GMM.
+        cluster_ids = (labels.astype(np.int64) + 1).astype(np.uint32)
+        offset = 0
+        for layer, g, _ in layer_data:
+            selection_map = cluster_ids[offset : offset + g.size].reshape(
+                g.shape
+            )
+            offset += g.size
+            self._create_or_update_labels_layer(layer, selection_map)
 
     def _update_cluster_table_height(self):
         """Resize the table to exactly fit its header and rows.
@@ -2161,6 +2424,9 @@ class AutomaticClusteringWidget(QWidget):
     def _populate_cluster_table(self):
         """Populate the table with cluster information."""
         self.cluster_table.setRowCount(0)
+        # K-means clusters are not ellipses, so they have no radii.
+        self.cluster_table.setColumnHidden(2, self._is_kmeans())
+        self.cluster_table.setColumnHidden(3, self._is_kmeans())
 
         for cluster_idx, cluster in enumerate(self._clusters):
             table_row = self.cluster_table.rowCount()
@@ -2176,15 +2442,14 @@ class AutomaticClusteringWidget(QWidget):
             s_label.setAlignment(Qt.AlignCenter)
             self.cluster_table.setCellWidget(table_row, 1, s_label)
 
-            # Major radius label (read-only)
-            major_r_label = QLabel(f"{cluster['radius']:.3f}")
-            major_r_label.setAlignment(Qt.AlignCenter)
-            self.cluster_table.setCellWidget(table_row, 2, major_r_label)
-
-            # Minor radius label (read-only)
-            minor_r_label = QLabel(f"{cluster['radius_minor']:.3f}")
-            minor_r_label.setAlignment(Qt.AlignCenter)
-            self.cluster_table.setCellWidget(table_row, 3, minor_r_label)
+            # Major and minor radius labels (read-only)
+            for column, key in ((2, "radius"), (3, "radius_minor")):
+                value = cluster.get(key)
+                radius_label = QLabel("-" if value is None else f"{value:.3f}")
+                radius_label.setAlignment(Qt.AlignCenter)
+                self.cluster_table.setCellWidget(
+                    table_row, column, radius_label
+                )
 
             # Color button (editable)
             color_button = ColorButton(cluster["color"])
@@ -2229,6 +2494,9 @@ class AutomaticClusteringWidget(QWidget):
         # Update all labels layers with new color
         self._update_all_labels_layer_colors()
 
+        self._draw_centroids()
+        self.refresh_phasor_plot_coloring()
+
         # Redraw canvas
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -2261,6 +2529,14 @@ class AutomaticClusteringWidget(QWidget):
 
         # Remove cluster data
         self._clusters.pop(cluster_idx)
+        if self._is_kmeans():
+            # K-means labels cannot be recomputed from cluster geometry:
+            # unassign the removed cluster's pixels and shift the ids of
+            # the clusters after it down by one.
+            removed_id = cluster_idx + 1
+            for selection_map in self._cluster_maps.values():
+                selection_map[selection_map == removed_id] = 0
+                selection_map[selection_map > removed_id] -= 1
 
         # Rebuild table
         self._populate_cluster_table()
@@ -2269,11 +2545,11 @@ class AutomaticClusteringWidget(QWidget):
         if self._clusters:
             self._reapply_clustering_to_layers()
             self._update_cluster_statistics()
+            self._draw_centroids()
+            self.refresh_phasor_plot_coloring()
         else:
             # If no clusters left, clear everything
-            self._clear_all_labels_layers()
-            self.cluster_table.setRowCount(0)
-            self.clear_button.setEnabled(False)
+            self._clear_clusters()
 
         # Redraw canvas
         if self.parent_widget is not None:
@@ -2283,6 +2559,14 @@ class AutomaticClusteringWidget(QWidget):
         """Reapply clustering to all selected layers using current cluster parameters."""
         selected_layers = self._get_selected_layers()
         if not selected_layers:
+            return
+
+        if self._is_kmeans():
+            # The stored per-pixel assignments are the k-means result.
+            for layer in selected_layers:
+                selection_map = self._cluster_maps.get(layer.name)
+                if selection_map is not None:
+                    self._create_or_update_labels_layer(layer, selection_map)
             return
 
         current_harmonic = self.parent_widget.harmonic
@@ -2343,6 +2627,10 @@ class AutomaticClusteringWidget(QWidget):
 
         selected_layers = self._get_selected_layers()
         if not selected_layers:
+            return
+
+        if self._is_kmeans():
+            self._update_kmeans_statistics(selected_layers)
             return
 
         current_harmonic = self.parent_widget.harmonic
@@ -2461,6 +2749,284 @@ class AutomaticClusteringWidget(QWidget):
             if percentage_label:
                 percentage_label.setText(f"{percentage:.1f}")
 
+    def _update_kmeans_statistics(self, selected_layers):
+        """Fill the count and percentage columns from the k-means labels.
+
+        Percentages are relative to every valid pixel at the clustering
+        harmonic, so they keep adding up to what is left after a cluster
+        is removed instead of being renormalised.
+        """
+        if not self._clusters:
+            return
+        harmonic = self._clusters[0]["harmonic"]
+        n_ids = len(self._clusters) + 1
+        counts = np.zeros(n_ids, dtype=np.int64)
+        total_valid_pixels = 0
+        for layer in selected_layers:
+            selection_map = self._cluster_maps.get(layer.name)
+            g, s = CursorSelectionWidget._layer_harmonic_arrays(
+                layer, harmonic
+            )
+            if (
+                selection_map is None
+                or g is None
+                or g.shape != selection_map.shape
+            ):
+                continue
+            total_valid_pixels += int(
+                np.count_nonzero(np.isfinite(g) & np.isfinite(s))
+            )
+            counts += np.bincount(selection_map.ravel(), minlength=n_ids)[
+                :n_ids
+            ]
+
+        for table_row in range(
+            min(self.cluster_table.rowCount(), len(self._clusters))
+        ):
+            count_label = self.cluster_table.cellWidget(table_row, 5)
+            percentage_label = self.cluster_table.cellWidget(table_row, 6)
+            if total_valid_pixels == 0:
+                count_label.setText("-")
+                percentage_label.setText("-")
+                continue
+            count = int(counts[table_row + 1])
+            count_label.setText(str(count))
+            percentage_label.setText(f"{count / total_valid_pixels * 100:.1f}")
+
+    def _draw_centroids(self):
+        """Draw a marker on each cluster center, if centroids are shown."""
+        self._clear_centroids()
+        if self.parent_widget is None or not (
+            self.show_centroids_toggle.isChecked()
+        ):
+            return
+
+        ax = self.parent_widget.canvas_widget.axes
+        current_harmonic = self.parent_widget.harmonic
+        for cluster in self._clusters:
+            if cluster.get("harmonic", 1) != current_harmonic:
+                continue
+            color = cluster["color"]
+            style = self.centroid_style
+            # Added as a bare line (not ``ax.plot``) so the marker never
+            # rescales the phasor plot axes.
+            marker = Line2D(
+                [cluster["g"]],
+                [cluster["s"]],
+                linestyle="none",
+                marker=style["marker"],
+                markersize=style["size"],
+                markerfacecolor=(color.redF(), color.greenF(), color.blueF()),
+                markeredgecolor=style["edge_color"],
+                markeredgewidth=style["edge_width"],
+                zorder=6,
+            )
+            ax.add_line(marker)
+            self._centroid_artists.append(marker)
+
+    def _clear_centroids(self):
+        """Remove the centroid markers from the phasor plot."""
+        for marker in self._centroid_artists:
+            with contextlib.suppress(ValueError):
+                marker.remove()
+        self._centroid_artists.clear()
+
+    def _on_show_centroids(self, _checked=None):
+        """Show or hide the centroid markers after the toggle changes."""
+        self._draw_centroids()
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _open_centroid_style_dialog(self):
+        """Open the dialog editing the style of the centroid markers."""
+        if (
+            self.centroid_style_dialog is not None
+            and self.centroid_style_dialog.isVisible()
+        ):
+            self.centroid_style_dialog.raise_()
+            self.centroid_style_dialog.activateWindow()
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Centroid Style")
+        dialog.setMinimumWidth(360)
+        vbox = QVBoxLayout(dialog)
+        style = self.centroid_style
+
+        marker_row = QHBoxLayout()
+        marker_row.addWidget(QLabel("Marker:"))
+        self.centroid_marker_combobox = QComboBox()
+        markers = [marker for _, marker in self.CENTROID_MARKERS]
+        self.centroid_marker_combobox.addItems(
+            [text for text, _ in self.CENTROID_MARKERS]
+        )
+        self.centroid_marker_combobox.setCurrentIndex(
+            markers.index(style["marker"])
+        )
+        self.centroid_marker_combobox.currentIndexChanged.connect(
+            lambda index: self._set_centroid_style("marker", markers[index])
+        )
+        marker_row.addWidget(self.centroid_marker_combobox, 1)
+        vbox.addLayout(marker_row)
+
+        size_row, _, self.centroid_size_spin = make_slider_spin_row(
+            "Size:",
+            2.0,
+            30.0,
+            style["size"],
+            1,
+            lambda value: self._set_centroid_style("size", value),
+            step=0.5,
+        )
+        vbox.addLayout(size_row)
+        edge_row, _, self.centroid_edge_width_spin = make_slider_spin_row(
+            "Edge width:",
+            0.0,
+            5.0,
+            style["edge_width"],
+            1,
+            lambda value: self._set_centroid_style("edge_width", value),
+        )
+        vbox.addLayout(edge_row)
+
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("Edge color:"))
+        self.centroid_edge_color_button = ColorButton(
+            QColor(style["edge_color"])
+        )
+        self.centroid_edge_color_button.color_changed.connect(
+            lambda color: self._set_centroid_style("edge_color", color.name())
+        )
+        color_row.addWidget(self.centroid_edge_color_button)
+        color_row.addStretch()
+        vbox.addLayout(color_row)
+
+        buttons_layout = QHBoxLayout()
+        self.centroid_style_reset_button = QPushButton("Reset")
+        self.centroid_style_reset_button.setToolTip(
+            "Restore the default centroid style."
+        )
+        self.centroid_style_reset_button.clicked.connect(
+            self._reset_centroid_style
+        )
+        buttons_layout.addWidget(self.centroid_style_reset_button)
+        buttons_layout.addStretch()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        buttons_layout.addWidget(close_button)
+        vbox.addLayout(buttons_layout)
+
+        self.centroid_style_dialog = dialog
+        dialog.show()
+
+    def _reset_centroid_style(self):
+        """Restore the default centroid style."""
+        default = self.DEFAULT_CENTROID_STYLE
+        # The controls drive the style through their value handlers.
+        markers = [marker for _, marker in self.CENTROID_MARKERS]
+        self.centroid_marker_combobox.setCurrentIndex(
+            markers.index(default["marker"])
+        )
+        self.centroid_size_spin.setValue(default["size"])
+        self.centroid_edge_width_spin.setValue(default["edge_width"])
+        self.centroid_edge_color_button.set_color(
+            QColor(default["edge_color"])
+        )
+        self._set_centroid_style("edge_color", default["edge_color"])
+
+    def _set_centroid_style(self, key, value):
+        """Change one property of the centroid markers and redraw them.
+
+        Markers hidden by another mode or tab stay hidden; they take the
+        new style when they are drawn again.
+        """
+        self.centroid_style[key] = value
+        if self._centroid_artists:
+            self._on_show_centroids()
+
+    def _clustering_mode_active(self):
+        """Return whether this mode is what the Selection tab shows."""
+        plotter = self.parent_widget
+        selection_tab = getattr(plotter, "selection_tab", None)
+        if selection_tab is None:
+            return False
+        tab_widget = getattr(plotter, "tab_widget", None)
+        return (
+            tab_widget is not None
+            and tab_widget.currentWidget() is selection_tab
+            and selection_tab.selection_mode_combobox.currentIndex() == 1
+        )
+
+    def phasor_plot_selection_data(self):
+        """Return the per-point cluster ids to colour the phasor plot with.
+
+        Returns
+        -------
+        tuple or None
+            ``(cluster_ids, colors)``: one cluster id per plotted point (0 =
+            no cluster), in the same order as
+            :meth:`PlotterWidget.get_merged_features`, and the RGBA colour
+            of each cluster id starting at 1. ``None`` when the plot should
+            not be coloured by cluster.
+        """
+        if (
+            not self._clusters
+            or not self._cluster_maps
+            or not self.color_plot_toggle.isChecked()
+            or not self._clustering_mode_active()
+        ):
+            return None
+
+        plotter = self.parent_widget
+        harmonic = plotter.harmonic
+        if self._clusters[0].get("harmonic", 1) != harmonic:
+            return None
+
+        all_ids = []
+        for layer in self._get_selected_layers():
+            g, s = CursorSelectionWidget._layer_harmonic_arrays(
+                layer, harmonic
+            )
+            if g is None:
+                continue
+            # Mirror ``get_merged_features`` so the ids line up with the
+            # plotted points.
+            valid = ~np.isnan(g.ravel()) & ~np.isnan(s.ravel())
+            valid = plotter.frame_context.filter_valid(valid, g.shape)
+            selection_map = self._cluster_maps.get(layer.name)
+            if selection_map is None or selection_map.shape != g.shape:
+                all_ids.append(np.zeros(np.count_nonzero(valid), np.uint32))
+            else:
+                all_ids.append(selection_map.ravel()[valid])
+
+        if not all_ids:
+            return None
+        colors = [
+            (c.redF(), c.greenF(), c.blueF(), 1.0)
+            for c in (cluster["color"] for cluster in self._clusters)
+        ]
+        return np.concatenate(all_ids), colors
+
+    def refresh_phasor_plot_coloring(self, _checked=None):
+        """Replot so the phasor plot picks up the current cluster colours.
+
+        The plotter asks :meth:`phasor_plot_selection_data` for the colours
+        on every replot, so this also removes them once they no longer
+        apply (toggle off, clusters cleared, another mode or tab shown).
+        """
+        plotter = self.parent_widget
+        if plotter is None or not plotter.has_phasor_data():
+            return
+        if not self._clusters and not plotter._cluster_coloring_active:
+            return
+        plotter.plot()
+
+    def release_phasor_plot_coloring(self):
+        """Remove the cluster colours if they are on the phasor plot."""
+        plotter = self.parent_widget
+        if plotter is not None and plotter._cluster_coloring_active:
+            plotter.plot()
+
     def _draw_cluster_ellipses(
         self,
         center_real,
@@ -2529,8 +3095,11 @@ class AutomaticClusteringWidget(QWidget):
             self._clear_all_labels_layers()
 
             self._clusters.clear()
+            self._cluster_method = None
             self._label_layers.clear()
             self.clear_button.setEnabled(False)
+            self._clear_centroids()
+            self.release_phasor_plot_coloring()
 
         # Redraw canvas
         if self.parent_widget is not None:
@@ -2546,6 +3115,7 @@ class AutomaticClusteringWidget(QWidget):
                 except (ValueError, KeyError):
                     pass
         self._label_layers.clear()
+        self._cluster_maps.clear()
 
     def clear_all_patches(self):
         """Clear all patches from the canvas (called when switching modes)."""
@@ -2553,6 +3123,7 @@ class AutomaticClusteringWidget(QWidget):
             with contextlib.suppress(ValueError):
                 patch.remove()
         self._ellipse_patches.clear()
+        self._clear_centroids()
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -2570,8 +3141,11 @@ class AutomaticClusteringWidget(QWidget):
         current_harmonic = self.parent_widget.harmonic
 
         for cluster in self._clusters:
-            # Only draw if harmonic matches
-            if cluster.get("harmonic", 1) != current_harmonic:
+            # Only draw if harmonic matches; k-means clusters have no ellipse
+            if (
+                cluster.get("harmonic", 1) != current_harmonic
+                or "radius" not in cluster
+            ):
                 continue
 
             color = cluster["color"]
@@ -2596,8 +3170,8 @@ class AutomaticClusteringWidget(QWidget):
             ax.add_patch(ellipse)
             self._ellipse_patches.append(ellipse)
 
-        if self.parent_widget is not None:
-            self.parent_widget.canvas_widget.canvas.draw_idle()
+        self._draw_centroids()
+        self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def on_harmonic_changed(self):
         """Called when the harmonic selection changes. Redraws cluster ellipses to show only those matching the current harmonic."""
@@ -2608,6 +3182,7 @@ class AutomaticClusteringWidget(QWidget):
     def _create_or_update_labels_layer(self, image_layer, selection_map):
         """Create or update the labels layer for the cluster selection."""
         layer_name = analysis_layer_name("Cluster Selection", image_layer.name)
+        self._cluster_maps[image_layer.name] = selection_map
 
         color_dict = {None: (0, 0, 0, 0)}
         for idx, cluster in enumerate(self._clusters):
