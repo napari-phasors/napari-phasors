@@ -30,7 +30,7 @@ classifiers = [
 dependencies = [
     "phasorpy>=0.13",
     "qtpy",
-    "fbdfile==2026.8.30",
+    "fbdfile>=2026.8.30",
     "sdtfile",
     "ptufile",
     "tifffile",
@@ -63,7 +63,7 @@ testing = [
     "pre-commit",
     "phasorpy>=0.13",
     "tifffile",
-    "fbdfile==2026.8.30",
+    "fbdfile>=2026.8.30",
     "sdtfile",
     "ptufile",
     "pawflim",
